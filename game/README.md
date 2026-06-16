@@ -24,8 +24,28 @@ Researched the most-loved mechanics in the racing genre and packed in a lot:
 14. **Persistent best lap** (saved across sessions) + car **colour selection**
 15. Camera follow with look-ahead, screen shake, speed-lines and a neon HUD
 
-Built on a smooth Catmull-Rom circuit (asphalt, kerb, animated centre line,
-checkered finish) with glossy procedurally-drawn cars — still zero image assets.
+### Levels, jumps & shortcuts
+
+- **3 unlockable levels** (Sunset Bay → Neon Heights → Midnight Canyon), each a
+  distinct Catmull-Rom circuit with its own AI difficulty, weather and time of day
+- **Ramps/jumps** (blue chevrons) launch the car into the air with a landing boost
+- **Shortcuts** (yellow-dashed side roads) let you cut the corner if you dare
+- Level select + colour pick on the menu; finishing a level unlocks the next
+
+### Architecture & playtesting
+
+Gameplay lives in `Sim.java`, a **pure-Java simulation with no Android types**,
+so it can be driven head-less. `tools/SimTest.java` runs an autopilot around
+every level and asserts the race is completable, ramps fire and nothing NaNs:
+
+```bash
+cd game
+javac -d /tmp/out app/src/main/java/com/fable/racer/Sim.java \
+      app/src/main/java/com/fable/racer/Tracks.java tools/SimTest.java
+java -cp /tmp/out com.fable.racer.SimTest
+```
+
+Still zero image assets — everything is drawn procedurally on the Canvas.
 
 ## Controls
 

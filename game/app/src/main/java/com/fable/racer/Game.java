@@ -3,7 +3,6 @@ package com.fable.racer;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
@@ -24,86 +23,42 @@ import java.util.Locale;
 import java.util.Random;
 
 /**
- * Top-down arcade racer with drift+nitro, Mario-Kart-style item boxes and
- * weapons, boost pads, dynamic day/night, weather, particles, a radar mini-map,
- * a 3-lap race with countdown + results, rubber-band AI and procedural audio.
+ * Renderer + input + screen flow for the top-down racer. All gameplay lives in
+ * {@link Sim}; this class draws the simulation, plays procedural audio, runs
+ * the level-select / countdown / results screens and owns the camera.
  */
 final class Game {
 
-    // ---- circuit control points ----
-    private static final float[][] WAYPOINTS = {
-            {-1000, -250}, {-700, -560}, {-150, -620}, {380, -520},
-            {760, -250}, {1040, 120}, {760, 430}, {300, 360},
-            {40, 540}, {-420, 600}, {-840, 380}, {-1080, 60}
-    };
-    private static final int STEPS_PER_SEG = 26;
-    private static final float ROAD_HALF = 120f;
-    private static final int TOTAL_LAPS = 3;
-
-    // ---- physics ----
-    private static final double ACCEL = 470;
-    private static final double BRAKE = 760;
-    private static final double DRAG = 90;
-    private static final double MAX_SPEED = 600;
-    private static final double BOOST_SPEED = 920;
-    private static final double GRIP_NORMAL = 6.5;
-    private static final double GRIP_DRIFT = 1.4;
-    private static final double TURN_RATE = 3.0;
-    private static final double TURN_REF = 150;
-
-    // ---- states ----
     private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3;
     private int state = TITLE;
-
-    // ---- items ----
-    private static final int IT_NONE = 0, IT_TURBO = 1, IT_OIL = 2, IT_SHIELD = 3;
 
     private int width, height;
     private double zoom = 1.2;
 
-    // centerline
-    private float[] cxArr, cyArr, dirX, dirY;
-    private int N;
-    private float minX, minY, maxX, maxY;
-
-    // player car
-    private double carX, carY, carAngle, vx, vy;
-    private double camX, camY;
-    private int lapsDone = 0, prevIdx = 0, startIdx = 6;
-    private boolean onTrack = true, drifting = false;
-    private double shake = 0, spin = 0, shield = 0, boostTime = 0;
-    private double nitro = 0;            // 0..1 meter
-    private int heldItem = IT_NONE;
+    private final Sim sim = new Sim();
+    private int level = 0;
+    private int unlocked = 1;
     private int playerColorIdx = 0;
 
-    // timing
-    private double raceTime = 0, lapTime = 0, bestLap = 0, finishTime = 0;
-    private double countdown = 0;
-    private double dayTime = 0.18;        // 0..1 time of day
-    private int weather = 0;              // 0 clear, 1 rain
+    private double camX, camY, shake = 0;
+    private double countdown = 0, dayTime = 0.2, titlePulse = 0, dash = 0;
+    private int prevLaps = 0;
+    private double bestLap = 0;
+    private boolean lastFinishWon = false;
+
     private final float[][] rain = new float[120][3];
-
-    // world objects
-    private final List<Ai> ais = new ArrayList<>();
-    private final List<float[]> trees = new ArrayList<>();
-    private final List<ItemBox> boxes = new ArrayList<>();
-    private final List<int[]> pads = new ArrayList<>();      // {centerline index}
-    private final List<Oil> oils = new ArrayList<>();
     private final List<Particle> particles = new ArrayList<>();
-    private final List<float[]> skidMarks = new ArrayList<>(); // x,y,angle,alpha
+    private final List<float[]> skidMarks = new ArrayList<>();
 
-    // input flags
     boolean keyLeft, keyRight, keyGas, keyBrake;
     private boolean tapBoost, tapItem;
-    private double titlePulse = 0, dash = 0;
 
-    // control rects
     private final RectF btnLeft = new RectF(), btnRight = new RectF();
     private final RectF btnGas = new RectF(), btnBrake = new RectF();
     private final RectF btnBoost = new RectF(), btnItem = new RectF();
     private final RectF[] swatches = new RectF[6];
+    private final RectF[] levelBtns = new RectF[Tracks.LEVELS.length];
 
-    // paints
     private final Paint road = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ui = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -123,20 +78,44 @@ final class Game {
 
     Game(Context ctx, int w, int h) {
         prefs = ctx == null ? null : ctx.getSharedPreferences("turbo", Context.MODE_PRIVATE);
-        if (prefs != null) bestLap = prefs.getFloat("bestLap", 0f);
+        if (prefs != null) {
+            unlocked = Math.max(1, prefs.getInt("unlocked", 1));
+            bestLap = prefs.getFloat("bestLap", 0f);
+            playerColorIdx = prefs.getInt("color", 0);
+        }
         text.setTypeface(Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD));
-        buildTrack();
-        buildDecor();
         try { audio = new EngineAudio(); } catch (Throwable t) { audio = null; }
-        resetRace();
+        loadLevel(0);
         resize(w, h);
     }
 
     void release() { if (audio != null) audio.release(); }
 
+    private void loadLevel(int lvl) {
+        level = Math.max(0, Math.min(Tracks.LEVELS.length - 1, lvl));
+        Tracks.Def def = Tracks.LEVELS[level];
+        sim.load(def, System.nanoTime());
+        rebuildRoadPath();
+        dayTime = def.dayTime < 0 ? 0.25 : def.dayTime;
+        for (int i = 0; i < rain.length; i++) {
+            rain[i][0] = rnd.nextFloat(); rain[i][1] = rnd.nextFloat(); rain[i][2] = 0.5f + rnd.nextFloat();
+        }
+        particles.clear();
+        skidMarks.clear();
+        prevLaps = 0;
+        camX = (sim.minX + sim.maxX) / 2;
+        camY = (sim.minY + sim.maxY) / 2;
+    }
+
+    private void rebuildRoadPath() {
+        roadPath.reset();
+        roadPath.moveTo(sim.cx[0], sim.cy[0]);
+        for (int i = 1; i < sim.N; i++) roadPath.lineTo(sim.cx[i], sim.cy[i]);
+        roadPath.close();
+    }
+
     void resize(int w, int h) {
-        this.width = w;
-        this.height = h;
+        width = w; height = h;
         zoom = Math.min(w, h) / 640.0;
         layoutControls();
     }
@@ -151,398 +130,95 @@ final class Game {
         btnBrake.set(width - pad - r * 4.2f, by, width - pad - r * 2.2f, by + r * 2);
         btnBoost.set(width - pad - r * 1.7f, by - r * 1.9f, width - pad + r * 0.3f, by - r * 1.9f + r * 1.6f);
         btnItem.set(width - pad - r * 3.9f, by - r * 1.9f, width - pad - r * 2.3f, by - r * 1.9f + r * 1.6f);
+
         float sw = Math.min(width, height) * 0.07f;
-        float sx = width / 2f - sw * 3.3f;
-        float sy = height * 0.74f;
-        for (int i = 0; i < swatches.length; i++) {
+        float sx = width / 2f - sw * 3.3f, sy = height * 0.8f;
+        for (int i = 0; i < swatches.length; i++)
             swatches[i] = new RectF(sx + i * sw * 1.1f, sy, sx + i * sw * 1.1f + sw, sy + sw);
-        }
-    }
 
-    // ----------------------------------------------------------- build track
-
-    private void buildTrack() {
-        int m = WAYPOINTS.length;
-        N = m * STEPS_PER_SEG;
-        cxArr = new float[N];
-        cyArr = new float[N];
-        dirX = new float[N];
-        dirY = new float[N];
-        int k = 0;
-        for (int i = 0; i < m; i++) {
-            float[] p0 = WAYPOINTS[(i - 1 + m) % m];
-            float[] p1 = WAYPOINTS[i];
-            float[] p2 = WAYPOINTS[(i + 1) % m];
-            float[] p3 = WAYPOINTS[(i + 2) % m];
-            for (int s = 0; s < STEPS_PER_SEG; s++) {
-                float t = (float) s / STEPS_PER_SEG;
-                cxArr[k] = catmull(p0[0], p1[0], p2[0], p3[0], t);
-                cyArr[k] = catmull(p0[1], p1[1], p2[1], p3[1], t);
-                k++;
-            }
-        }
-        minX = minY = Float.MAX_VALUE;
-        maxX = maxY = -Float.MAX_VALUE;
-        for (int i = 0; i < N; i++) {
-            int nx = (i + 1) % N, pv = (i - 1 + N) % N;
-            float dx = cxArr[nx] - cxArr[pv], dy = cyArr[nx] - cyArr[pv];
-            float len = (float) Math.hypot(dx, dy);
-            if (len < 0.0001f) len = 1;
-            dirX[i] = dx / len;
-            dirY[i] = dy / len;
-            minX = Math.min(minX, cxArr[i]); maxX = Math.max(maxX, cxArr[i]);
-            minY = Math.min(minY, cyArr[i]); maxY = Math.max(maxY, cyArr[i]);
-        }
-        roadPath.reset();
-        roadPath.moveTo(cxArr[0], cyArr[0]);
-        for (int i = 1; i < N; i++) roadPath.lineTo(cxArr[i], cyArr[i]);
-        roadPath.close();
-    }
-
-    private static float catmull(float p0, float p1, float p2, float p3, float t) {
-        float t2 = t * t, t3 = t2 * t;
-        return 0.5f * ((2 * p1) + (-p0 + p2) * t
-                + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
-                + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
-    }
-
-    private void buildDecor() {
-        trees.clear();
-        int guard = 0;
-        while (trees.size() < 18 && guard++ < 3000) {
-            float x = minX - 220 + rnd.nextFloat() * (maxX - minX + 440);
-            float y = minY - 220 + rnd.nextFloat() * (maxY - minY + 440);
-            if (distToTrack(x, y) > ROAD_HALF + 75)
-                trees.add(new float[]{x, y, 26 + rnd.nextFloat() * 24});
-        }
-        // boost pads along a few straights
-        pads.clear();
-        int[] padIdx = {STEPS_PER_SEG * 1, STEPS_PER_SEG * 5, STEPS_PER_SEG * 8, STEPS_PER_SEG * 11};
-        for (int p : padIdx) pads.add(new int[]{p % N});
-        // item boxes (3 across the road) at a couple of spots
-        boxes.clear();
-        int[] boxIdx = {STEPS_PER_SEG * 3, STEPS_PER_SEG * 7, STEPS_PER_SEG * 10};
-        for (int bi : boxIdx) {
-            for (int lane = -1; lane <= 1; lane++) {
-                ItemBox b = new ItemBox();
-                b.idx = bi % N;
-                b.offset = lane * 55f;
-                b.x = cxArr[b.idx] + dirY[b.idx] * b.offset;
-                b.y = cyArr[b.idx] - dirX[b.idx] * b.offset;
-                boxes.add(b);
-            }
-        }
-    }
-
-    private float distToTrack(float x, float y) {
-        float best = Float.MAX_VALUE;
-        for (int i = 0; i < N; i++) {
-            float dx = x - cxArr[i], dy = y - cyArr[i];
-            float d = dx * dx + dy * dy;
-            if (d < best) best = d;
-        }
-        return (float) Math.sqrt(best);
-    }
-
-    private int nearestIndex(double x, double y) {
-        double best = Double.MAX_VALUE;
-        int bi = 0;
-        for (int i = 0; i < N; i++) {
-            double dx = x - cxArr[i], dy = y - cyArr[i];
-            double d = dx * dx + dy * dy;
-            if (d < best) { best = d; bi = i; }
-        }
-        return bi;
-    }
-
-    // -------------------------------------------------------------- new race
-
-    private void resetRace() {
-        carX = cxArr[startIdx];
-        carY = cyArr[startIdx];
-        carAngle = Math.atan2(dirY[startIdx], dirX[startIdx]);
-        vx = vy = 0;
-        camX = carX; camY = carY;
-        lapsDone = 0; prevIdx = startIdx;
-        raceTime = 0; lapTime = 0; finishTime = 0;
-        nitro = 0; heldItem = IT_NONE;
-        spin = shield = boostTime = shake = 0;
-        oils.clear(); particles.clear(); skidMarks.clear();
-        for (ItemBox b : boxes) { b.active = true; b.respawn = 0; }
-
-        weather = rnd.nextInt(3) == 0 ? 1 : 0;       // ~1/3 chance of rain
-        dayTime = rnd.nextDouble();                  // random time of day
-        for (int i = 0; i < rain.length; i++) {
-            rain[i][0] = rnd.nextFloat();
-            rain[i][1] = rnd.nextFloat();
-            rain[i][2] = 0.5f + rnd.nextFloat();
-        }
-
-        ais.clear();
-        int[] cols = {0xFFFF4D9D, 0xFFFFC23D, 0xFF8CFF45};
-        for (int i = 0; i < 3; i++) {
-            Ai a = new Ai();
-            int idx0 = (startIdx - (i + 1) * 5 + N) % N;
-            a.offset = (i - 1) * 46f;
-            a.t = idx0;
-            a.baseSpeed = 23 + i * 1.2;
-            a.color = cols[i];
-            a.x = cxArr[idx0] + dirY[idx0] * a.offset;
-            a.y = cyArr[idx0] - dirX[idx0] * a.offset;
-            a.angle = Math.atan2(dirY[idx0], dirX[idx0]);
-            ais.add(a);
-        }
+        float bw = Math.min(width * 0.5f, 520), bh = height * 0.1f;
+        float bx = width / 2f - bw / 2, byy = height * 0.34f;
+        for (int i = 0; i < levelBtns.length; i++)
+            levelBtns[i] = new RectF(bx, byy + i * bh * 1.2f, bx + bw, byy + i * bh * 1.2f + bh);
     }
 
     // --------------------------------------------------------------- update
 
     void update(double dt) {
         titlePulse += dt;
-        dayTime += dt / 90.0;             // full day cycle ~90s
-        if (dayTime >= 1) dayTime -= 1;
+        dayTime += dt / 90.0; if (dayTime >= 1) dayTime -= 1;
 
         if (state == TITLE) { idleAudio(); return; }
-
         if (state == COUNTDOWN) {
+            int prev = (int) Math.ceil(countdown);
             countdown -= dt;
-            int prev = (int) Math.ceil(countdown + dt);
             int now = (int) Math.ceil(countdown);
             if (now != prev && now >= 1 && now <= 3 && audio != null) audio.blip(EngineAudio.BLIP_COUNT);
-            if (countdown <= 0) {
-                state = RACING;
-                if (audio != null) audio.blip(EngineAudio.BLIP_GO);
-            }
+            if (countdown <= 0) { state = RACING; if (audio != null) audio.blip(EngineAudio.BLIP_GO); }
             idleAudio();
             return;
         }
-
         if (state == FINISHED) { idleAudio(); updateParticles(dt); return; }
 
-        // -------- RACING --------
-        raceTime += dt;
-        lapTime += dt;
-        dash -= Math.hypot(vx, vy) * dt * 0.5;
+        // RACING
+        sim.update(dt, keyLeft, keyRight, keyGas, keyBrake, tapBoost, tapItem);
+        tapBoost = tapItem = false;
 
-        updatePlayer(dt);
-        updateAis(dt);
-        updateOils(dt);
-        updateParticles(dt);
+        // events -> audio + fx
+        if (sim.evBoost && audio != null) audio.blip(EngineAudio.BLIP_BOOST);
+        if (sim.evPickup && audio != null) audio.blip(EngineAudio.BLIP_PICKUP);
+        if (sim.evHit) { shake = 8; if (audio != null) audio.blip(EngineAudio.BLIP_HIT); }
+        if (sim.evJump && audio != null) audio.blip(EngineAudio.BLIP_BOOST);
+        if (sim.evLand) shake = Math.max(shake, 4);
+        sim.clearEvents();
 
-        // camera follow with look-ahead
-        double sp = Math.hypot(vx, vy);
-        double look = 120 * (sp / MAX_SPEED);
-        double tx = carX + Math.cos(carAngle) * look;
-        double ty = carY + Math.sin(carAngle) * look;
+        if (!sim.onTrack) shake = Math.min(shake + dt * 22, 4);
+        if (sim.drifting) { emitSmoke(); addSkid(); }
+
+        // best lap
+        if (sim.lapsDone > prevLaps) {
+            prevLaps = sim.lapsDone;
+            double lt = sim.lastLapTime;
+            if (lt > 0.5 && (bestLap == 0 || lt < bestLap)) {
+                bestLap = lt;
+                if (prefs != null) prefs.edit().putFloat("bestLap", (float) bestLap).apply();
+            }
+        }
+
+        // camera
+        double sp = sim.speed();
+        double look = 120 * (sp / Sim.MAX_SPEED);
+        double tx = sim.carX + Math.cos(sim.carAngle) * look;
+        double ty = sim.carY + Math.sin(sim.carAngle) * look;
         camX += (tx - camX) * Math.min(1, dt * 6);
         camY += (ty - camY) * Math.min(1, dt * 6);
         shake = Math.max(0, shake - dt * 12);
+        updateParticles(dt);
 
-        // engine audio
         if (audio != null) {
-            float rpmF = (float) Math.min(1, sp / MAX_SPEED + 0.05);
-            audio.set(rpmF, 1f, boostTime > 0, drifting ? 0.9f : 0f);
+            float rpmF = (float) Math.min(1, sp / Sim.MAX_SPEED + 0.05);
+            audio.set(rpmF, 1f, sim.boostTime > 0, sim.drifting ? 0.9f : 0f);
+        }
+
+        if (sim.finished) {
+            lastFinishWon = sim.position() == 1;
+            int next = level + 1;
+            if (next < Tracks.LEVELS.length && next + 1 > unlocked) {
+                unlocked = next + 1;
+                if (prefs != null) prefs.edit().putInt("unlocked", unlocked).apply();
+            }
+            state = FINISHED;
         }
     }
 
-    private void idleAudio() {
-        if (audio != null) audio.set(0.06f, state == TITLE ? 0.5f : 0.7f, false, 0f);
-    }
+    private void idleAudio() { if (audio != null) audio.set(0.06f, state == TITLE ? 0.5f : 0.7f, false, 0f); }
 
-    private void updatePlayer(double dt) {
-        int idx = nearestIndex(carX, carY);
-        onTrack = distToTrack((float) carX, (float) carY) <= ROAD_HALF;
-
-        double steer = keyLeft ? -1 : (keyRight ? 1 : 0);
-
-        // forward / lateral decomposition
-        double ca = Math.cos(carAngle), sa = Math.sin(carAngle);
-        double vForward = vx * ca + vy * sa;
-        double vLat = -vx * sa + vy * ca;
-
-        boolean spinning = spin > 0;
-        if (spinning) {
-            spin -= dt;
-            carAngle += dt * 14;          // uncontrolled spin
-            steer = 0;
-            vForward *= (1 - 2.5 * dt);
-        } else {
-            if (keyGas) vForward += ACCEL * dt;
-            else if (keyBrake) vForward -= BRAKE * dt;
-            else vForward -= Math.signum(vForward) * Math.min(Math.abs(vForward), DRAG * dt);
-        }
-
-        // boost
-        if (tapBoost && boostTime <= 0 && nitro > 0.25) {
-            boostTime = 1.4;
-            nitro = Math.max(0, nitro - 0.6);
-            if (audio != null) audio.blip(EngineAudio.BLIP_BOOST);
-        }
-        tapBoost = false;
-        double topSpeed = MAX_SPEED;
-        if (boostTime > 0) { boostTime -= dt; topSpeed = BOOST_SPEED; vForward += 600 * dt; }
-
-        // use item
-        if (tapItem && heldItem != IT_NONE && !spinning) useItem();
-        tapItem = false;
-
-        // drifting: handbrake at speed while steering, lowers lateral grip
-        drifting = keyBrake && Math.abs(vForward) > 120 && steer != 0 && !spinning;
-        double grip = drifting ? GRIP_DRIFT : GRIP_NORMAL;
-        if (weather == 1) grip *= 0.55;            // rain = slippery
-        if (!onTrack) grip *= 0.7;
-        vLat *= Math.exp(-grip * dt);
-
-        // steering
-        double speedAbs = Math.abs(vForward);
-        double turn = steer * TURN_RATE * dt * Math.min(1, speedAbs / TURN_REF) * (vForward >= 0 ? 1 : -1);
-        if (drifting) turn *= 1.7;
-        carAngle += turn;
-
-        // off-track slow + clamp
-        if (!onTrack && speedAbs > MAX_SPEED * 0.35) {
-            vForward -= 380 * dt * Math.signum(vForward);
-            shake = Math.min(shake + dt * 22, 4);
-        }
-        vForward = Math.max(-0.35 * MAX_SPEED, Math.min(vForward, topSpeed));
-
-        // recombine
-        ca = Math.cos(carAngle); sa = Math.sin(carAngle);
-        vx = ca * vForward - sa * vLat;
-        vy = sa * vForward + ca * vLat;
-        carX += vx * dt;
-        carY += vy * dt;
-
-        // nitro charge from drifting
-        if (drifting) {
-            nitro = Math.min(1, nitro + dt * 0.45);
-            emitSmoke(carX, carY);
-            addSkid();
-        }
-
-        // boost pads
-        for (int[] p : pads) {
-            int pi = p[0];
-            double dx = carX - cxArr[pi], dy = carY - cyArr[pi];
-            if (dx * dx + dy * dy < 60 * 60) {
-                boostTime = Math.max(boostTime, 0.8);
-                nitro = Math.min(1, nitro + 0.2);
-            }
-        }
-
-        // item boxes
-        for (ItemBox b : boxes) {
-            if (!b.active) continue;
-            double dx = carX - b.x, dy = carY - b.y;
-            if (dx * dx + dy * dy < 45 * 45 && heldItem == IT_NONE) {
-                b.active = false; b.respawn = 4;
-                heldItem = 1 + rnd.nextInt(3);
-                if (audio != null) audio.blip(EngineAudio.BLIP_PICKUP);
-            }
-        }
-
-        // oil slicks
-        if (shield <= 0 && spin <= 0) {
-            for (Oil o : oils) {
-                if (o.owner == 0 && o.grace > 0) continue;
-                double dx = carX - o.x, dy = carY - o.y;
-                if (dx * dx + dy * dy < 38 * 38) { spin = 1.1; if (audio != null) audio.blip(EngineAudio.BLIP_HIT); break; }
-            }
-        }
-        if (shield > 0) shield -= dt;
-
-        // collide with AI (bumping)
-        for (Ai a : ais) {
-            double dx = carX - a.x, dy = carY - a.y;
-            double d2 = dx * dx + dy * dy;
-            if (d2 < 52 * 52 && d2 > 0.01) {
-                double d = Math.sqrt(d2);
-                double push = (52 - d) / 2;
-                double nxp = dx / d, nyp = dy / d;
-                double f = shield > 0 ? 2.4 : 1.0;
-                carX += nxp * push; carY += nyp * push;
-                a.x -= nxp * push * f; a.y -= nyp * push * f;
-                a.bump = 0.4;
-                shake = Math.min(shake + 2, 5);
-            }
-        }
-
-        // lap / finish detection
-        double f = (double) idx / N, pf = (double) prevIdx / N;
-        if (pf > 0.75 && f < 0.25) {
-            lapsDone++;
-            if (lapsDone >= 1 && lapTime > 0.5) {
-                if (bestLap == 0 || lapTime < bestLap) {
-                    bestLap = lapTime;
-                    if (prefs != null) prefs.edit().putFloat("bestLap", (float) bestLap).apply();
-                }
-            }
-            lapTime = 0;
-            if (lapsDone >= TOTAL_LAPS) { finishTime = raceTime; state = FINISHED; }
-        }
-        prevIdx = idx;
-    }
-
-    private void useItem() {
-        switch (heldItem) {
-            case IT_TURBO:
-                boostTime = Math.max(boostTime, 1.6); nitro = Math.min(1, nitro + 0.5);
-                if (audio != null) audio.blip(EngineAudio.BLIP_BOOST);
-                break;
-            case IT_OIL:
-                Oil o = new Oil();
-                o.x = carX - Math.cos(carAngle) * 50;
-                o.y = carY - Math.sin(carAngle) * 50;
-                o.life = 12; o.owner = 0; o.grace = 0.6;
-                oils.add(o);
-                break;
-            case IT_SHIELD:
-                shield = 6;
-                if (audio != null) audio.blip(EngineAudio.BLIP_PICKUP);
-                break;
-        }
-        heldItem = IT_NONE;
-    }
-
-    private void updateAis(double dt) {
-        // player progress for rubber-banding
-        double playerProg = lapsDone * (double) N + prevIdx;
-        for (Ai a : ais) {
-            double prog = a.lap * (double) N + a.t;
-            double diff = playerProg - prog;        // >0 means AI behind player
-            double rubber = 1 + Math.max(-0.18, Math.min(0.22, diff / (N * 0.5)));
-            double spd = a.baseSpeed * rubber;
-            if (a.bump > 0) { a.bump -= dt; spd *= 0.5; }
-            a.t += spd * dt;
-            if (a.t >= N) { a.t -= N; a.lap++; }
-            int ai = ((int) a.t) % N;
-            double targetX = cxArr[ai] + dirY[ai] * a.offset;
-            double targetY = cyArr[ai] - dirX[ai] * a.offset;
-            a.x += (targetX - a.x) * Math.min(1, dt * 5);
-            a.y += (targetY - a.y) * Math.min(1, dt * 5);
-            a.angle = Math.atan2(dirY[ai], dirX[ai]);
-            // AI hits oil too
-            for (Oil o : oils) {
-                double dx = a.x - o.x, dy = a.y - o.y;
-                if (dx * dx + dy * dy < 36 * 36) { a.bump = 0.8; }
-            }
-        }
-    }
-
-    private void updateOils(double dt) {
-        for (int i = oils.size() - 1; i >= 0; i--) {
-            Oil o = oils.get(i);
-            o.life -= dt; o.grace -= dt;
-            if (o.life <= 0) oils.remove(i);
-        }
-    }
-
-    private void emitSmoke(double x, double y) {
+    private void emitSmoke() {
         if (particles.size() > 160) return;
         Particle p = new Particle();
-        p.x = x - Math.cos(carAngle) * 28 + (rnd.nextDouble() - 0.5) * 14;
-        p.y = y - Math.sin(carAngle) * 28 + (rnd.nextDouble() - 0.5) * 14;
-        p.vx = (rnd.nextDouble() - 0.5) * 30;
-        p.vy = (rnd.nextDouble() - 0.5) * 30;
+        p.x = sim.carX - Math.cos(sim.carAngle) * 28 + (rnd.nextDouble() - 0.5) * 14;
+        p.y = sim.carY - Math.sin(sim.carAngle) * 28 + (rnd.nextDouble() - 0.5) * 14;
+        p.vx = (rnd.nextDouble() - 0.5) * 30; p.vy = (rnd.nextDouble() - 0.5) * 30;
         p.life = p.maxLife = 0.6 + rnd.nextDouble() * 0.4;
         p.size = 10 + rnd.nextFloat() * 10;
         particles.add(p);
@@ -550,15 +226,13 @@ final class Game {
 
     private void addSkid() {
         if (skidMarks.size() > 400) skidMarks.remove(0);
-        skidMarks.add(new float[]{(float) carX, (float) carY, (float) carAngle, 1f});
+        skidMarks.add(new float[]{(float) sim.carX, (float) sim.carY, (float) sim.carAngle});
     }
 
     private void updateParticles(double dt) {
         for (int i = particles.size() - 1; i >= 0; i--) {
             Particle p = particles.get(i);
-            p.life -= dt;
-            p.x += p.vx * dt; p.y += p.vy * dt;
-            p.size += dt * 18;
+            p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.size += dt * 18;
             if (p.life <= 0) particles.remove(i);
         }
     }
@@ -568,7 +242,7 @@ final class Game {
     void render(Canvas g) {
         float darkness = nightAmount();
         int grass = lerp(0xFF2E7D52, 0xFF0A2238, darkness * 0.85f);
-        if (weather == 1) grass = lerp(grass, 0xFF20465A, 0.4f);
+        if (sim.weather == 1) grass = lerp(grass, 0xFF20465A, 0.4f);
         g.drawColor(grass);
 
         g.save();
@@ -579,20 +253,22 @@ final class Game {
         g.translate((float) -camX, (float) -camY);
 
         drawSkidMarks(g);
-        drawTrees(g);
+        drawShortcuts(g);
         drawRoad(g);
         drawPads(g);
+        drawJumps(g);
         drawFinishLine(g);
         drawOils(g);
         drawBoxes(g);
-        for (Ai a : ais) drawCarSprite(g, a.x, a.y, a.angle, a.color, false, a.bump > 0);
-        drawCarSprite(g, carX, carY, carAngle, CAR_COLORS[playerColorIdx], true, false);
+        for (Sim.Ai a : sim.ais) drawCar(g, a.x, a.y, a.angle, a.color, false, 1f, 0f);
+        float js = 1f + (float) sim.jumpZ * 0.012f;
+        drawCar(g, sim.carX, sim.carY, sim.carAngle, CAR_COLORS[playerColorIdx], true, js, (float) sim.jumpZ * 1.4f);
         drawParticles(g);
         g.restore();
 
         if (darkness > 0.02f) drawNightLighting(g, darkness);
-        if (weather == 1) drawRain(g);
-        if (boostTime > 0) drawSpeedLines(g);
+        if (sim.weather == 1) drawRain(g);
+        if (sim.boostTime > 0) drawSpeedLines(g);
 
         drawRadar(g);
         renderHud(g);
@@ -604,19 +280,31 @@ final class Game {
     }
 
     private float nightAmount() {
-        // darkness peaks around dayTime = 0.75 (midnight), bright at 0.25 (noon)
-        double d = Math.cos((dayTime - 0.25) * 2 * Math.PI);   // 1 at noon, -1 at midnight
+        double d = Math.cos((dayTime - 0.25) * 2 * Math.PI);
         return (float) Math.max(0, Math.min(1, (-d + 0.35) / 1.1));
     }
 
-    private void drawTrees(Canvas g) {
-        for (float[] t : trees) {
-            ui.setColor(0x44000000);
-            g.drawCircle(t[0] + t[2] * 0.25f, t[1] + t[2] * 0.3f, t[2], ui);
-            ui.setColor(0xFF1C5E36);
-            g.drawCircle(t[0], t[1], t[2], ui);
-            ui.setColor(0xFF257A47);
-            g.drawCircle(t[0] - t[2] * 0.25f, t[1] - t[2] * 0.25f, t[2] * 0.7f, ui);
+    private void drawShortcuts(Canvas g) {
+        road.setStyle(Paint.Style.STROKE);
+        road.setStrokeJoin(Paint.Join.ROUND);
+        road.setStrokeCap(Paint.Cap.ROUND);
+        road.setPathEffect(null);
+        for (float[] sc : sim.shortcuts) {
+            tmpPath.reset();
+            tmpPath.moveTo(sc[0], sc[1]);
+            for (int i = 2; i < sc.length; i += 2) tmpPath.lineTo(sc[i], sc[i + 1]);
+            road.setColor(0xFF12121C);
+            road.setStrokeWidth(Sim.ROAD_HALF * 1.5f + 18);
+            g.drawPath(tmpPath, road);
+            road.setColor(0xFF3A3550);
+            road.setStrokeWidth(Sim.ROAD_HALF * 1.5f);
+            g.drawPath(tmpPath, road);
+            // dashed "shortcut" hint stripes
+            road.setColor(0x66FFE34D);
+            road.setStrokeWidth(5);
+            road.setPathEffect(new DashPathEffect(new float[]{20, 22}, 0));
+            g.drawPath(tmpPath, road);
+            road.setPathEffect(null);
         }
     }
 
@@ -626,17 +314,17 @@ final class Game {
         road.setStrokeCap(Paint.Cap.ROUND);
         road.setPathEffect(null);
         road.setColor(0xFF12121C);
-        road.setStrokeWidth(ROAD_HALF * 2 + 22);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 + 22);
         g.drawPath(roadPath, road);
-        int asphalt = weather == 1 ? 0xFF34384E : 0xFF3C3F55;
+        int asphalt = sim.weather == 1 ? 0xFF34384E : 0xFF3C3F55;
         road.setColor(asphalt);
-        road.setStrokeWidth(ROAD_HALF * 2);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2);
         g.drawPath(roadPath, road);
         road.setColor(0x18FFFFFF);
-        road.setStrokeWidth(ROAD_HALF * 2 - 14);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 - 14);
         g.drawPath(roadPath, road);
         road.setColor(asphalt);
-        road.setStrokeWidth(ROAD_HALF * 2 - 18);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 - 18);
         g.drawPath(roadPath, road);
         road.setColor(0xFFFFE34D);
         road.setStrokeWidth(6);
@@ -647,8 +335,8 @@ final class Game {
 
     private void drawSkidMarks(Canvas g) {
         ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0x33000000);
         for (float[] s : skidMarks) {
-            ui.setColor(0x33000000);
             float a = s[2];
             float ox = (float) Math.cos(a) * 16, oy = (float) Math.sin(a) * 16;
             float px = (float) -Math.sin(a) * 9, py = (float) Math.cos(a) * 9;
@@ -658,22 +346,27 @@ final class Game {
     }
 
     private void drawPads(Canvas g) {
-        for (int[] p : pads) {
-            int i = p[0];
+        for (int[] p : sim.pads) drawChevrons(g, sim.cx[p[0]], sim.cy[p[0]],
+                Math.atan2(sim.dirY[p[0]], sim.dirX[p[0]]), 0xCCFF8A1E);
+    }
+
+    private void drawJumps(Canvas g) {
+        for (double[] j : sim.jumps) {
             g.save();
-            g.translate(cxArr[i], cyArr[i]);
-            g.rotate((float) Math.toDegrees(Math.atan2(dirY[i], dirX[i])));
-            float w = ROAD_HALF * 1.4f;
+            g.translate((float) j[0], (float) j[1]);
+            g.rotate((float) Math.toDegrees(j[2]));
+            float w = Sim.ROAD_HALF * 1.7f;
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(0xDD2B6BFF);
+            tmp.set(-26, -w / 2, 30, w / 2);
+            g.drawRect(tmp, ui);
+            ui.setColor(0xFFBFE0FF);
             for (int c = 0; c < 3; c++) {
-                ui.setColor(0xCCFF8A1E);
                 tmpPath.reset();
-                float bx = -30 + c * 22;
-                tmpPath.moveTo(bx, -w / 2);
-                tmpPath.lineTo(bx + 16, 0);
-                tmpPath.lineTo(bx, w / 2);
-                tmpPath.lineTo(bx - 8, w / 2);
-                tmpPath.lineTo(bx + 8, 0);
-                tmpPath.lineTo(bx - 8, -w / 2);
+                float bx = -18 + c * 18;
+                tmpPath.moveTo(bx, -w * 0.32f);
+                tmpPath.lineTo(bx + 14, 0);
+                tmpPath.lineTo(bx, w * 0.32f);
                 tmpPath.close();
                 g.drawPath(tmpPath, ui);
             }
@@ -681,23 +374,47 @@ final class Game {
         }
     }
 
+    private void drawChevrons(Canvas g, float x, float y, double ang, int color) {
+        g.save();
+        g.translate(x, y);
+        g.rotate((float) Math.toDegrees(ang));
+        float w = Sim.ROAD_HALF * 1.4f;
+        ui.setStyle(Paint.Style.FILL);
+        for (int c = 0; c < 3; c++) {
+            ui.setColor(color);
+            tmpPath.reset();
+            float bx = -30 + c * 22;
+            tmpPath.moveTo(bx, -w / 2);
+            tmpPath.lineTo(bx + 16, 0);
+            tmpPath.lineTo(bx, w / 2);
+            tmpPath.lineTo(bx - 8, w / 2);
+            tmpPath.lineTo(bx + 8, 0);
+            tmpPath.lineTo(bx - 8, -w / 2);
+            tmpPath.close();
+            g.drawPath(tmpPath, ui);
+        }
+        g.restore();
+    }
+
     private void drawFinishLine(Canvas g) {
         int i = 0;
         g.save();
-        g.translate(cxArr[i], cyArr[i]);
-        g.rotate((float) Math.toDegrees(Math.atan2(dirY[i], dirX[i])));
+        g.translate(sim.cx[i], sim.cy[i]);
+        g.rotate((float) Math.toDegrees(Math.atan2(sim.dirY[i], sim.dirX[i])));
         int cols = 8;
-        float cell = (ROAD_HALF * 2) / cols, depth = cell;
+        float cell = (Sim.ROAD_HALF * 2) / cols, depth = cell;
         for (int c = 0; c < cols; c++)
             for (int rr = 0; rr < 2; rr++) {
                 fill.setColor(((c + rr) % 2 == 0) ? 0xFFFFFFFF : 0xFF111111);
-                g.drawRect(-depth + rr * depth, -ROAD_HALF + c * cell, -depth + rr * depth + depth, -ROAD_HALF + c * cell + cell, fill);
+                g.drawRect(-depth + rr * depth, -Sim.ROAD_HALF + c * cell,
+                        -depth + rr * depth + depth, -Sim.ROAD_HALF + c * cell + cell, fill);
             }
         g.restore();
     }
 
     private void drawOils(Canvas g) {
-        for (Oil o : oils) {
+        ui.setStyle(Paint.Style.FILL);
+        for (Sim.Oil o : sim.oils) {
             ui.setColor(0xAA15151E);
             g.drawCircle((float) o.x, (float) o.y, 30, ui);
             ui.setColor(0x55503070);
@@ -706,12 +423,13 @@ final class Game {
     }
 
     private void drawBoxes(Canvas g) {
-        for (ItemBox b : boxes) {
+        for (Sim.ItemBox b : sim.boxes) {
             if (!b.active) continue;
             float s = 18 + (float) Math.sin(titlePulse * 3 + b.idx) * 3;
             g.save();
             g.translate(b.x, b.y);
             g.rotate((float) (titlePulse * 80 % 360));
+            ui.setStyle(Paint.Style.FILL);
             ui.setColor(0xEE2BD4C8);
             tmp.set(-s, -s, s, s);
             g.drawRoundRect(tmp, 6, 6, ui);
@@ -724,22 +442,24 @@ final class Game {
         }
     }
 
-    private void drawCarSprite(Canvas g, double x, double y, double angle, int color, boolean player, boolean bumped) {
-        float L = 72, W = 36;
+    private void drawCar(Canvas g, double x, double y, double angle, int color,
+                         boolean player, float scale, float shadowGap) {
+        float L = 72 * scale, W = 36 * scale;
         g.save();
         g.translate((float) x, (float) y);
         g.rotate((float) Math.toDegrees(angle));
 
+        ui.setStyle(Paint.Style.FILL);
         ui.setColor(0x55000000);
-        tmp.set(-L / 2 + 4, -W / 2 + 6, L / 2 + 6, W / 2 + 8);
+        tmp.set(-L / 2 + 4 + shadowGap, -W / 2 + 6 + shadowGap, L / 2 + 6 + shadowGap, W / 2 + 8 + shadowGap);
         g.drawRoundRect(tmp, 14, 14, ui);
 
-        if (player && (boostTime > 0)) {
+        if (player && sim.boostTime > 0) {
             ui.setShader(new RadialGradient(0, 0, L * 1.3f, new int[]{0x66FF8A1E, 0}, null, Shader.TileMode.CLAMP));
             g.drawCircle(0, 0, L * 1.3f, ui);
             ui.setShader(null);
         }
-        if (player && shield > 0) {
+        if (player && sim.shield > 0) {
             ui.setColor(0x553BE0FF);
             g.drawCircle(0, 0, L * 0.85f, ui);
         }
@@ -758,17 +478,17 @@ final class Game {
         g.drawRoundRect(tmp, 6, 6, ui);
 
         ui.setColor(0xFFFFF3B0);
-        g.drawCircle(L * 0.44f, -W * 0.28f, 4.5f, ui);
-        g.drawCircle(L * 0.44f, W * 0.28f, 4.5f, ui);
+        g.drawCircle(L * 0.44f, -W * 0.28f, 4.5f * scale, ui);
+        g.drawCircle(L * 0.44f, W * 0.28f, 4.5f * scale, ui);
         ui.setColor(0xFFFF3355);
         g.drawRect(-L * 0.5f, -W * 0.34f, -L * 0.42f, -W * 0.06f, ui);
         g.drawRect(-L * 0.5f, W * 0.06f, -L * 0.42f, W * 0.34f, ui);
 
         ui.setColor(0xFF0C0C14);
         drawWheel(g, -L * 0.28f, -W * 0.52f);
-        drawWheel(g, -L * 0.28f, W * 0.52f - 12);
+        drawWheel(g, -L * 0.28f, W * 0.52f - 12 * scale);
         drawWheel(g, L * 0.30f, -W * 0.52f);
-        drawWheel(g, L * 0.30f, W * 0.52f - 12);
+        drawWheel(g, L * 0.30f, W * 0.52f - 12 * scale);
 
         if (player) {
             ui.setStyle(Paint.Style.STROKE);
@@ -799,10 +519,9 @@ final class Game {
     private void drawNightLighting(Canvas g, float darkness) {
         ui.setColor(((int) (darkness * 165) << 24) | 0x0A1430);
         g.drawRect(0, 0, width, height, ui);
-        // headlight cones via additive glow at car screen positions
         ui.setXfermode(ADD);
-        drawHeadlight(g, carX, carY, carAngle, darkness);
-        for (Ai a : ais) drawHeadlight(g, a.x, a.y, a.angle, darkness);
+        drawHeadlight(g, sim.carX, sim.carY, sim.carAngle, darkness);
+        for (Sim.Ai a : sim.ais) drawHeadlight(g, a.x, a.y, a.angle, darkness);
         ui.setXfermode(null);
     }
 
@@ -814,8 +533,7 @@ final class Game {
         float cy = syp + (float) Math.sin(angle) * ahead;
         float r = (float) (150 * zoom);
         int glow = (int) (90 * darkness);
-        ui.setShader(new RadialGradient(cx, cy, r,
-                new int[]{(glow << 24) | 0xFFF0C0, 0}, null, Shader.TileMode.CLAMP));
+        ui.setShader(new RadialGradient(cx, cy, r, new int[]{(glow << 24) | 0xFFF0C0, 0}, null, Shader.TileMode.CLAMP));
         g.drawCircle(cx, cy, r, ui);
         ui.setShader(null);
     }
@@ -839,109 +557,103 @@ final class Game {
         float cx = width / 2f, cy = height / 2f;
         for (int i = 0; i < 14; i++) {
             double ang = rnd.nextDouble() * Math.PI * 2;
-            float r1 = Math.min(width, height) * 0.42f;
-            float r2 = r1 + 60;
+            float r1 = Math.min(width, height) * 0.42f, r2 = r1 + 60;
             g.drawLine(cx + (float) Math.cos(ang) * r1, cy + (float) Math.sin(ang) * r1,
                     cx + (float) Math.cos(ang) * r2, cy + (float) Math.sin(ang) * r2, ui);
         }
     }
 
-    // ------------------------------------------------------------- radar/HUD
-
     private void drawRadar(Canvas g) {
-        float size = Math.min(width, height) * 0.22f;
-        float pad = Math.min(width, height) * 0.03f;
-        float ox = width - size - pad, oy = height - size - pad - Math.min(width, height) * 0.0f;
-        // keep radar clear of right control cluster: place top-center-right
-        ox = width / 2f + Math.min(width, height) * 0.18f;
-        oy = pad;
+        if (state == TITLE) return;
+        float size = Math.min(width, height) * 0.22f, pad = Math.min(width, height) * 0.03f;
+        float ox = width / 2f + Math.min(width, height) * 0.18f, oy = pad;
+        ui.setStyle(Paint.Style.FILL);
         ui.setColor(0x66101826);
         tmp.set(ox, oy, ox + size, oy + size);
         g.drawRoundRect(tmp, 10, 10, ui);
 
-        float tw = maxX - minX, th = maxY - minY;
+        float tw = sim.maxX - sim.minX, th = sim.maxY - sim.minY;
         float scale = (size - 16) / Math.max(tw, th);
         float offx = ox + 8 + (size - 16 - tw * scale) / 2;
         float offy = oy + 8 + (size - 16 - th * scale) / 2;
 
         ui.setStyle(Paint.Style.STROKE);
-        ui.setStrokeWidth(Math.max(2, ROAD_HALF * scale));
+        ui.setStrokeWidth(Math.max(2, Sim.ROAD_HALF * scale));
         ui.setColor(0x88FFFFFF);
         tmpPath.reset();
-        for (int i = 0; i <= N; i += 2) {
-            int k = i % N;
-            float mx = offx + (cxArr[k] - minX) * scale;
-            float my = offy + (cyArr[k] - minY) * scale;
+        for (int i = 0; i <= sim.N; i += 2) {
+            int k = i % sim.N;
+            float mx = offx + (sim.cx[k] - sim.minX) * scale, my = offy + (sim.cy[k] - sim.minY) * scale;
             if (i == 0) tmpPath.moveTo(mx, my); else tmpPath.lineTo(mx, my);
         }
         g.drawPath(tmpPath, ui);
         ui.setStyle(Paint.Style.FILL);
-
-        for (Ai a : ais) {
+        for (Sim.Ai a : sim.ais) {
             ui.setColor(a.color);
-            g.drawCircle(offx + ((float) a.x - minX) * scale, offy + ((float) a.y - minY) * scale, 4, ui);
+            g.drawCircle(offx + ((float) a.x - sim.minX) * scale, offy + ((float) a.y - sim.minY) * scale, 4, ui);
         }
         ui.setColor(CAR_COLORS[playerColorIdx]);
-        g.drawCircle(offx + ((float) carX - minX) * scale, offy + ((float) carY - minY) * scale, 5, ui);
+        g.drawCircle(offx + ((float) sim.carX - sim.minX) * scale, offy + ((float) sim.carY - sim.minY) * scale, 5, ui);
     }
 
     private void renderHud(Canvas g) {
+        if (state == TITLE) return;
         float unit = Math.min(width, height), pad = unit * 0.035f;
-        double sp = Math.hypot(vx, vy);
-        int kmh = (int) Math.abs(sp / MAX_SPEED * 240);
+        int kmh = (int) Math.abs(sim.speed() / Sim.MAX_SPEED * 240);
 
         text.setShadowLayer(8, 0, 2, 0xCC000000);
         text.setTextAlign(Paint.Align.LEFT);
-        text.setColor(boostTime > 0 ? 0xFFFF8A1E : 0xFFFFFFFF);
+        text.setColor(sim.boostTime > 0 ? 0xFFFF8A1E : 0xFFFFFFFF);
         text.setTextSize(unit * 0.08f);
         g.drawText(String.format(Locale.US, "%03d", kmh), pad, pad + text.getTextSize(), text);
         text.setTextSize(unit * 0.028f);
         text.setColor(0xFFFFFFFF);
         g.drawText("KM/H", pad, pad + unit * 0.11f, text);
 
-        // nitro meter
         float barW = width * 0.2f, barH = unit * 0.022f, barY = pad + unit * 0.13f;
+        ui.setStyle(Paint.Style.FILL);
         ui.setColor(0x55FFFFFF);
         tmp.set(pad, barY, pad + barW, barY + barH);
         g.drawRoundRect(tmp, barH / 2, barH / 2, ui);
-        ui.setColor(nitro >= 0.25 ? 0xFF42E2B8 : 0xFFFFC23D);
-        tmp.set(pad, barY, pad + barW * (float) nitro, barY + barH);
+        ui.setColor(sim.nitro >= 0.25 ? 0xFF42E2B8 : 0xFFFFC23D);
+        tmp.set(pad, barY, pad + barW * (float) sim.nitro, barY + barH);
         g.drawRoundRect(tmp, barH / 2, barH / 2, ui);
         text.setColor(0xFF9FFFE0);
         text.setTextSize(unit * 0.024f);
         g.drawText("NITRO", pad, barY + barH + unit * 0.03f, text);
 
-        // lap + position
         text.setTextAlign(Paint.Align.RIGHT);
         text.setColor(0xFFFFE34D);
         text.setTextSize(unit * 0.05f);
-        int showLap = Math.min(lapsDone + 1, TOTAL_LAPS);
-        g.drawText("LAP " + showLap + "/" + TOTAL_LAPS, width - pad, pad + text.getTextSize(), text);
+        int showLap = Math.min(sim.lapsDone + 1, sim.totalLaps);
+        g.drawText("LAP " + showLap + "/" + sim.totalLaps, width - pad, pad + text.getTextSize(), text);
         text.setColor(0xFFFFFFFF);
         text.setTextSize(unit * 0.04f);
-        g.drawText("P" + position() + "/" + (ais.size() + 1), width - pad, pad + unit * 0.115f, text);
+        g.drawText("P" + sim.position() + "/" + (sim.ais.size() + 1), width - pad, pad + unit * 0.115f, text);
 
-        // timers + weather
         text.setTextAlign(Paint.Align.LEFT);
         text.setColor(0xFFCFC8FF);
         text.setTextSize(unit * 0.032f);
-        g.drawText("LAP " + fmt(lapTime), pad, pad + unit * 0.23f, text);
+        g.drawText("LAP " + fmt(sim.lapTime), pad, pad + unit * 0.23f, text);
         if (bestLap > 0) {
             text.setColor(0xFF8AF0FF);
             g.drawText("BEST " + fmt(bestLap), pad, pad + unit * 0.275f, text);
         }
-        // weather / time icon
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFFFFFFFF);
         text.setTextSize(unit * 0.03f);
-        String cond = (weather == 1 ? "RAIN " : "") + timeLabel();
-        g.drawText(cond, width / 2f, pad + unit * 0.04f, text);
+        g.drawText((sim.weather == 1 ? "RAIN " : "") + timeLabel(), width / 2f, pad + unit * 0.04f, text);
         text.clearShadowLayer();
 
-        if (!onTrack && state == RACING) {
+        if (!sim.onTrack && state == RACING) {
             text.setColor(0xFFFF4D6D);
             text.setTextSize(unit * 0.045f);
-            g.drawText("OFF TRACK!", width / 2f, height * 0.18f, text);
+            g.drawText("OFF TRACK!", width / 2f, height * 0.16f, text);
+        }
+        if (sim.airborne && state == RACING) {
+            text.setColor(0xFF8CFF45);
+            text.setTextSize(unit * 0.05f);
+            g.drawText("JUMP!", width / 2f, height * 0.16f, text);
         }
     }
 
@@ -953,35 +665,28 @@ final class Game {
         return "DAY";
     }
 
-    private int position() {
-        double mine = lapsDone * (double) N + prevIdx;
-        int rank = 1;
-        for (Ai a : ais) if (a.lap * (double) N + a.t > mine) rank++;
-        return rank;
-    }
-
     private static String fmt(double s) {
         int m = (int) (s / 60);
         return String.format(Locale.US, "%d:%05.2f", m, s - m * 60);
     }
 
-    // ------------------------------------------------------------- controls
+    // ---- controls + overlays ----
 
     private void renderControls(Canvas g) {
-        if (state == TITLE) return;
+        if (state == TITLE || state == FINISHED) return;
         drawButton(g, btnLeft, "◀", keyLeft, 0xFF19E0FF);
         drawButton(g, btnRight, "▶", keyRight, 0xFF19E0FF);
         drawButton(g, btnBrake, "DRIFT", keyBrake, 0xFFFF4D6D);
         drawButton(g, btnGas, "▲", keyGas, 0xFF42E2B8);
-        drawButton(g, btnBoost, "NITRO", nitro >= 0.25, 0xFFFF8A1E);
-        drawButton(g, btnItem, itemLabel(heldItem), heldItem != IT_NONE, 0xFF2BD4C8);
+        drawButton(g, btnBoost, "NITRO", sim.nitro >= 0.25, 0xFFFF8A1E);
+        drawButton(g, btnItem, itemLabel(sim.heldItem), sim.heldItem != Sim.IT_NONE, 0xFF2BD4C8);
     }
 
     private String itemLabel(int it) {
         switch (it) {
-            case IT_TURBO: return "TURBO";
-            case IT_OIL: return "OIL";
-            case IT_SHIELD: return "SHIELD";
+            case Sim.IT_TURBO: return "TURBO";
+            case Sim.IT_OIL: return "OIL";
+            case Sim.IT_SHIELD: return "SHIELD";
             default: return "ITEM";
         }
     }
@@ -1002,22 +707,36 @@ final class Game {
         g.drawText(label, r.centerX(), r.centerY() + r.height() * 0.1f, text);
     }
 
-    // ------------------------------------------------------------- overlays
-
     private void renderTitle(Canvas g) {
         g.drawColor(0xBB050314);
         text.setTextAlign(Paint.Align.CENTER);
         text.setShadowLayer(20, 0, 0, 0xFFFF2E88);
         text.setColor(0xFF19E0FF);
-        text.setTextSize(Math.min(width, height) * 0.12f);
-        g.drawText("TURBO CIRCUIT", width / 2f, height * 0.3f, text);
+        text.setTextSize(Math.min(width, height) * 0.11f);
+        g.drawText("TURBO CIRCUIT", width / 2f, height * 0.2f, text);
         text.clearShadowLayer();
 
         text.setColor(0xFFB9B2E6);
-        text.setTextSize(Math.min(width, height) * 0.032f);
-        g.drawText("pick your car   •   tap anywhere to race", width / 2f, height * 0.62f, text);
+        text.setTextSize(Math.min(width, height) * 0.03f);
+        g.drawText("SELECT A LEVEL", width / 2f, height * 0.3f, text);
 
-        // colour swatches
+        for (int i = 0; i < levelBtns.length; i++) {
+            boolean locked = i >= unlocked;
+            RectF r = levelBtns[i];
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(locked ? 0x33101830 : (i == level ? 0x6619E0FF : 0x44102038));
+            g.drawRoundRect(r, 14, 14, ui);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(3);
+            ui.setColor(locked ? 0x55FFFFFF : 0xCC19E0FF);
+            g.drawRoundRect(r, 14, 14, ui);
+            ui.setStyle(Paint.Style.FILL);
+            text.clearShadowLayer();
+            text.setColor(locked ? 0x66FFFFFF : 0xFFFFFFFF);
+            text.setTextSize(r.height() * 0.36f);
+            g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.centerY() + r.height() * 0.13f, text);
+        }
+
         for (int i = 0; i < swatches.length; i++) {
             ui.setStyle(Paint.Style.FILL);
             ui.setColor(CAR_COLORS[i]);
@@ -1031,16 +750,14 @@ final class Game {
         }
         ui.setStyle(Paint.Style.FILL);
 
-        float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 3));
-        text.setColor(0xFFFFFFFF);
-        text.setAlpha((int) (120 + 135 * pulse));
-        text.setTextSize(Math.min(width, height) * 0.05f);
-        g.drawText("TAP TO START", width / 2f, height * 0.5f, text);
-        text.setAlpha(255);
-
+        if (bestLap > 0) {
+            text.setColor(0xFF8AF0FF);
+            text.setTextSize(Math.min(width, height) * 0.028f);
+            g.drawText("BEST LAP " + fmt(bestLap), width / 2f, height * 0.74f, text);
+        }
         text.setColor(0xFF7F88B0);
-        text.setTextSize(Math.min(width, height) * 0.026f);
-        g.drawText("drift to fill nitro  •  grab ? boxes  •  hit boost pads  •  3 laps", width / 2f, height * 0.88f, text);
+        text.setTextSize(Math.min(width, height) * 0.024f);
+        g.drawText("drift = nitro  •  ? = item  •  blue = jump  •  yellow dashes = shortcut", width / 2f, height * 0.92f, text);
     }
 
     private void renderCountdown(Canvas g) {
@@ -1053,6 +770,9 @@ final class Game {
         text.setTextSize(Math.min(width, height) * 0.22f);
         g.drawText(s, width / 2f, height * 0.55f, text);
         text.clearShadowLayer();
+        text.setColor(0xFFB9B2E6);
+        text.setTextSize(Math.min(width, height) * 0.04f);
+        g.drawText(Tracks.LEVELS[level].name, width / 2f, height * 0.3f, text);
     }
 
     private void renderResults(Canvas g) {
@@ -1061,41 +781,42 @@ final class Game {
         text.setShadowLayer(16, 0, 0, 0xFFFF2E88);
         text.setColor(0xFF19E0FF);
         text.setTextSize(Math.min(width, height) * 0.1f);
-        g.drawText("FINISH", width / 2f, height * 0.2f, text);
+        g.drawText(lastFinishWon ? "YOU WIN!" : "FINISH", width / 2f, height * 0.18f, text);
         text.clearShadowLayer();
 
-        // standings
         List<Standing> st = new ArrayList<>();
-        st.add(new Standing("YOU", lapsDone * (double) N + prevIdx, CAR_COLORS[playerColorIdx], finishTime));
+        st.add(new Standing("YOU", sim.lapsDone * (double) sim.N + sim.prevIdx, CAR_COLORS[playerColorIdx], sim.finishTime));
         int n = 1;
-        for (Ai a : ais) st.add(new Standing("CPU " + (n++), a.lap * (double) N + a.t, a.color, 0));
+        for (Sim.Ai a : sim.ais) st.add(new Standing("CPU " + (n++), a.lap * (double) sim.N + a.t, a.color, 0));
         Collections.sort(st, new Comparator<Standing>() {
             public int compare(Standing a, Standing b) { return Double.compare(b.prog, a.prog); }
         });
-        float unit = Math.min(width, height);
-        float y = height * 0.36f;
+        float unit = Math.min(width, height), y = height * 0.34f;
         for (int i = 0; i < st.size(); i++) {
             Standing s = st.get(i);
             text.setTextAlign(Paint.Align.LEFT);
+            ui.setStyle(Paint.Style.FILL);
             ui.setColor(s.color);
             float cx = width / 2f - unit * 0.32f;
             g.drawCircle(cx, y - unit * 0.015f, unit * 0.022f, ui);
             text.setColor(i == 0 ? 0xFFFFE34D : 0xFFFFFFFF);
             text.setTextSize(unit * 0.05f);
             g.drawText((i + 1) + ".  " + s.name, cx + unit * 0.05f, y, text);
-            if (s.name.equals("YOU") && finishTime > 0) {
+            if (s.name.equals("YOU") && sim.finishTime > 0) {
                 text.setTextAlign(Paint.Align.RIGHT);
-                g.drawText(fmt(finishTime), width / 2f + unit * 0.34f, y, text);
+                g.drawText(fmt(sim.finishTime), width / 2f + unit * 0.34f, y, text);
             }
-            y += unit * 0.075f;
+            y += unit * 0.07f;
         }
 
+        boolean hasNext = level + 1 < Tracks.LEVELS.length;
         float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 3));
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFFFFFFFF);
         text.setAlpha((int) (120 + 135 * pulse));
-        text.setTextSize(unit * 0.045f);
-        g.drawText("TAP TO RACE AGAIN", width / 2f, height * 0.9f, text);
+        text.setTextSize(unit * 0.04f);
+        g.drawText(hasNext ? "TAP: NEXT LEVEL    (long area left: menu)" : "TAP TO RETURN TO MENU",
+                width / 2f, height * 0.88f, text);
         text.setAlpha(255);
     }
 
@@ -1131,19 +852,27 @@ final class Game {
         if (state == TITLE) {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
-                for (int i = 0; i < swatches.length; i++) {
-                    if (swatches[i].contains(x, y)) { playerColorIdx = i; return; }
-                }
-                startCountdown();
+                for (int i = 0; i < swatches.length; i++)
+                    if (swatches[i].contains(x, y)) {
+                        playerColorIdx = i;
+                        if (prefs != null) prefs.edit().putInt("color", i).apply();
+                        return;
+                    }
+                for (int i = 0; i < levelBtns.length; i++)
+                    if (levelBtns[i].contains(x, y) && i < unlocked) { startRace(i); return; }
             }
             return;
         }
         if (state == FINISHED) {
-            if (action == MotionEvent.ACTION_DOWN) { state = TITLE; resetRace(); }
+            if (action == MotionEvent.ACTION_DOWN) {
+                float x = e.getX(e.getActionIndex());
+                boolean hasNext = level + 1 < Tracks.LEVELS.length;
+                if (hasNext && x > width * 0.4f) startRace(level + 1);
+                else { state = TITLE; loadLevel(level); }
+            }
             return;
         }
 
-        // RACING / COUNTDOWN: evaluate buttons across all active pointers
         boolean l = false, r = false, gas = false, brake = false;
         for (int i = 0; i < e.getPointerCount(); i++) {
             boolean up = (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP)
@@ -1165,25 +894,13 @@ final class Game {
         }
     }
 
-    private void startCountdown() {
-        resetRace();
+    private void startRace(int lvl) {
+        loadLevel(lvl);
+        camX = sim.carX; camY = sim.carY;
+        keyLeft = keyRight = keyGas = keyBrake = false;
+        tapBoost = tapItem = false;
         state = COUNTDOWN;
         countdown = 3.99;
-    }
-
-    // ----------------------------------------------------------------- types
-
-    private static final class Ai {
-        double t, baseSpeed, offset, x, y, angle, bump;
-        int lap, color;
-    }
-
-    private static final class ItemBox {
-        int idx; float offset, x, y; boolean active = true; double respawn;
-    }
-
-    private static final class Oil {
-        double x, y, life, grace; int owner;
     }
 
     private static final class Particle {
