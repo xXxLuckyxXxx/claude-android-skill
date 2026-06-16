@@ -23,7 +23,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
         int w = getWidth();
         int h = getHeight();
         if (w == 0 || h == 0) { w = 1280; h = 720; }
-        game = new Game(w, h);
+        game = new Game(getContext(), w, h);
         thread = new GameThread(holder, game);
         thread.setRunning(true);
         thread.start();
@@ -49,6 +49,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
             }
             thread = null;
         }
+        if (game != null) game.release();
     }
 
     @Override

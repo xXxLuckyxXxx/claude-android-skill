@@ -6,15 +6,26 @@ visuals stay crisp at any resolution.
 
 ## Features
 
-- Smooth closed circuit built from a Catmull-Rom spline (asphalt, kerb border,
-  animated dashed center line, checkered finish line)
-- Arcade car physics: acceleration, braking, speed-dependent steering, coasting
-  drag and an off-track grass penalty
-- Camera that follows the car with a little speed-based look-ahead
-- 3 AI rivals driving the racing line, with live position (P1/4)
-- Lap counter, lap timer and best-lap tracking
-- Glossy procedurally-drawn cars, scenery trees and a neon HUD
-- On-screen touch controls
+Researched the most-loved mechanics in the racing genre and packed in a lot:
+
+1. **Drift physics** — handbrake/DRIFT button breaks lateral grip for slides
+2. **Drift → Nitro** — drifting fills a nitro meter; **NITRO** button unleashes a boost
+3. **Boost pads** on the track for instant speed
+4. **Item boxes** (`?`) that grant a random weapon, Mario-Kart style
+5. **Items**: TURBO (instant boost), OIL slick (spins out rivals), SHIELD (invulnerable)
+6. **Bumping/combat** — shove AI cars; shield rams them harder
+7. **Dynamic day/night cycle** with car headlight glows at night
+8. **Weather** — random rain that darkens the scene and makes the track slippery
+9. **Tyre smoke particles + persistent skid marks** while drifting
+10. **Radar mini-map** showing the circuit and every car
+11. **Race mode**: 3 laps, **3-2-1-GO countdown** and a **results screen** with standings
+12. **Rubber-band AI** that keeps the race close
+13. **Procedural audio** — synthesized engine note that tracks RPM, plus boost/pickup/skid SFX
+14. **Persistent best lap** (saved across sessions) + car **colour selection**
+15. Camera follow with look-ahead, screen shake, speed-lines and a neon HUD
+
+Built on a smooth Catmull-Rom circuit (asphalt, kerb, animated centre line,
+checkered finish) with glossy procedurally-drawn cars — still zero image assets.
 
 ## Controls
 
