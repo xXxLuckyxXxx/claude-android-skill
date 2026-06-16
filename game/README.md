@@ -1,17 +1,20 @@
-# Neon Racer 🏎️
+# Turbo Circuit 🏎️ (Top-Down Racer)
 
-A pretty **2.5D (pseudo-3D) OutRun-style racing game** for Android, rendered
-entirely with the Canvas API — no external image assets, so the APK stays tiny
-and the visuals stay crisp at any resolution.
+A pretty **top-down (bird's-eye) racing game** for Android, rendered entirely
+with the Canvas API — no external image assets, so the APK stays tiny and the
+visuals stay crisp at any resolution.
 
 ## Features
 
-- Pseudo-3D road with curves, hills, rumble strips and lane markers
-- Animated neon-sunset sky with a retro sun and parallax hills
-- Procedurally drawn glossy cars (player + traffic to dodge)
-- Speed-based bounce, off-road slowdown and collision shake
-- On-screen touch controls (steer left/right, accelerate, brake)
-- Live speedometer, score and best-score HUD
+- Smooth closed circuit built from a Catmull-Rom spline (asphalt, kerb border,
+  animated dashed center line, checkered finish line)
+- Arcade car physics: acceleration, braking, speed-dependent steering, coasting
+  drag and an off-track grass penalty
+- Camera that follows the car with a little speed-based look-ahead
+- 3 AI rivals driving the racing line, with live position (P1/4)
+- Lap counter, lap timer and best-lap tracking
+- Glossy procedurally-drawn cars, scenery trees and a neon HUD
+- On-screen touch controls
 
 ## Controls
 
