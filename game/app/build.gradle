@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.fable.racer'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.fable.racer"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            // Values supplied by CI via -P properties. Falls back to debug-style
+            // keystore generated during the build so a signed APK always comes out.
+            def ksPath = project.findProperty('RELEASE_STORE_FILE') ?: 'release.keystore'
+            storeFile file(ksPath)
+            storePassword project.findProperty('RELEASE_STORE_PASSWORD') ?: 'android'
+            keyAlias project.findProperty('RELEASE_KEY_ALIAS') ?: 'neonracer'
+            keyPassword project.findProperty('RELEASE_KEY_PASSWORD') ?: 'android'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
