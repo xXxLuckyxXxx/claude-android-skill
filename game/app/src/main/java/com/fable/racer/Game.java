@@ -47,8 +47,11 @@ final class Game {
     private boolean lastFinishWon = false;
 
     private final float[][] rain = new float[120][3];
+    private final float[][] stars = new float[90][3];
     private final List<Particle> particles = new ArrayList<>();
     private final List<float[]> skidMarks = new ArrayList<>();
+    private final List<float[]> scenery = new ArrayList<>();  // x,y,r,type
+    private android.graphics.RadialGradient vignette;
 
     boolean keyLeft, keyRight, keyGas, keyBrake;
     private boolean tapBoost, tapItem;
@@ -84,6 +87,10 @@ final class Game {
             playerColorIdx = prefs.getInt("color", 0);
         }
         text.setTypeface(Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD));
+        for (int i = 0; i < stars.length; i++) {
+            stars[i][0] = rnd.nextFloat(); stars[i][1] = rnd.nextFloat() * 0.7f;
+            stars[i][2] = 0.6f + rnd.nextFloat() * 1.8f;
+        }
         try { audio = new EngineAudio(); } catch (Throwable t) { audio = null; }
         loadLevel(0);
         resize(w, h);
@@ -102,9 +109,27 @@ final class Game {
         }
         particles.clear();
         skidMarks.clear();
+        buildScenery();
         prevLaps = 0;
         camX = (sim.minX + sim.maxX) / 2;
         camY = (sim.minY + sim.maxY) / 2;
+    }
+
+    /** Procedural off-track scenery: trees, bushes, rocks and flower patches. */
+    private void buildScenery() {
+        scenery.clear();
+        Random sr = new Random(sim.N * 31L + level);
+        int guard = 0;
+        while (scenery.size() < 46 && guard++ < 6000) {
+            float x = sim.minX - 320 + sr.nextFloat() * (sim.maxX - sim.minX + 640);
+            float y = sim.minY - 320 + sr.nextFloat() * (sim.maxY - sim.minY + 640);
+            float d = sim.distToTrack(x, y);
+            if (d < Sim.ROAD_HALF + 50) continue;             // keep off the road
+            float roll = sr.nextFloat();
+            int type = roll < 0.45f ? 0 : (roll < 0.7f ? 1 : (roll < 0.88f ? 2 : 3)); // tree/bush/rock/flowers
+            float r = (type == 0 ? 26 : type == 1 ? 18 : type == 2 ? 14 : 22) + sr.nextFloat() * 14;
+            scenery.add(new float[]{x, y, r, type, sr.nextFloat()});
+        }
     }
 
     private void rebuildRoadPath() {
@@ -117,6 +142,9 @@ final class Game {
     void resize(int w, int h) {
         width = w; height = h;
         zoom = Math.min(w, h) / 640.0;
+        vignette = new android.graphics.RadialGradient(w / 2f, h / 2f, Math.max(w, h) * 0.72f,
+                new int[]{0x00000000, 0x00000000, 0x66000000}, new float[]{0f, 0.6f, 1f},
+                Shader.TileMode.CLAMP);
         layoutControls();
     }
 
@@ -258,6 +286,7 @@ final class Game {
         g.scale((float) zoom, (float) zoom);
         g.translate((float) -camX, (float) -camY);
 
+        drawScenery(g, false);          // ground shadows first
         drawSkidMarks(g);
         drawShortcuts(g);
         drawRoad(g);
@@ -266,6 +295,7 @@ final class Game {
         drawFinishLine(g);
         drawOils(g);
         drawBoxes(g);
+        drawScenery(g, true);           // tree canopies above the road edge
         for (Sim.Ai a : sim.ais) drawCar(g, a.x, a.y, a.angle, a.color, false, 1f, 0f);
         float js = 1f + (float) sim.jumpZ * 0.012f;
         drawCar(g, sim.carX, sim.carY, sim.carAngle, CAR_COLORS[playerColorIdx], true, js, (float) sim.jumpZ * 1.4f);
@@ -273,8 +303,10 @@ final class Game {
         g.restore();
 
         if (darkness > 0.02f) drawNightLighting(g, darkness);
+        drawColorGrade(g, darkness);
         if (sim.weather == 1) drawRain(g);
         if (sim.boostTime > 0) drawSpeedLines(g);
+        drawVignette(g);
 
         drawRadar(g);
         renderHud(g);
@@ -288,6 +320,71 @@ final class Game {
     private float nightAmount() {
         double d = Math.cos((dayTime - 0.25) * 2 * Math.PI);
         return (float) Math.max(0, Math.min(1, (-d + 0.35) / 1.1));
+    }
+
+    private void glow(Canvas g, float x, float y, float r, int rgb, int alpha) {
+        ui.setXfermode(ADD);
+        ui.setShader(new RadialGradient(x, y, r, new int[]{(alpha << 24) | (rgb & 0xFFFFFF), 0}, null, Shader.TileMode.CLAMP));
+        g.drawCircle(x, y, r, ui);
+        ui.setShader(null);
+        ui.setXfermode(null);
+    }
+
+    private void drawScenery(Canvas g, boolean canopy) {
+        ui.setStyle(Paint.Style.FILL);
+        for (float[] s : scenery) {
+            float x = s[0], y = s[1], r = s[2];
+            int type = (int) s[3];
+            float v = s[4];
+            if (!canopy) {
+                ui.setColor(0x3A000000);
+                g.drawCircle(x + r * 0.3f, y + r * 0.4f, r * 0.95f, ui);
+                continue;
+            }
+            switch (type) {
+                case 0: // tree
+                    ui.setColor(0xFF14532B); g.drawCircle(x, y, r, ui);
+                    ui.setColor(0xFF1E7A40); g.drawCircle(x - r * 0.22f, y - r * 0.22f, r * 0.78f, ui);
+                    ui.setColor(0xFF35A95C); g.drawCircle(x - r * 0.34f, y - r * 0.34f, r * 0.5f, ui);
+                    break;
+                case 1: // bush
+                    ui.setColor(0xFF1C6E3A); g.drawCircle(x, y, r, ui);
+                    ui.setColor(0xFF2A9150); g.drawCircle(x - r * 0.3f, y - r * 0.2f, r * 0.6f, ui);
+                    break;
+                case 2: // rock
+                    ui.setColor(0xFF6B6F7A); tmp.set(x - r, y - r * 0.8f, x + r, y + r * 0.8f);
+                    g.drawRoundRect(tmp, r * 0.4f, r * 0.4f, ui);
+                    ui.setColor(0xFF9094A0); tmp.set(x - r * 0.6f, y - r * 0.7f, x + r * 0.3f, y + r * 0.1f);
+                    g.drawRoundRect(tmp, r * 0.3f, r * 0.3f, ui);
+                    break;
+                default: // flower patch
+                    ui.setColor(0xFF2A9150); g.drawCircle(x, y, r, ui);
+                    int[] fc = {0xFFFFE36B, 0xFFFF8FB1, 0xFFFFFFFF, 0xFF8AD8FF};
+                    for (int k = 0; k < 5; k++) {
+                        double a = v * 6.28 + k * 1.256;
+                        float fx = x + (float) Math.cos(a) * r * 0.5f, fy = y + (float) Math.sin(a) * r * 0.5f;
+                        ui.setColor(fc[(k + (int) (v * 4)) % fc.length]);
+                        g.drawCircle(fx, fy, r * 0.18f, ui);
+                    }
+            }
+        }
+    }
+
+    private void drawColorGrade(Canvas g, float darkness) {
+        double h = (dayTime * 24 + 6) % 24;
+        int tint, alpha;
+        if (darkness > 0.25f) { tint = 0x1B3A6A; alpha = (int) (130 * darkness); }
+        else if (h < 9 || h > 16) { tint = 0xFF7A3A; alpha = 50; }
+        else return;
+        ui.setColor((alpha << 24) | (tint & 0xFFFFFF));
+        g.drawRect(0, 0, width, height, ui);
+    }
+
+    private void drawVignette(Canvas g) {
+        if (vignette == null) return;
+        ui.setShader(vignette);
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
     }
 
     private void drawShortcuts(Canvas g) {
@@ -319,19 +416,28 @@ final class Game {
         road.setStrokeJoin(Paint.Join.ROUND);
         road.setStrokeCap(Paint.Cap.ROUND);
         road.setPathEffect(null);
-        road.setColor(0xFF12121C);
-        road.setStrokeWidth(Sim.ROAD_HALF * 2 + 22);
+        // soft drop shadow on the grass
+        road.setColor(0x33000000);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 + 34);
         g.drawPath(roadPath, road);
+        // dark outer edge
+        road.setColor(0xFF101019);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 + 16);
+        g.drawPath(roadPath, road);
+        // white edge lines
+        road.setColor(0xFFEDEDF5);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 + 4);
+        g.drawPath(roadPath, road);
+        // asphalt
         int asphalt = sim.weather == 1 ? 0xFF34384E : 0xFF3C3F55;
         road.setColor(asphalt);
-        road.setStrokeWidth(Sim.ROAD_HALF * 2);
+        road.setStrokeWidth(Sim.ROAD_HALF * 2 - 6);
         g.drawPath(roadPath, road);
-        road.setColor(0x18FFFFFF);
-        road.setStrokeWidth(Sim.ROAD_HALF * 2 - 14);
+        // subtle sheen down the middle
+        road.setColor(0x14FFFFFF);
+        road.setStrokeWidth(Sim.ROAD_HALF * 1.1f);
         g.drawPath(roadPath, road);
-        road.setColor(asphalt);
-        road.setStrokeWidth(Sim.ROAD_HALF * 2 - 18);
-        g.drawPath(roadPath, road);
+        // animated dashed centre line
         road.setColor(0xFFFFE34D);
         road.setStrokeWidth(6);
         road.setPathEffect(new DashPathEffect(new float[]{34, 30}, (float) dash));
@@ -352,12 +458,16 @@ final class Game {
     }
 
     private void drawPads(Canvas g) {
-        for (int[] p : sim.pads) drawChevrons(g, sim.cx[p[0]], sim.cy[p[0]],
-                Math.atan2(sim.dirY[p[0]], sim.dirX[p[0]]), 0xCCFF8A1E);
+        for (int[] p : sim.pads) {
+            glow(g, sim.cx[p[0]], sim.cy[p[0]], 120, 0xFF8A1E, 80);
+            drawChevrons(g, sim.cx[p[0]], sim.cy[p[0]],
+                    Math.atan2(sim.dirY[p[0]], sim.dirX[p[0]]), 0xCCFF8A1E);
+        }
     }
 
     private void drawJumps(Canvas g) {
         for (double[] j : sim.jumps) {
+            glow(g, (float) j[0], (float) j[1], 130, 0x2B6BFF, 80);
             g.save();
             g.translate((float) j[0], (float) j[1]);
             g.rotate((float) Math.toDegrees(j[2]));
@@ -432,6 +542,7 @@ final class Game {
         for (Sim.ItemBox b : sim.boxes) {
             if (!b.active) continue;
             float s = 18 + (float) Math.sin(titlePulse * 3 + b.idx) * 3;
+            glow(g, b.x, b.y, 46, 0x2BD4C8, 95);
             g.save();
             g.translate(b.x, b.y);
             g.rotate((float) (titlePulse * 80 % 360));
@@ -476,13 +587,22 @@ final class Game {
         g.drawRoundRect(tmp, 16, 16, ui);
         ui.setShader(null);
 
+        // glossy specular highlight along the top flank
+        ui.setColor(0x40FFFFFF);
+        tmp.set(-L * 0.42f, -W * 0.42f, L * 0.42f, -W * 0.12f);
+        g.drawRoundRect(tmp, 10, 10, ui);
+
         ui.setColor(0xCC0E1420);
         tmp.set(-L * 0.05f, -W * 0.34f, L * 0.34f, W * 0.34f);
         g.drawRoundRect(tmp, 8, 8, ui);
-        ui.setColor(0x886FD2FF);
+        // windshield gradient
+        ui.setShader(new LinearGradient(L * 0.02f, 0, L * 0.30f, 0,
+                new int[]{0xAABFE9FF, 0x66203040}, null, Shader.TileMode.CLAMP));
         tmp.set(L * 0.02f, -W * 0.28f, L * 0.30f, W * 0.28f);
         g.drawRoundRect(tmp, 6, 6, ui);
+        ui.setShader(null);
 
+        // headlights with a soft glow when dark
         ui.setColor(0xFFFFF3B0);
         g.drawCircle(L * 0.44f, -W * 0.28f, 4.5f * scale, ui);
         g.drawCircle(L * 0.44f, W * 0.28f, 4.5f * scale, ui);
@@ -496,14 +616,13 @@ final class Game {
         drawWheel(g, L * 0.30f, -W * 0.52f);
         drawWheel(g, L * 0.30f, W * 0.52f - 12 * scale);
 
-        if (player) {
-            ui.setStyle(Paint.Style.STROKE);
-            ui.setStrokeWidth(2.5f);
-            ui.setColor(0xAAFFFFFF);
-            tmp.set(-L / 2, -W / 2, L / 2, W / 2);
-            g.drawRoundRect(tmp, 16, 16, ui);
-            ui.setStyle(Paint.Style.FILL);
-        }
+        // bright rim light around the body
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(player ? 2.5f : 1.8f);
+        ui.setColor(player ? 0xCCFFFFFF : (0x66000000 | (lighten(color, 1.4f) & 0xFFFFFF)));
+        tmp.set(-L / 2, -W / 2, L / 2, W / 2);
+        g.drawRoundRect(tmp, 16, 16, ui);
+        ui.setStyle(Paint.Style.FILL);
         g.restore();
     }
 
@@ -606,6 +725,14 @@ final class Game {
         if (state == TITLE) return;
         float unit = Math.min(width, height), pad = unit * 0.035f;
         int kmh = (int) Math.abs(sim.speed() / Sim.MAX_SPEED * 240);
+
+        // translucent HUD panels for readability
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0x3C0A1020);
+        tmp.set(pad * 0.4f, pad * 0.4f, pad * 0.4f + width * 0.24f, pad * 0.4f + unit * 0.31f);
+        g.drawRoundRect(tmp, 16, 16, ui);
+        tmp.set(width - pad * 0.4f - width * 0.2f, pad * 0.4f, width - pad * 0.4f, pad * 0.4f + unit * 0.16f);
+        g.drawRoundRect(tmp, 16, 16, ui);
 
         text.setShadowLayer(8, 0, 2, 0xCC000000);
         text.setTextAlign(Paint.Align.LEFT);
@@ -713,34 +840,90 @@ final class Game {
         g.drawText(label, r.centerX(), r.centerY() + r.height() * 0.1f, text);
     }
 
+    private void drawTrackThumb(Canvas g, float[][] wp, RectF rect, int accent) {
+        float mnx = Float.MAX_VALUE, mny = Float.MAX_VALUE, mxx = -Float.MAX_VALUE, mxy = -Float.MAX_VALUE;
+        for (float[] p : wp) {
+            mnx = Math.min(mnx, p[0]); mxx = Math.max(mxx, p[0]);
+            mny = Math.min(mny, p[1]); mxy = Math.max(mxy, p[1]);
+        }
+        float tw = Math.max(1, mxx - mnx), th = Math.max(1, mxy - mny);
+        float pad = rect.width() * 0.16f;
+        float sc = Math.min((rect.width() - 2 * pad) / tw, (rect.height() - 2 * pad) / th);
+        float offx = rect.centerX() - (mnx + tw / 2) * sc;
+        float offy = rect.centerY() - (mny + th / 2) * sc;
+        int n = wp.length;
+        tmpPath.reset();
+        tmpPath.moveTo(offx + (wp[n - 1][0] + wp[0][0]) / 2 * sc, offy + (wp[n - 1][1] + wp[0][1]) / 2 * sc);
+        for (int i = 0; i < n; i++) {
+            float mx = offx + (wp[i][0] + wp[(i + 1) % n][0]) / 2 * sc;
+            float my = offy + (wp[i][1] + wp[(i + 1) % n][1]) / 2 * sc;
+            tmpPath.quadTo(offx + wp[i][0] * sc, offy + wp[i][1] * sc, mx, my);
+        }
+        tmpPath.close();
+        road.setStyle(Paint.Style.STROKE);
+        road.setPathEffect(null);
+        road.setStrokeJoin(Paint.Join.ROUND);
+        road.setColor(0x66000000);
+        road.setStrokeWidth(7);
+        g.drawPath(tmpPath, road);
+        road.setColor(accent);
+        road.setStrokeWidth(4);
+        g.drawPath(tmpPath, road);
+    }
+
     private void renderTitle(Canvas g) {
-        g.drawColor(0xBB050314);
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height,
+                new int[]{0xF21A0E33, 0xE6140A28, 0xF2090518}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+
         text.setTextAlign(Paint.Align.CENTER);
-        text.setShadowLayer(20, 0, 0, 0xFFFF2E88);
+        float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 2));
+        text.setShadowLayer(16 + 16 * pulse, 0, 0, 0xFFFF2E88);
         text.setColor(0xFF19E0FF);
-        text.setTextSize(Math.min(width, height) * 0.11f);
-        g.drawText("TURBO CIRCUIT", width / 2f, height * 0.2f, text);
+        text.setTextSize(Math.min(width, height) * 0.12f);
+        g.drawText("TURBO CIRCUIT", width / 2f, height * 0.17f, text);
         text.clearShadowLayer();
 
         text.setColor(0xFFB9B2E6);
         text.setTextSize(Math.min(width, height) * 0.03f);
-        g.drawText("SELECT A LEVEL", width / 2f, height * 0.3f, text);
+        g.drawText("SELECT A LEVEL", width / 2f, height * 0.27f, text);
 
         for (int i = 0; i < levelBtns.length; i++) {
             boolean locked = i >= unlocked;
             RectF r = levelBtns[i];
+            int accent = i == level ? 0xFF19E0FF : 0xFF7E8AD0;
             ui.setStyle(Paint.Style.FILL);
-            ui.setColor(locked ? 0x33101830 : (i == level ? 0x6619E0FF : 0x44102038));
+            ui.setColor(locked ? 0x33101830 : (i == level ? 0x5519E0FF : 0x44102038));
             g.drawRoundRect(r, 14, 14, ui);
+
+            if (!locked) {
+                // mini track preview
+                RectF thumb = new RectF(r.left, r.top + r.height() * 0.06f, r.right, r.bottom - r.height() * 0.34f);
+                drawTrackThumb(g, Tracks.LEVELS[i].wp, thumb, accent);
+            } else {
+                float cxL = r.centerX(), cyL = r.centerY() - r.height() * 0.06f, s = r.height() * 0.2f;
+                ui.setColor(0x77FFFFFF);
+                ui.setStyle(Paint.Style.STROKE);
+                ui.setStrokeWidth(s * 0.2f);
+                tmp.set(cxL - s * 0.4f, cyL - s * 0.95f, cxL + s * 0.4f, cyL - s * 0.05f);
+                g.drawArc(tmp, 180, 180, false, ui);
+                ui.setStyle(Paint.Style.FILL);
+                tmp.set(cxL - s * 0.55f, cyL - s * 0.3f, cxL + s * 0.55f, cyL + s * 0.6f);
+                g.drawRoundRect(tmp, s * 0.16f, s * 0.16f, ui);
+            }
+
             ui.setStyle(Paint.Style.STROKE);
-            ui.setStrokeWidth(3);
-            ui.setColor(locked ? 0x55FFFFFF : 0xCC19E0FF);
+            ui.setStrokeWidth(i == level ? 4 : 3);
+            ui.setColor(locked ? 0x55FFFFFF : accent);
             g.drawRoundRect(r, 14, 14, ui);
             ui.setStyle(Paint.Style.FILL);
+
             text.clearShadowLayer();
             text.setColor(locked ? 0x66FFFFFF : 0xFFFFFFFF);
-            text.setTextSize(r.width() * 0.1f);
-            g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.centerY() + r.width() * 0.035f, text);
+            text.setTextSize(r.width() * 0.09f);
+            g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.bottom - r.height() * 0.1f, text);
         }
 
         for (int i = 0; i < swatches.length; i++) {
