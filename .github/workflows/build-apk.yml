@@ -35,24 +35,11 @@ jobs:
         working-directory: game
         run: chmod +x gradlew
 
-      - name: Generate signing keystore
-        working-directory: game
-        run: |
-          keytool -genkeypair -v \
-            -keystore release.keystore \
-            -storepass android -keypass android \
-            -alias neonracer \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Neon Racer, OU=Game, O=Fable, L=NA, ST=NA, C=US"
-
       - name: Build signed release APK
         working-directory: game
         run: |
           ./gradlew assembleRelease \
-            -PRELEASE_STORE_FILE="$PWD/release.keystore" \
-            -PRELEASE_STORE_PASSWORD=android \
-            -PRELEASE_KEY_ALIAS=neonracer \
-            -PRELEASE_KEY_PASSWORD=android \
+            -PVERSION_CODE=${{ github.run_number }} \
             --no-daemon --stacktrace
 
       - name: Stage APK

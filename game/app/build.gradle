@@ -10,15 +10,18 @@ android {
         applicationId "com.fable.racer"
         minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // versionCode increases every build (CI passes the run number) so each
+        // APK installs as an UPDATE over the previous one. Same applicationId +
+        // same signing key = no uninstall needed.
+        versionCode (project.findProperty('VERSION_CODE') ?: '1') as int
+        versionName "1.0." + ((project.findProperty('VERSION_CODE') ?: '1'))
     }
 
     signingConfigs {
         release {
-            // Values supplied by CI via -P properties. Falls back to debug-style
-            // keystore generated during the build so a signed APK always comes out.
-            def ksPath = project.findProperty('RELEASE_STORE_FILE') ?: 'release.keystore'
+            // Fixed keystore committed to the repo so every build is signed with
+            // the SAME key (required for in-place updates). Overridable via -P.
+            def ksPath = project.findProperty('RELEASE_STORE_FILE') ?: 'neonracer.jks'
             storeFile file(ksPath)
             storePassword project.findProperty('RELEASE_STORE_PASSWORD') ?: 'android'
             keyAlias project.findProperty('RELEASE_KEY_ALIAS') ?: 'neonracer'

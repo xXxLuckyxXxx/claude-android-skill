@@ -57,6 +57,14 @@ Still zero image assets — everything is drawn procedurally on the Canvas.
 
 Tap the screen to start.
 
+## Updating (no reinstall)
+
+Every build is signed with the **same** committed key (`app/neonracer.jks`) and
+gets an increasing `versionCode` (the CI run number), so a new APK installs
+straight over the old one as an update — no uninstall, and your saved progress
+(unlocked levels, best lap) is kept. The very first build that switched to this
+fixed key needs one last uninstall; after that, updates are seamless.
+
 ## Building the APK
 
 The CI workflow at `.github/workflows/build-apk.yml` builds a **signed release
