@@ -1,20 +1,23 @@
 package com.fable.racer;
 
-/** Level / track definitions. Each level is a distinct circuit with its own
- *  layout, AI difficulty, weather, jumps and shortcuts. */
+import java.util.Random;
+
+/** Level / track definitions. Eight distinct circuits, each a longer, smooth
+ *  star-convex loop (so it never self-intersects) with its own difficulty,
+ *  weather, time of day, jumps and shortcuts. */
 final class Tracks {
 
     static final class Def {
         final String name;
-        final float[][] wp;        // circuit control points
+        final float[][] wp;
         final int laps;
-        final double aiBase;       // AI base speed (indices/sec)
+        final double aiBase;
         final int weatherBias;     // 0 clear, 1 rain, 2 random
-        final double dayTime;      // 0..1 ambiance (use -1 for noon)
-        final double[] jumps;      // ramp positions (fraction of lap)
-        final double[] pads;       // boost pad positions
-        final double[] boxes;      // item box rows
-        final double[][] shortcuts;// {fracA, fracB, bulge}
+        final double dayTime;      // 0..1 ambiance
+        final double[] jumps;
+        final double[] pads;
+        final double[] boxes;
+        final double[][] shortcuts;
 
         Def(String name, float[][] wp, int laps, double aiBase, int weatherBias, double dayTime,
             double[] jumps, double[] pads, double[] boxes, double[][] shortcuts) {
@@ -24,42 +27,66 @@ final class Tracks {
         }
     }
 
+    /** Builds a smooth, non-self-intersecting closed loop from a jittered ellipse. */
+    private static float[][] loop(double rx, double ry, int n, long seed, double jitter) {
+        Random r = new Random(seed);
+        double[] rad = new double[n];
+        for (int i = 0; i < n; i++) rad[i] = 1 + (r.nextDouble() * 2 - 1) * jitter;
+        // circular smoothing so there are no sharp radial spikes
+        double[] sm = new double[n];
+        for (int i = 0; i < n; i++) {
+            double a = rad[(i - 1 + n) % n], b = rad[i], c = rad[(i + 1) % n];
+            sm[i] = (a + 2 * b + c) / 4;
+        }
+        float[][] wp = new float[n][2];
+        for (int i = 0; i < n; i++) {
+            double ang = 2 * Math.PI * i / n;
+            wp[i][0] = (float) (Math.cos(ang) * rx * sm[i]);
+            wp[i][1] = (float) (Math.sin(ang) * ry * sm[i]);
+        }
+        return wp;
+    }
+
     static final Def[] LEVELS = {
             new Def("1 · SUNSET BAY",
-                    new float[][]{
-                            {-1000, -250}, {-700, -560}, {-150, -620}, {380, -520},
-                            {760, -250}, {1040, 120}, {760, 430}, {300, 360},
-                            {40, 540}, {-420, 600}, {-840, 380}, {-1080, 60}
-                    },
-                    3, 22.0, 0, 0.20,
-                    new double[]{0.30},
-                    new double[]{0.06, 0.55, 0.84},
-                    new double[]{0.18, 0.62},
-                    new double[][]{{0.40, 0.55, 260}}),
+                    loop(1500, 1050, 16, 101, 0.22), 3, 22.0, 0, 0.20,
+                    new double[]{0.30}, new double[]{0.06, 0.55, 0.84}, new double[]{0.18, 0.62},
+                    new double[][]{{0.40, 0.55, 300}}),
 
             new Def("2 · NEON HEIGHTS",
-                    new float[][]{
-                            {-900, 0}, {-820, -480}, {-360, -700}, {120, -560},
-                            {220, -160}, {640, -260}, {980, -40}, {860, 420},
-                            {360, 560}, {-40, 360}, {-460, 600}, {-880, 420}
-                    },
-                    3, 24.5, 2, 0.52,
-                    new double[]{0.22, 0.70},
-                    new double[]{0.10, 0.46, 0.80},
-                    new double[]{0.34, 0.66},
-                    new double[][]{{0.46, 0.62, -300}}),
+                    loop(1400, 1250, 18, 207, 0.26), 3, 24.0, 2, 0.52,
+                    new double[]{0.22, 0.70}, new double[]{0.10, 0.46, 0.80}, new double[]{0.34, 0.66},
+                    new double[][]{{0.46, 0.62, -340}}),
 
             new Def("3 · MIDNIGHT CANYON",
-                    new float[][]{
-                            {-1080, -120}, {-760, -520}, {-300, -420}, {-120, -700},
-                            {360, -640}, {760, -360}, {560, -40}, {1000, 200},
-                            {620, 520}, {120, 420}, {-180, 640}, {-720, 520}
-                    },
-                    4, 27.0, 1, 0.80,
-                    new double[]{0.18, 0.50, 0.78},
-                    new double[]{0.30, 0.64, 0.92},
-                    new double[]{0.12, 0.44, 0.72},
-                    new double[][]{{0.20, 0.34, 280}, {0.58, 0.72, -260}}),
+                    loop(1650, 1150, 18, 313, 0.30), 3, 26.0, 1, 0.80,
+                    new double[]{0.18, 0.50, 0.78}, new double[]{0.30, 0.64, 0.92}, new double[]{0.12, 0.44, 0.72},
+                    new double[][]{{0.20, 0.34, 320}, {0.58, 0.72, -300}}),
+
+            new Def("4 · COASTAL LOOP",
+                    loop(1800, 1200, 16, 419, 0.18), 3, 25.0, 0, 0.30,
+                    new double[]{0.40}, new double[]{0.12, 0.50, 0.85}, new double[]{0.25, 0.70},
+                    new double[][]{{0.60, 0.74, 320}}),
+
+            new Def("5 · FOREST SPRINT",
+                    loop(1380, 1380, 20, 521, 0.30), 3, 27.0, 2, 0.18,
+                    new double[]{0.15, 0.60}, new double[]{0.20, 0.55, 0.90}, new double[]{0.30, 0.65},
+                    new double[][]{{0.42, 0.56, -320}}),
+
+            new Def("6 · DESERT MIRAGE",
+                    loop(1950, 1150, 16, 631, 0.20), 3, 28.0, 0, 0.45,
+                    new double[]{0.25, 0.72}, new double[]{0.08, 0.48, 0.82}, new double[]{0.18, 0.60},
+                    new double[][]{{0.50, 0.66, 360}}),
+
+            new Def("7 · HARBOR LIGHTS",
+                    loop(1520, 1520, 20, 743, 0.28), 4, 29.0, 1, 0.85,
+                    new double[]{0.20, 0.55, 0.85}, new double[]{0.14, 0.50, 0.78}, new double[]{0.32, 0.68},
+                    new double[][]{{0.24, 0.38, 320}, {0.60, 0.74, -300}}),
+
+            new Def("8 · GRAND FINALE",
+                    loop(1950, 1550, 22, 857, 0.30), 4, 30.0, 2, 0.78,
+                    new double[]{0.16, 0.46, 0.74}, new double[]{0.10, 0.40, 0.70, 0.92}, new double[]{0.12, 0.44, 0.72},
+                    new double[][]{{0.20, 0.33, 340}, {0.56, 0.70, -320}}),
     };
 
     private Tracks() {}

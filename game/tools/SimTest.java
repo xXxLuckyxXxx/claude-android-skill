@@ -28,7 +28,7 @@ public final class SimTest {
         sim.load(def, 1234 + lvl);
 
         double dt = 1.0 / 60;
-        double maxGameTime = 240;
+        double maxGameTime = 300;
         int steps = 0, maxSteps = (int) (maxGameTime / dt);
         double topSpeed = 0;
         boolean jumped = false, picked = false, boosted = false, nan = false;

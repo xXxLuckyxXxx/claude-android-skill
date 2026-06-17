@@ -136,10 +136,16 @@ final class Game {
         for (int i = 0; i < swatches.length; i++)
             swatches[i] = new RectF(sx + i * sw * 1.1f, sy, sx + i * sw * 1.1f + sw, sy + sw);
 
-        float bw = Math.min(width * 0.5f, 520), bh = height * 0.1f;
-        float bx = width / 2f - bw / 2, byy = height * 0.34f;
-        for (int i = 0; i < levelBtns.length; i++)
-            levelBtns[i] = new RectF(bx, byy + i * bh * 1.2f, bx + bw, byy + i * bh * 1.2f + bh);
+        int cols = 4, rows = (levelBtns.length + cols - 1) / cols;
+        float bw = Math.min(width * 0.21f, 320), bh = height * 0.13f;
+        float gapX = bw * 0.12f, gapY = bh * 0.28f;
+        float totalW = cols * bw + (cols - 1) * gapX;
+        float startX = width / 2f - totalW / 2f, startY = height * 0.36f;
+        for (int i = 0; i < levelBtns.length; i++) {
+            int col = i % cols, row = i / cols;
+            float x = startX + col * (bw + gapX), y = startY + row * (bh + gapY);
+            levelBtns[i] = new RectF(x, y, x + bw, y + bh);
+        }
     }
 
     // --------------------------------------------------------------- update
@@ -733,8 +739,8 @@ final class Game {
             ui.setStyle(Paint.Style.FILL);
             text.clearShadowLayer();
             text.setColor(locked ? 0x66FFFFFF : 0xFFFFFFFF);
-            text.setTextSize(r.height() * 0.36f);
-            g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.centerY() + r.height() * 0.13f, text);
+            text.setTextSize(r.width() * 0.1f);
+            g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.centerY() + r.width() * 0.035f, text);
         }
 
         for (int i = 0; i < swatches.length; i++) {
