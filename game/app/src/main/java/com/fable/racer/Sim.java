@@ -56,6 +56,17 @@ final class Sim {
     // ---- events (renderer consumes + clears) ----
     boolean evBoost, evPickup, evHit, evJump, evLand;
 
+    // ---- upgrade modifiers (1.0 = stock); set by the shop loadout ----
+    final Mods mods = new Mods();
+
+    static final class Mods {
+        double accel = 1, topSpeed = 1, grip = 1, turn = 1;
+        double nitroCharge = 1, brake = 1, offRoad = 1, bumpResist = 1, rainGrip = 1, boost = 1;
+        void reset() {
+            accel = topSpeed = grip = turn = nitroCharge = brake = offRoad = bumpResist = rainGrip = boost = 1;
+        }
+    }
+
     private final Random rnd = new Random();
 
     void load(Tracks.Def def, long seed) {
@@ -225,19 +236,19 @@ final class Sim {
             spin -= dt; carAngle += dt * 14; left = right = false;
             vForward *= (1 - 2.5 * dt);
         } else if (!airborne) {
-            if (gas) vForward += ACCEL * dt;
-            else if (brake) vForward -= BRAKE * dt;
+            if (gas) vForward += ACCEL * mods.accel * dt;
+            else if (brake) vForward -= BRAKE * mods.brake * dt;
             else vForward -= Math.signum(vForward) * Math.min(Math.abs(vForward), DRAG * dt);
         } else {
-            if (gas) vForward += ACCEL * 0.4 * dt;   // limited air control
+            if (gas) vForward += ACCEL * mods.accel * 0.4 * dt;   // limited air control
         }
 
         // boost
         if (boostEdge && boostTime <= 0 && nitro > 0.25) {
-            boostTime = 1.4; nitro = Math.max(0, nitro - 0.6); evBoost = true;
+            boostTime = 1.4 * mods.boost; nitro = Math.max(0, nitro - 0.6); evBoost = true;
         }
-        double topSpeed = MAX_SPEED;
-        if (boostTime > 0) { boostTime -= dt; topSpeed = BOOST_SPEED; vForward += 600 * dt; }
+        double topSpeed = MAX_SPEED * mods.topSpeed;
+        if (boostTime > 0) { boostTime -= dt; topSpeed = BOOST_SPEED * mods.topSpeed; vForward += 600 * mods.boost * dt; }
 
         if (itemEdge && heldItem != IT_NONE && !spinning) useItem();
 
@@ -245,20 +256,20 @@ final class Sim {
         drifting = brake && Math.abs(vForward) > 120 && steer != 0 && !spinning && !airborne;
 
         if (!airborne) {
-            double grip = drifting ? GRIP_DRIFT : GRIP_NORMAL;
-            if (weather == 1) grip *= 0.55;
+            double grip = (drifting ? GRIP_DRIFT : GRIP_NORMAL) * mods.grip;
+            if (weather == 1) grip *= 0.55 * mods.rainGrip;
             if (!onTrack) grip *= 0.7;
             vLat *= Math.exp(-grip * dt);
         }
 
         double speedAbs = Math.abs(vForward);
         double steerScale = airborne ? 0.35 : 1.0;
-        double turn = steer * TURN_RATE * dt * Math.min(1, speedAbs / TURN_REF) * (vForward >= 0 ? 1 : -1) * steerScale;
+        double turn = steer * TURN_RATE * mods.turn * dt * Math.min(1, speedAbs / TURN_REF) * (vForward >= 0 ? 1 : -1) * steerScale;
         if (drifting) turn *= 1.7;
         carAngle += turn;
 
         if (!airborne && !onTrack && speedAbs > MAX_SPEED * 0.35) {
-            vForward -= 380 * dt * Math.signum(vForward);
+            vForward -= 380 * mods.offRoad * dt * Math.signum(vForward);
         }
         vForward = Math.max(-0.35 * MAX_SPEED, Math.min(vForward, topSpeed));
 
@@ -283,13 +294,13 @@ final class Sim {
         vy = sa * vForward + ca * vLat;
         carX += vx * dt; carY += vy * dt;
 
-        if (drifting) nitro = Math.min(1, nitro + dt * 0.45);
+        if (drifting) nitro = Math.min(1, nitro + dt * 0.45 * mods.nitroCharge);
 
         if (!airborne) {
             for (int[] p : pads) {
                 int pi = p[0];
                 double dx = carX - cx[pi], dy = carY - cy[pi];
-                if (dx * dx + dy * dy < 60 * 60) { boostTime = Math.max(boostTime, 0.8); nitro = Math.min(1, nitro + 0.2); }
+                if (dx * dx + dy * dy < 60 * 60) { boostTime = Math.max(boostTime, 0.8 * mods.boost); nitro = Math.min(1, nitro + 0.2); }
             }
             for (ItemBox b : boxes) {
                 if (!b.active) continue;
@@ -314,7 +325,7 @@ final class Sim {
             if (d2 < 52 * 52 && d2 > 0.01) {
                 double d = Math.sqrt(d2), push = (52 - d) / 2, nxp = dx / d, nyp = dy / d;
                 double f = shield > 0 ? 2.4 : 1.0;
-                carX += nxp * push; carY += nyp * push;
+                carX += nxp * push / mods.bumpResist; carY += nyp * push / mods.bumpResist;
                 a.x -= nxp * push * f; a.y -= nyp * push * f; a.bump = 0.4;
             }
         }

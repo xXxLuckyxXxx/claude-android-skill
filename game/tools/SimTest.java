@@ -13,19 +13,34 @@ public final class SimTest {
 
     public static void main(String[] args) {
         int failures = 0;
-        for (int lvl = 0; lvl < Tracks.LEVELS.length; lvl++) {
-            failures += runLevel(lvl);
-        }
+        System.out.println("== STOCK CAR ==");
+        for (int lvl = 0; lvl < Tracks.LEVELS.length; lvl++) failures += runLevel(lvl, false);
+        System.out.println("== FULLY UPGRADED LOADOUT ==");
+        failures += runLevel(0, true);
+        failures += runLevel(Tracks.LEVELS.length - 1, true);
         System.out.println();
         if (failures == 0) System.out.println("PLAYTEST PASSED — all levels completable.");
         else System.out.println("PLAYTEST FAILED — " + failures + " problem(s).");
         System.exit(failures == 0 ? 0 : 1);
     }
 
-    private static int runLevel(int lvl) {
+    private static int runLevel(int lvl, boolean modded) {
         Tracks.Def def = Tracks.LEVELS[lvl];
         Sim sim = new Sim();
         sim.load(def, 1234 + lvl);
+        if (modded) {
+            // stack every upgrade's effect, pros and cons, to stress the model
+            sim.mods.topSpeed = 1.12 * 0.93 * 0.96;
+            sim.mods.accel = 1.10 * 0.92 * 1.15;
+            sim.mods.grip = 0.90 * 1.18;
+            sim.mods.turn = 1.10 * 1.08 * 1.05;
+            sim.mods.boost = 1.35;
+            sim.mods.nitroCharge = 1.3;
+            sim.mods.brake = 1.4;
+            sim.mods.offRoad = 0.5;
+            sim.mods.bumpResist = 0.7;
+            sim.mods.rainGrip = 0.6 * 1.6;
+        }
 
         double dt = 1.0 / 60;
         double maxGameTime = 300;

@@ -24,6 +24,17 @@ Researched the most-loved mechanics in the racing genre and packed in a lot:
 14. **Persistent best lap** (saved across sessions) + car **colour selection**
 15. Camera follow with look-ahead, screen shake, speed-lines and a neon HUD
 
+### Campaign, shop & ghost
+
+- **Driver level + XP + coins**: every race pays out coins and XP based on your
+  finishing place; XP raises your driver level, which gates the shop
+- **Garage shop** with 6 upgrades that each have a real **trade-off** (e.g. Turbo
+  Engine: +top speed but less grip; Slick Tyres: +grip but bad in the rain).
+  Buy with coins, then equip/unequip to tune a loadout per track
+- **Ghost car**: your best lap on each track is recorded and replays as a
+  translucent ghost so you can race your own line; saved across sessions
+- Progress (coins, XP, upgrades, ghosts, unlocked levels) persists via prefs
+
 ### Levels, jumps & shortcuts
 
 - **3 unlockable levels** (Sunset Bay → Neon Heights → Midnight Canyon), each a

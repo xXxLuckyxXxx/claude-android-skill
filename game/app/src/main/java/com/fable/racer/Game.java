@@ -29,8 +29,38 @@ import java.util.Random;
  */
 final class Game {
 
-    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3;
+    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4;
     private int state = TITLE;
+
+    // ---- shop / upgrades ----
+    private static final int SHOP_N = 6;
+    private static final String[] SHOP_NAME = {
+            "TURBO ENGINE", "SLICK TYRES", "NITROUS TANK", "LIGHT FRAME", "RALLY KIT", "SPORT BRAKES"};
+    private static final String[] SHOP_PRO = {
+            "+ top speed & accel", "+ grip & cornering", "+ bigger boost & nitro",
+            "+ accel & turn-in", "+ off-road & wet grip", "+ braking & drift"};
+    private static final String[] SHOP_CON = {
+            "- less grip", "- poor in the rain", "- heavier, slow accel",
+            "- knocked around easily", "- lower top speed", "- lower top speed"};
+    private static final int[] SHOP_COST = {300, 400, 450, 500, 500, 350};
+    private static final int[] SHOP_REQ = {2, 3, 4, 5, 6, 7};
+
+    // meta progression (persisted)
+    private int coins, xp;
+    private final boolean[] owned = new boolean[SHOP_N];
+    private final boolean[] equipped = new boolean[SHOP_N];
+    private boolean awarded;
+    private int gainCoins, gainXp;
+    private boolean leveledUp;
+
+    // ghost of the best lap on the current track
+    private float[][] ghost;
+    private final List<float[]> lapRec = new ArrayList<>();
+    private double recTimer;
+    private final double[] trackBest = new double[Tracks.LEVELS.length];
+
+    private final RectF btnShop = new RectF(), btnBack = new RectF();
+    private final RectF[] shopCards = new RectF[SHOP_N];
 
     private int width, height;
     private double zoom = 1.2;
@@ -85,6 +115,14 @@ final class Game {
             unlocked = Math.max(1, prefs.getInt("unlocked", 1));
             bestLap = prefs.getFloat("bestLap", 0f);
             playerColorIdx = prefs.getInt("color", 0);
+            coins = prefs.getInt("coins", 0);
+            xp = prefs.getInt("xp", 0);
+            int own = prefs.getInt("owned", 0), eq = prefs.getInt("equip", 0);
+            for (int i = 0; i < SHOP_N; i++) {
+                owned[i] = (own & (1 << i)) != 0;
+                equipped[i] = (eq & (1 << i)) != 0;
+                trackBest[i] = prefs.getFloat("tb" + i, 0f);
+            }
         }
         text.setTypeface(Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD));
         for (int i = 0; i < stars.length; i++) {
@@ -111,6 +149,10 @@ final class Game {
         skidMarks.clear();
         buildScenery();
         prevLaps = 0;
+        lapRec.clear();
+        recTimer = 0;
+        ghost = loadGhost(level);
+        applyLoadout();
         camX = (sim.minX + sim.maxX) / 2;
         camY = (sim.minY + sim.maxY) / 2;
     }
@@ -174,6 +216,23 @@ final class Game {
             float x = startX + col * (bw + gapX), y = startY + row * (bh + gapY);
             levelBtns[i] = new RectF(x, y, x + bw, y + bh);
         }
+
+        // shop + back buttons
+        float shw = Math.min(width * 0.2f, 260), shh = Math.min(width, height) * 0.1f;
+        btnShop.set(width - pad - shw, pad, width - pad, pad + shh);
+        btnBack.set(pad, pad, pad + shw * 0.7f, pad + shh);
+
+        // shop cards: 3 x 2 grid
+        int sc = 3;
+        float cw = Math.min(width * 0.28f, 380), chh = height * 0.27f;
+        float sgx = cw * 0.07f, sgy = chh * 0.1f;
+        float stw = sc * cw + (sc - 1) * sgx;
+        float ssx = width / 2f - stw / 2f, ssy = height * 0.26f;
+        for (int i = 0; i < SHOP_N; i++) {
+            int col = i % sc, row = i / sc;
+            float x = ssx + col * (cw + sgx), y = ssy + row * (chh + sgy);
+            shopCards[i] = new RectF(x, y, x + cw, y + chh);
+        }
     }
 
     // --------------------------------------------------------------- update
@@ -209,7 +268,7 @@ final class Game {
         if (!sim.onTrack) shake = Math.min(shake + dt * 22, 4);
         if (sim.drifting) { emitSmoke(); addSkid(); }
 
-        // best lap
+        // best lap + ghost recording
         if (sim.lapsDone > prevLaps) {
             prevLaps = sim.lapsDone;
             double lt = sim.lastLapTime;
@@ -217,6 +276,17 @@ final class Game {
                 bestLap = lt;
                 if (prefs != null) prefs.edit().putFloat("bestLap", (float) bestLap).apply();
             }
+            if (lt > 0.5 && (trackBest[level] == 0 || lt < trackBest[level]) && lapRec.size() > 4) {
+                trackBest[level] = lt;
+                saveGhost(level, lapRec);
+            }
+            lapRec.clear();
+            recTimer = 0;
+        }
+        recTimer += dt;
+        if (recTimer >= 0.05) {
+            recTimer = 0;
+            lapRec.add(new float[]{(float) sim.lapTime, (float) sim.carX, (float) sim.carY, (float) sim.carAngle});
         }
 
         // camera
@@ -241,6 +311,7 @@ final class Game {
                 unlocked = next + 1;
                 if (prefs != null) prefs.edit().putInt("unlocked", unlocked).apply();
             }
+            if (!awarded) { awardRace(); awarded = true; }
             state = FINISHED;
         }
     }
@@ -297,6 +368,7 @@ final class Game {
         drawBoxes(g);
         drawScenery(g, true);           // tree canopies above the road edge
         for (Sim.Ai a : sim.ais) drawCar(g, a.x, a.y, a.angle, a.color, false, 1f, 0f);
+        drawGhost(g);
         float js = 1f + (float) sim.jumpZ * 0.012f;
         drawCar(g, sim.carX, sim.carY, sim.carAngle, CAR_COLORS[playerColorIdx], true, js, (float) sim.jumpZ * 1.4f);
         drawParticles(g);
@@ -313,6 +385,7 @@ final class Game {
         renderControls(g);
 
         if (state == TITLE) renderTitle(g);
+        else if (state == SHOP) renderShop(g);
         else if (state == COUNTDOWN) renderCountdown(g);
         else if (state == FINISHED) renderResults(g);
     }
@@ -890,6 +963,26 @@ final class Game {
         text.setTextSize(Math.min(width, height) * 0.03f);
         g.drawText("SELECT A LEVEL", width / 2f, height * 0.27f, text);
 
+        // coins + driver level header (top-left)
+        float unit0 = Math.min(width, height), pad0 = unit0 * 0.04f;
+        text.setTextAlign(Paint.Align.LEFT);
+        text.setColor(0xFFFFD24D);
+        text.setTextSize(unit0 * 0.04f);
+        g.drawText(coins + " ¢", pad0, pad0 + unit0 * 0.04f, text);
+        text.setColor(0xFF8AF0FF);
+        g.drawText("LV " + driverLevel(), pad0, pad0 + unit0 * 0.095f, text);
+        float xbw = width * 0.16f, xbh = unit0 * 0.016f, xby = pad0 + unit0 * 0.12f;
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0x55FFFFFF);
+        tmp.set(pad0, xby, pad0 + xbw, xby + xbh);
+        g.drawRoundRect(tmp, xbh / 2, xbh / 2, ui);
+        ui.setColor(0xFF8AF0FF);
+        tmp.set(pad0, xby, pad0 + xbw * ((xp % 150) / 150f), xby + xbh);
+        g.drawRoundRect(tmp, xbh / 2, xbh / 2, ui);
+
+        // SHOP button (top-right)
+        drawPillButton(g, btnShop, "SHOP  " + coins + "¢", 0xFFFFC23D, true);
+
         for (int i = 0; i < levelBtns.length; i++) {
             boolean locked = i >= unlocked;
             RectF r = levelBtns[i];
@@ -949,6 +1042,84 @@ final class Game {
         g.drawText("drift = nitro  •  ? = item  •  blue = jump  •  yellow dashes = shortcut", width / 2f, height * 0.92f, text);
     }
 
+    private void drawPillButton(Canvas g, RectF r, String label, int accent, boolean enabled) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(enabled ? 0x552A1A40 : 0x22202030);
+        g.drawRoundRect(r, r.height() / 2, r.height() / 2, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(3);
+        ui.setColor(enabled ? accent : 0x55FFFFFF);
+        g.drawRoundRect(r, r.height() / 2, r.height() / 2, ui);
+        ui.setStyle(Paint.Style.FILL);
+        text.clearShadowLayer();
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(enabled ? 0xFFFFFFFF : 0x77FFFFFF);
+        text.setTextSize(r.height() * 0.4f);
+        g.drawText(label, r.centerX(), r.centerY() + r.height() * 0.14f, text);
+    }
+
+    private void renderShop(Canvas g) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height,
+                new int[]{0xF21A0E33, 0xF2090518}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+
+        float unit = Math.min(width, height), pad = unit * 0.04f;
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFFFFC23D);
+        text.setTextSize(unit * 0.07f);
+        g.drawText("GARAGE  &  SHOP", width / 2f, pad + unit * 0.07f, text);
+        text.setTextAlign(Paint.Align.RIGHT);
+        text.setColor(0xFFFFD24D);
+        text.setTextSize(unit * 0.045f);
+        g.drawText(coins + " ¢    LV " + driverLevel(), width - pad, pad + unit * 0.05f, text);
+
+        drawPillButton(g, btnBack, "BACK", 0xFF19E0FF, true);
+
+        for (int i = 0; i < SHOP_N; i++) drawShopCard(g, i);
+    }
+
+    private void drawShopCard(Canvas g, int i) {
+        RectF r = shopCards[i];
+        boolean own = owned[i];
+        boolean canBuy = !own && coins >= SHOP_COST[i] && driverLevel() >= SHOP_REQ[i];
+        boolean lockedByLevel = !own && driverLevel() < SHOP_REQ[i];
+        int accent = own && equipped[i] ? 0xFF42E2B8 : (own ? 0xFF7E8AD0 : (lockedByLevel ? 0xFF555B70 : 0xFFFFC23D));
+
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(own && equipped[i] ? 0x3342E2B8 : 0x33101830);
+        g.drawRoundRect(r, 16, 16, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(3);
+        ui.setColor(accent);
+        g.drawRoundRect(r, 16, 16, ui);
+        ui.setStyle(Paint.Style.FILL);
+
+        float u = r.height();
+        text.setTextAlign(Paint.Align.LEFT);
+        text.clearShadowLayer();
+        text.setColor(0xFFFFFFFF);
+        text.setTextSize(u * 0.15f);
+        g.drawText(SHOP_NAME[i], r.left + u * 0.12f, r.top + u * 0.2f, text);
+        text.setColor(0xFF8CFF8C);
+        text.setTextSize(u * 0.1f);
+        g.drawText(SHOP_PRO[i], r.left + u * 0.12f, r.top + u * 0.4f, text);
+        text.setColor(0xFFFF8A9B);
+        g.drawText(SHOP_CON[i], r.left + u * 0.12f, r.top + u * 0.56f, text);
+
+        text.setTextAlign(Paint.Align.CENTER);
+        String status;
+        int sc;
+        if (own && equipped[i]) { status = "EQUIPPED  (tap to remove)"; sc = 0xFF42E2B8; }
+        else if (own) { status = "OWNED  (tap to equip)"; sc = 0xFFB9B2E6; }
+        else if (lockedByLevel) { status = "REACH LV " + SHOP_REQ[i]; sc = 0xFFFF8A9B; }
+        else { status = "BUY  " + SHOP_COST[i] + " ¢" + (canBuy ? "" : "  (need coins)"); sc = canBuy ? 0xFFFFD24D : 0xFF888EA0; }
+        text.setColor(sc);
+        text.setTextSize(u * 0.12f);
+        g.drawText(status, r.centerX(), r.bottom - u * 0.12f, text);
+    }
+
     private void renderCountdown(Canvas g) {
         g.drawColor(0x55000000);
         text.setTextAlign(Paint.Align.CENTER);
@@ -998,14 +1169,25 @@ final class Game {
             y += unit * 0.07f;
         }
 
-        boolean hasNext = level + 1 < Tracks.LEVELS.length;
+        // rewards
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFFFFD24D);
+        text.setTextSize(unit * 0.045f);
+        g.drawText("+ " + gainCoins + " ¢      + " + gainXp + " XP", width / 2f, height * 0.74f, text);
+        if (leveledUp) {
+            text.setColor(0xFF42E2B8);
+            text.setTextSize(unit * 0.05f);
+            g.drawText("LEVEL UP!  NOW LV " + driverLevel(), width / 2f, height * 0.8f, text);
+        }
+
+        boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
         float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 3));
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFFFFFFFF);
         text.setAlpha((int) (120 + 135 * pulse));
-        text.setTextSize(unit * 0.04f);
-        g.drawText(hasNext ? "TAP: NEXT LEVEL    (long area left: menu)" : "TAP TO RETURN TO MENU",
-                width / 2f, height * 0.88f, text);
+        text.setTextSize(unit * 0.038f);
+        g.drawText(hasNext ? "TAP RIGHT: NEXT LEVEL    •    TAP LEFT: MENU" : "TAP TO RETURN TO MENU",
+                width / 2f, height * 0.89f, text);
         text.setAlpha(255);
     }
 
@@ -1041,6 +1223,7 @@ final class Game {
         if (state == TITLE) {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
+                if (btnShop.contains(x, y)) { state = SHOP; return; }
                 for (int i = 0; i < swatches.length; i++)
                     if (swatches[i].contains(x, y)) {
                         playerColorIdx = i;
@@ -1052,11 +1235,20 @@ final class Game {
             }
             return;
         }
+        if (state == SHOP) {
+            if (action == MotionEvent.ACTION_DOWN) {
+                float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
+                if (btnBack.contains(x, y)) { state = TITLE; return; }
+                for (int i = 0; i < SHOP_N; i++)
+                    if (shopCards[i].contains(x, y)) { tapShop(i); return; }
+            }
+            return;
+        }
         if (state == FINISHED) {
             if (action == MotionEvent.ACTION_DOWN) {
                 float x = e.getX(e.getActionIndex());
-                boolean hasNext = level + 1 < Tracks.LEVELS.length;
-                if (hasNext && x > width * 0.4f) startRace(level + 1);
+                boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
+                if (hasNext && x > width * 0.5f) startRace(level + 1);
                 else { state = TITLE; loadLevel(level); }
             }
             return;
@@ -1083,13 +1275,138 @@ final class Game {
         }
     }
 
+    private void tapShop(int i) {
+        if (owned[i]) {
+            equipped[i] = !equipped[i];
+        } else if (coins >= SHOP_COST[i] && driverLevel() >= SHOP_REQ[i]) {
+            coins -= SHOP_COST[i];
+            owned[i] = true;
+            equipped[i] = true;
+        } else {
+            return;
+        }
+        applyLoadout();
+        saveProfile();
+    }
+
     private void startRace(int lvl) {
         loadLevel(lvl);
         camX = sim.carX; camY = sim.carY;
         keyLeft = keyRight = keyGas = keyBrake = false;
         tapBoost = tapItem = false;
+        awarded = false;
         state = COUNTDOWN;
         countdown = 3.99;
+    }
+
+    // ----------------------------------------------------- progression/shop
+
+    private int driverLevel() { return 1 + xp / 150; }
+
+    private void applyItem(Sim.Mods m, int i) {
+        switch (i) {
+            case 0: m.topSpeed *= 1.12; m.accel *= 1.10; m.grip *= 0.90; break;
+            case 1: m.grip *= 1.18; m.turn *= 1.10; m.rainGrip *= 0.6; break;
+            case 2: m.boost *= 1.35; m.nitroCharge *= 1.3; m.accel *= 0.92; break;
+            case 3: m.accel *= 1.15; m.turn *= 1.08; m.bumpResist *= 0.7; break;
+            case 4: m.offRoad *= 0.5; m.rainGrip *= 1.6; m.topSpeed *= 0.93; break;
+            case 5: m.brake *= 1.4; m.turn *= 1.05; m.topSpeed *= 0.96; break;
+        }
+    }
+
+    private void applyLoadout() {
+        sim.mods.reset();
+        for (int i = 0; i < SHOP_N; i++) if (owned[i] && equipped[i]) applyItem(sim.mods, i);
+    }
+
+    private void awardRace() {
+        int p = Math.min(sim.position(), 4);
+        int[] coinByPlace = {0, 150, 90, 55, 30};
+        int[] xpByPlace = {0, 100, 65, 40, 25};
+        int oldLevel = driverLevel();
+        gainCoins = 80 + coinByPlace[p] + level * 12;
+        gainXp = 50 + xpByPlace[p] + level * 6;
+        coins += gainCoins;
+        xp += gainXp;
+        leveledUp = driverLevel() > oldLevel;
+        saveProfile();
+    }
+
+    private void saveProfile() {
+        if (prefs == null) return;
+        int own = 0, eq = 0;
+        for (int i = 0; i < SHOP_N; i++) {
+            if (owned[i]) own |= (1 << i);
+            if (equipped[i]) eq |= (1 << i);
+        }
+        prefs.edit().putInt("coins", coins).putInt("xp", xp)
+                .putInt("owned", own).putInt("equip", eq).apply();
+    }
+
+    // ----------------------------------------------------------- ghost car
+
+    private void saveGhost(int lvl, List<float[]> rec) {
+        // downsample to <=120 samples and store as "t:x:y:a;..."
+        int max = 120;
+        int step = Math.max(1, rec.size() / max);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rec.size(); i += step) {
+            float[] s = rec.get(i);
+            sb.append(s[0]).append(':').append(s[1]).append(':').append(s[2]).append(':').append(s[3]).append(';');
+        }
+        ghost = parseGhost(sb.toString());
+        if (prefs != null) prefs.edit().putString("g" + lvl, sb.toString()).putFloat("tb" + lvl, (float) trackBest[lvl]).apply();
+    }
+
+    private float[][] loadGhost(int lvl) {
+        if (prefs == null) return null;
+        return parseGhost(prefs.getString("g" + lvl, ""));
+    }
+
+    private float[][] parseGhost(String s) {
+        if (s == null || s.length() < 4) return null;
+        String[] parts = s.split(";");
+        java.util.ArrayList<float[]> list = new java.util.ArrayList<>();
+        for (String p : parts) {
+            if (p.isEmpty()) continue;
+            String[] f = p.split(":");
+            if (f.length != 4) continue;
+            try {
+                list.add(new float[]{Float.parseFloat(f[0]), Float.parseFloat(f[1]),
+                        Float.parseFloat(f[2]), Float.parseFloat(f[3])});
+            } catch (NumberFormatException ignored) {}
+        }
+        return list.isEmpty() ? null : list.toArray(new float[0][]);
+    }
+
+    private void drawGhost(Canvas g) {
+        if (ghost == null || ghost.length < 2 || state != RACING) return;
+        double t = sim.lapTime;
+        // find bracketing samples by time
+        float[] a = ghost[0], b = ghost[ghost.length - 1];
+        for (int i = 0; i < ghost.length - 1; i++) {
+            if (ghost[i][0] <= t && ghost[i + 1][0] >= t) { a = ghost[i]; b = ghost[i + 1]; break; }
+        }
+        float span = b[0] - a[0];
+        float f = span > 0.0001f ? (float) ((t - a[0]) / span) : 0f;
+        f = Math.max(0, Math.min(1, f));
+        float gx = a[1] + (b[1] - a[1]) * f;
+        float gy = a[2] + (b[2] - a[2]) * f;
+        float ga = a[3] + (b[3] - a[3]) * f;
+
+        g.save();
+        g.translate(gx, gy);
+        g.rotate((float) Math.toDegrees(ga));
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0x66B0E8FF);
+        tmp.set(-36, -18, 36, 18);
+        g.drawRoundRect(tmp, 14, 14, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(2);
+        ui.setColor(0x99E8F6FF);
+        g.drawRoundRect(tmp, 14, 14, ui);
+        ui.setStyle(Paint.Style.FILL);
+        g.restore();
     }
 
     private static final class Particle {
