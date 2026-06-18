@@ -43,6 +43,7 @@ final class EngineAudio {
     private volatile float musicLevel = 0.5f;
     private int musStep;
     private double musStepPos, bassPh, arpPh, kickPh, kickEnv, hatEnv, arpEnv;
+    private double curBassF = 55, curArpF = 110;
     private static final int[] BASS = {0, 0, 3, 0, 5, 5, 3, 0, 0, 0, 7, 0, 5, 3, 2, 0};
     private static final int[] ARP = {12, 15, 19, 24, 19, 15, 12, 15, 12, 17, 20, 24, 20, 17, 15, 12};
 
@@ -135,12 +136,13 @@ final class EngineAudio {
                             if (musStep % 4 == 0) { kickEnv = 1.0; kickPh = 0; }
                             hatEnv = 0.7;
                             arpEnv = 1.0;
+                            // recompute note frequencies only on the step change (not per sample)
+                            curBassF = 55.0 * Math.pow(2, BASS[musStep] / 12.0);
+                            curArpF = 110.0 * Math.pow(2, ARP[musStep] / 12.0);
                         }
-                        double bassF = 55.0 * Math.pow(2, BASS[musStep] / 12.0);
-                        bassPh += 2 * Math.PI * bassF / RATE;
+                        bassPh += 2 * Math.PI * curBassF / RATE;
                         double bass = (((bassPh / (2 * Math.PI)) % 1) * 2 - 1) * 0.5;
-                        double arpF = 110.0 * Math.pow(2, ARP[musStep] / 12.0);
-                        arpPh += 2 * Math.PI * arpF / RATE;
+                        arpPh += 2 * Math.PI * curArpF / RATE;
                         double arp = (Math.sin(arpPh) * 0.6 + Math.sin(arpPh * 2) * 0.2) * 0.3 * arpEnv;
                         arpEnv *= 0.9997;
                         kickPh += 2 * Math.PI * (45 + 90 * kickEnv) / RATE;

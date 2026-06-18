@@ -187,9 +187,15 @@ final class Game {
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path roadPath = new Path();
     private final Path tmpPath = new Path();
-    private final RectF tmp = new RectF();
+    private final RectF tmp = new RectF(), tmp2 = new RectF();
     private final Random rnd = new Random();
     private final PorterDuffXfermode ADD = new PorterDuffXfermode(PorterDuff.Mode.ADD);
+
+    // perf: cache GPU/native objects so the render loop allocates nothing
+    private final java.util.HashMap<Integer, LinearGradient> bodyGrad = new java.util.HashMap<>();
+    private LinearGradient backdropShader;
+    private int bdTop, bdBot, bdH;
+    private final java.util.ArrayDeque<Particle> particlePool = new java.util.ArrayDeque<>();
 
     private final SharedPreferences prefs;
     private EngineAudio audio;
@@ -584,7 +590,8 @@ final class Game {
 
     private void emitSmoke() {
         if (particles.size() > 160) return;
-        Particle p = new Particle();
+        Particle p = particlePool.poll();        // reuse a pooled particle if available
+        if (p == null) p = new Particle();
         p.x = sim.carX - Math.cos(sim.carAngle) * 28 + (rnd.nextDouble() - 0.5) * 14;
         p.y = sim.carY - Math.sin(sim.carAngle) * 28 + (rnd.nextDouble() - 0.5) * 14;
         p.vx = (rnd.nextDouble() - 0.5) * 30; p.vy = (rnd.nextDouble() - 0.5) * 30;
@@ -602,7 +609,10 @@ final class Game {
         for (int i = particles.size() - 1; i >= 0; i--) {
             Particle p = particles.get(i);
             p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.size += dt * 18;
-            if (p.life <= 0) particles.remove(i);
+            if (p.life <= 0) {
+                particles.remove(i);
+                if (particlePool.size() < 200) particlePool.add(p);   // recycle
+            }
         }
     }
 
@@ -678,11 +688,14 @@ final class Game {
         return (float) Math.max(0, Math.min(1, (-d + 0.35) / 1.1));
     }
 
+    /** Allocation-free additive bloom: a few stacked translucent rings. */
     private void glow(Canvas g, float x, float y, float r, int rgb, int alpha) {
         ui.setXfermode(ADD);
-        ui.setShader(new RadialGradient(x, y, r, new int[]{(alpha << 24) | (rgb & 0xFFFFFF), 0}, null, Shader.TileMode.CLAMP));
-        g.drawCircle(x, y, r, ui);
-        ui.setShader(null);
+        rgb &= 0xFFFFFF;
+        for (int k = 4; k >= 1; k--) {
+            ui.setColor(((alpha / (k + 1)) << 24) | rgb);
+            g.drawCircle(x, y, r * k / 4f, ui);
+        }
         ui.setXfermode(null);
     }
 
@@ -1004,18 +1017,15 @@ final class Game {
         g.translate((float) x, (float) y);
         g.rotate((float) Math.toDegrees(angle));
 
-        if (player && sim.boostTime > 0) {
-            ui.setShader(new RadialGradient(0, 0, L * 1.3f, new int[]{0x66FF8A1E, 0}, null, Shader.TileMode.CLAMP));
-            g.drawCircle(0, 0, L * 1.3f, ui);
-            ui.setShader(null);
+        if (player && sim.boostTime > 0) {           // allocation-free boost bloom
+            for (int k = 3; k >= 1; k--) { ui.setColor((0x33 / k << 24) | 0xFF8A1E); g.drawCircle(0, 0, L * 1.3f * k / 3f, ui); }
         }
         if (player && sim.shield > 0) {
             ui.setColor(0x553BE0FF);
             g.drawCircle(0, 0, L * 0.85f, ui);
         }
 
-        ui.setShader(new LinearGradient(0, -W / 2, 0, W / 2,
-                new int[]{lighten(color, 1.35f), color, darken(color, 0.7f)}, null, Shader.TileMode.CLAMP));
+        ui.setShader(bodyGradient(color));
         tmp.set(-L / 2, -W / 2, L / 2, W / 2);
         g.drawRoundRect(tmp, 16, 16, ui);
         ui.setShader(null);
@@ -1045,12 +1055,13 @@ final class Game {
         ui.setColor(0xCC0E1420);
         tmp.set(-L * 0.05f, -W * 0.34f, L * 0.34f, W * 0.34f);
         g.drawRoundRect(tmp, 8, 8, ui);
-        // windshield gradient
-        ui.setShader(new LinearGradient(L * 0.02f, 0, L * 0.30f, 0,
-                new int[]{0xAABFE9FF, 0x66203040}, null, Shader.TileMode.CLAMP));
+        // windshield (flat tint + a brighter leading edge — no per-frame shader)
+        ui.setColor(0x99203040);
         tmp.set(L * 0.02f, -W * 0.28f, L * 0.30f, W * 0.28f);
         g.drawRoundRect(tmp, 6, 6, ui);
-        ui.setShader(null);
+        ui.setColor(0x88BFE9FF);
+        tmp.set(L * 0.22f, -W * 0.26f, L * 0.30f, W * 0.26f);
+        g.drawRoundRect(tmp, 4, 4, ui);
 
         // headlights with a soft glow when dark
         ui.setColor(0xFFFFF3B0);
@@ -1107,10 +1118,11 @@ final class Game {
         float cx = sxp + (float) Math.cos(angle) * ahead;
         float cy = syp + (float) Math.sin(angle) * ahead;
         float r = (float) (150 * zoom);
-        int glow = (int) (90 * darkness);
-        ui.setShader(new RadialGradient(cx, cy, r, new int[]{(glow << 24) | 0xFFF0C0, 0}, null, Shader.TileMode.CLAMP));
-        g.drawCircle(cx, cy, r, ui);
-        ui.setShader(null);
+        int glow = (int) (60 * darkness);
+        for (int k = 4; k >= 1; k--) {           // stacked rings instead of a shader
+            ui.setColor(((glow / k) << 24) | 0xFFF0C0);
+            g.drawCircle(cx, cy, r * k / 4f, ui);
+        }
     }
 
     private void drawRain(Canvas g, float intensity) {
@@ -1378,8 +1390,8 @@ final class Game {
 
             if (!locked) {
                 // mini track preview
-                RectF thumb = new RectF(r.left, r.top + r.height() * 0.06f, r.right, r.bottom - r.height() * 0.34f);
-                drawTrackThumb(g, Tracks.LEVELS[i].wp, thumb, accent);
+                tmp2.set(r.left, r.top + r.height() * 0.06f, r.right, r.bottom - r.height() * 0.34f);
+                drawTrackThumb(g, Tracks.LEVELS[i].wp, tmp2, accent);
             } else {
                 float cxL = r.centerX(), cyL = r.centerY() - r.height() * 0.06f, s = r.height() * 0.2f;
                 ui.setColor(0x77FFFFFF);
@@ -1496,8 +1508,8 @@ final class Game {
         g.drawText("RANDOM TRACK  —  share this code to race the same circuit", width / 2f, height * 0.26f, text);
 
         if (curDef != null) {
-            RectF tb = new RectF(width / 2f - unit * 0.16f, height * 0.28f, width / 2f + unit * 0.16f, height * 0.28f + unit * 0.16f);
-            drawTrackThumb(g, curDef.wp, tb, 0xFF6CE0FF);
+            tmp2.set(width / 2f - unit * 0.16f, height * 0.28f, width / 2f + unit * 0.16f, height * 0.28f + unit * 0.16f);
+            drawTrackThumb(g, curDef.wp, tmp2, 0xFF6CE0FF);
         }
 
         // 5-digit code steppers
@@ -1566,8 +1578,12 @@ final class Game {
     }
 
     private void drawMenuBackdrop(Canvas g, int top, int bottom) {
+        if (backdropShader == null || bdTop != top || bdBot != bottom || bdH != height) {
+            backdropShader = new LinearGradient(0, 0, 0, height, new int[]{top, bottom}, null, Shader.TileMode.CLAMP);
+            bdTop = top; bdBot = bottom; bdH = height;
+        }
         ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{top, bottom}, null, Shader.TileMode.CLAMP));
+        ui.setShader(backdropShader);
         g.drawRect(0, 0, width, height, ui);
         ui.setShader(null);
         // drifting neon motes
@@ -1943,6 +1959,17 @@ final class Game {
 
     private static int tcol(int base, int tint) {
         return tint == 0 ? base : lerp(base, tint, 0.55f);
+    }
+
+    /** Cached glossy body gradient per car colour (built once, reused every frame). */
+    private LinearGradient bodyGradient(int color) {
+        LinearGradient lg = bodyGrad.get(color);
+        if (lg == null) {
+            lg = new LinearGradient(0, -18, 0, 18,
+                    new int[]{lighten(color, 1.35f), color, darken(color, 0.7f)}, null, Shader.TileMode.CLAMP);
+            bodyGrad.put(color, lg);
+        }
+        return lg;
     }
 
     private static int lighten(int c, float f) {

@@ -93,7 +93,9 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
 
         @Override
         public void run() {
+            final long frameNs = 16_666_667L;           // 60 fps cadence
             long last = System.nanoTime();
+            long nextFrame = last;
             while (running) {
                 long now = System.nanoTime();
                 double dt = (now - last) / 1_000_000_000.0;
@@ -114,11 +116,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
                     if (c != null) holder.unlockCanvasAndPost(c);
                 }
 
-                // aim for ~60fps
-                long frameMs = (System.nanoTime() - now) / 1_000_000;
-                long sleep = 16 - frameMs;
-                if (sleep > 0) {
-                    try { Thread.sleep(sleep); } catch (InterruptedException ignored) {}
+                // pace to an absolute schedule so frame spacing stays even (no drift)
+                nextFrame += frameNs;
+                long sleepNs = nextFrame - System.nanoTime();
+                if (sleepNs > 0) {
+                    try { Thread.sleep(sleepNs / 1_000_000L, (int) (sleepNs % 1_000_000L)); }
+                    catch (InterruptedException ignored) {}
+                } else if (sleepNs < -frameNs * 3) {
+                    nextFrame = System.nanoTime();        // fell far behind: resync
                 }
             }
         }
