@@ -132,6 +132,16 @@ Unity -batchmode -quit -nographics -projectPath . -buildTarget Android \
 
 ---
 
+## 📦 Native Begleit-APK (`native-apk/`)
+
+Da in der Build-Umgebung **kein Unity-Editor** läuft und Googles Server dort
+netzwerkseitig blockiert sind, liegt unter [`native-apk/`](native-apk/) eine
+kleine **native GLES-2.0-FPS-App**, die sich mit erlaubten Quellen (apt + Maven
+Central) zu einer **echten, signierten APK** bauen lässt. Sie teilt
+`applicationId`, Keystore und die **Auto-`versionCode`-Logik** mit diesem
+Projekt — demonstriert die Seamless-Update-Pipeline also real. Siehe
+[`native-apk/README.md`](native-apk/README.md).
+
 ## ⚠️ Hinweise / Grenzen
 
 - Dieses Repo wurde **ohne laufenden Unity-Editor** erstellt; die Logik ist
