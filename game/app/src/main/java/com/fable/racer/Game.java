@@ -2,6 +2,8 @@ package com.fable.racer;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
@@ -190,6 +192,11 @@ final class Game {
     private final RectF tmp = new RectF(), tmp2 = new RectF();
     private final Random rnd = new Random();
     private final PorterDuffXfermode ADD = new PorterDuffXfermode(PorterDuff.Mode.ADD);
+    private final PorterDuffXfermode MUL = new PorterDuffXfermode(PorterDuff.Mode.MULTIPLY);
+
+    // procedurally generated, seamlessly tiling textures (no asset files, no licences)
+    private BitmapShader asphaltShader, grassShaderTex, metalShader;
+    private final Paint texPaint = new Paint();
 
     // perf: cache GPU/native objects so the render loop allocates nothing
     private final java.util.HashMap<Integer, LinearGradient> bodyGrad = new java.util.HashMap<>();
@@ -246,8 +253,45 @@ final class Game {
             menuDots[i][3] = 1.5f + rnd.nextFloat() * 3.5f;
         }
         try { audio = new EngineAudio(); } catch (Throwable t) { audio = null; }
+        buildTextures();
         loadLevel(0);
         resize(w, h);
+    }
+
+    /** Build tiny, seamlessly-tiling grayscale textures once. They are blended
+     *  with MULTIPLY over the themed flat colours, so theming + day/night still
+     *  work and nothing is allocated per frame. */
+    private void buildTextures() {
+        asphaltShader = new BitmapShader(grainTile(128, 232, 255, 1700, 120, 70),
+                Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+        grassShaderTex = new BitmapShader(grassTile(128),
+                Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+        metalShader = new BitmapShader(grainTile(48, 224, 255, 360, 170, 60),
+                Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+        texPaint.setAntiAlias(false);
+        texPaint.setXfermode(MUL);
+    }
+
+    private Bitmap grainTile(int s, int lo, int hi, int speckles, int spLo, int spRange) {
+        int[] px = new int[s * s];
+        int span = hi - lo + 1;
+        for (int i = 0; i < px.length; i++) { int v = lo + rnd.nextInt(span); px[i] = 0xFF000000 | (v << 16) | (v << 8) | v; }
+        for (int k = 0; k < speckles; k++) { int v = spLo + rnd.nextInt(spRange); px[rnd.nextInt(px.length)] = 0xFF000000 | (v << 16) | (v << 8) | v; }
+        Bitmap b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
+        b.setPixels(px, 0, s, 0, 0, s, s);
+        return b;
+    }
+
+    private Bitmap grassTile(int s) {
+        int[] px = new int[s * s];
+        for (int i = 0; i < px.length; i++) { int v = 234 + rnd.nextInt(22); px[i] = 0xFF000000 | (v << 16) | (v << 8) | v; }
+        for (int k = 0; k < s * 6; k++) {            // short vertical blades
+            int x = rnd.nextInt(s), y = rnd.nextInt(s), len = 2 + rnd.nextInt(5), v = 196 + rnd.nextInt(34);
+            for (int j = 0; j < len; j++) { int yy = (y + j) % s; px[yy * s + x] = 0xFF000000 | (v << 16) | (v << 8) | v; }
+        }
+        Bitmap b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
+        b.setPixels(px, 0, s, 0, 0, s, s);
+        return b;
     }
 
     void release() { if (audio != null) audio.release(); }
@@ -639,6 +683,13 @@ final class Game {
         g.scale((float) (zoom * zoomMul), (float) (zoom * zoomMul));
         g.translate((float) -camX, (float) -camY);
 
+        // grass texture grain over the themed ground (tiles + scrolls in world space)
+        float hw = (float) (width / (zoom * zoomMul)) * 0.6f + 64;
+        float hh = (float) (height / (zoom * zoomMul)) * 0.6f + 64;
+        texPaint.setStyle(Paint.Style.FILL);
+        texPaint.setShader(grassShaderTex);
+        g.drawRect((float) camX - hw, (float) camY - hh, (float) camX + hw, (float) camY + hh, texPaint);
+
         drawScenery(g, false);          // ground shadows first
         drawSkidMarks(g);
         drawShortcuts(g);
@@ -877,6 +928,12 @@ final class Game {
         road.setColor(asphalt);
         road.setStrokeWidth(Sim.ROAD_HALF * 2 - 6);
         g.drawPath(roadPath, road);
+        // asphalt grain (multiplied over the flat colour, scrolls with the world)
+        texPaint.setStyle(Paint.Style.STROKE);
+        texPaint.setStrokeWidth(Sim.ROAD_HALF * 2 - 6);
+        texPaint.setShader(asphaltShader);
+        g.drawPath(roadPath, texPaint);
+        texPaint.setStyle(Paint.Style.FILL);
         // wet sheen / dry sheen down the middle
         road.setColor(sim.wetness > 0.3 ? (((int) (0x33 * sim.wetness) << 24) | 0x9FC8E0) : 0x14FFFFFF);
         road.setStrokeWidth(Sim.ROAD_HALF * 1.1f);
@@ -1029,6 +1086,10 @@ final class Game {
         tmp.set(-L / 2, -W / 2, L / 2, W / 2);
         g.drawRoundRect(tmp, 16, 16, ui);
         ui.setShader(null);
+        // metallic flake on the paint (subtle multiply)
+        texPaint.setStyle(Paint.Style.FILL);
+        texPaint.setShader(metalShader);
+        g.drawRoundRect(tmp, 16, 16, texPaint);
 
         // player paint scheme (skin)
         if (player && carSkin == 1) {            // racing stripe
