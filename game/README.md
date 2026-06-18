@@ -24,6 +24,18 @@ Researched the most-loved mechanics in the racing genre and packed in a lot:
 14. **Persistent best lap** (saved across sessions) + car **colour selection**
 15. Camera follow with look-ahead, screen shake, speed-lines and a neon HUD
 
+### Time trial, tuning, dynamic weather & tutorial
+
+- **Time-trial mode**: a solo run against your ghost (no rivals, no items) with a
+  per-track **top-5 records leaderboard** saved locally
+- **Car tuning sliders**: Accel↔Top-speed, Balanced↔Handling and Nimble↔Stable —
+  zero-sum trade-offs layered on top of upgrades and tyres
+- **Dynamic weather**: on "varies" tracks the rain rolls in and clears mid-race
+  (a continuous wetness value drives grip and the rain visuals), so your tyre
+  pick is a real gamble
+- **Tutorial / intro**: a paged walkthrough on first launch (replayable via the
+  "?" button) covering steering, drift→nitro, items, ramps, shortcuts and progress
+
 ### Daily challenge, tyres, rivals & controllers
 
 - **Daily challenge**: a date-seeded objective (win / clean race / no spin-outs on

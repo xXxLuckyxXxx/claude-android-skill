@@ -14,20 +14,23 @@ public final class SimTest {
     public static void main(String[] args) {
         int failures = 0;
         System.out.println("== STOCK CAR ==");
-        for (int lvl = 0; lvl < Tracks.LEVELS.length; lvl++) failures += runLevel(lvl, false);
+        for (int lvl = 0; lvl < Tracks.LEVELS.length; lvl++) failures += runLevel(lvl, false, false);
         System.out.println("== FULLY UPGRADED LOADOUT ==");
-        failures += runLevel(0, true);
-        failures += runLevel(Tracks.LEVELS.length - 1, true);
+        failures += runLevel(0, true, false);
+        failures += runLevel(Tracks.LEVELS.length - 1, true, false);
+        System.out.println("== TIME TRIAL (solo vs ghost, no AI) ==");
+        failures += runLevel(0, false, true);
+        failures += runLevel(Tracks.LEVELS.length - 1, false, true);
         System.out.println();
         if (failures == 0) System.out.println("PLAYTEST PASSED — all levels completable.");
         else System.out.println("PLAYTEST FAILED — " + failures + " problem(s).");
         System.exit(failures == 0 ? 0 : 1);
     }
 
-    private static int runLevel(int lvl, boolean modded) {
+    private static int runLevel(int lvl, boolean modded, boolean tt) {
         Tracks.Def def = Tracks.LEVELS[lvl];
         Sim sim = new Sim();
-        sim.load(def, 1234 + lvl);
+        sim.load(def, 1234 + lvl, tt);
         if (modded) {
             // stack every upgrade's effect, pros and cons, to stress the model
             sim.mods.topSpeed = 1.12 * 0.93 * 0.96;

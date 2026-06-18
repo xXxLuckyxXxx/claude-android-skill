@@ -35,7 +35,11 @@ final class Sim {
     int N;
     float minX, minY, maxX, maxY;
     int totalLaps = 3;
-    int weather;                 // 0 clear, 1 rain
+    int weather;                 // 0 clear, 1 rain (initial bias)
+    double wetness;              // 0 dry .. 1 full rain (can change mid-race)
+    private double wetTarget, wetTimer;
+    private boolean dynamicWeather;
+    boolean timeTrial;
     final List<float[]> shortcuts = new ArrayList<>();   // each: x0,y0,x1,y1,...
     final List<double[]> jumps = new ArrayList<>();      // each: {x,y}
     final List<int[]> pads = new ArrayList<>();          // {centerline index}
@@ -69,12 +73,19 @@ final class Sim {
 
     private final Random rnd = new Random();
 
-    void load(Tracks.Def def, long seed) {
+    void load(Tracks.Def def, long seed) { load(def, seed, false); }
+
+    void load(Tracks.Def def, long seed, boolean tt) {
         rnd.setSeed(seed);
+        this.timeTrial = tt;
         totalLaps = def.laps;
         buildTrack(def.wp);
-        // weather
-        weather = def.weatherBias == 2 ? (rnd.nextInt(3) == 0 ? 1 : 0) : def.weatherBias;
+        // weather: "varies" tracks get changeable weather mid-race
+        weather = def.weatherBias == 2 ? (rnd.nextInt(2)) : def.weatherBias;
+        dynamicWeather = def.weatherBias == 2;
+        wetness = weather == 1 ? 0.9 : 0.0;
+        wetTarget = wetness;
+        wetTimer = 8 + rnd.nextDouble() * 8;
 
         shortcuts.clear();
         if (def.shortcuts != null) for (double[] s : def.shortcuts) shortcuts.add(buildShortcut(s[0], s[1], s[2]));
@@ -89,7 +100,7 @@ final class Sim {
         if (def.pads != null) for (double f : def.pads) pads.add(new int[]{((int) Math.round(f * N)) % N});
 
         boxes.clear();
-        if (def.boxes != null) for (double f : def.boxes) {
+        if (def.boxes != null && !tt) for (double f : def.boxes) {
             int bi = ((int) Math.round(f * N)) % N;
             for (int lane = -1; lane <= 1; lane++) {
                 ItemBox b = new ItemBox();
@@ -118,6 +129,8 @@ final class Sim {
         clearEvents();
 
         ais.clear();
+        // Time-trial is a solo run against your ghost — no rivals.
+        if (timeTrial) return;
         // Three rival personalities: BLAZE (fast, aggressive, erratic),
         // NOVA (balanced), SAGE (smooth, consistent, hugs the racing line).
         int[] cols = {0xFFFF4D6B, 0xFFFFC23D, 0xFF6CE0FF};
@@ -236,6 +249,17 @@ final class Sim {
         if (finished) return;
         raceTime += dt; lapTime += dt;
 
+        // dynamic weather: drift the wetness toward a changing target
+        if (dynamicWeather) {
+            wetTimer -= dt;
+            if (wetTimer <= 0) {
+                wetTimer = 8 + rnd.nextDouble() * 10;
+                wetTarget = rnd.nextDouble() < 0.5 ? 0 : 0.55 + rnd.nextDouble() * 0.45;
+            }
+            wetness += (wetTarget - wetness) * Math.min(1, dt * 0.25);
+        }
+        weather = wetness > 0.4 ? 1 : 0;
+
         int idx = nearestIndex(carX, carY);
         onTrack = distToTrack(carX, carY) <= ROAD_HALF;
 
@@ -269,7 +293,7 @@ final class Sim {
 
         if (!airborne) {
             double grip = (drifting ? GRIP_DRIFT : GRIP_NORMAL) * mods.grip;
-            if (weather == 1) grip *= 0.55 * mods.rainGrip;
+            grip *= (1 - wetness * (1 - 0.55 * mods.rainGrip));   // wet = less grip
             if (!onTrack) grip *= 0.7;
             vLat *= Math.exp(-grip * dt);
         }

@@ -31,8 +31,20 @@ import java.util.Random;
  */
 final class Game {
 
-    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4;
+    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5, TUTORIAL = 6;
     private int state = TITLE;
+
+    // race mode: 0 = grand prix vs rivals, 1 = time trial vs your ghost
+    private int mode = 0;
+    // car tuning sliders (-100..100), trade-offs applied on top of upgrades
+    private int tuneSpeed, tuneHandling, tuneStab;
+    private final RectF[] tuneBars = new RectF[3];
+    private int tuneSel;
+    private final RectF btnTune = new RectF(), btnHelp = new RectF(), btnMode = new RectF();
+    // session best lap (for the leaderboard) + tutorial paging
+    private double raceBestLap;
+    private int tutorialPage;
+    private boolean seenTutorial;
 
     // ---- shop / upgrades ----
     private static final int SHOP_N = 6;
@@ -142,8 +154,13 @@ final class Game {
                 trackBest[i] = prefs.getFloat("tb" + i, 0f);
             }
             tire = prefs.getInt("tire", 1);
+            tuneSpeed = prefs.getInt("tuneSpeed", 0);
+            tuneHandling = prefs.getInt("tuneHandling", 0);
+            tuneStab = prefs.getInt("tuneStab", 0);
+            seenTutorial = prefs.getBoolean("seenTutorial", false);
         }
         computeDaily();
+        if (!seenTutorial) { state = TUTORIAL; tutorialPage = 0; }
         text.setTypeface(Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD));
         for (int i = 0; i < stars.length; i++) {
             stars[i][0] = rnd.nextFloat(); stars[i][1] = rnd.nextFloat() * 0.7f;
@@ -159,7 +176,7 @@ final class Game {
     private void loadLevel(int lvl) {
         level = Math.max(0, Math.min(Tracks.LEVELS.length - 1, lvl));
         Tracks.Def def = Tracks.LEVELS[level];
-        sim.load(def, System.nanoTime());
+        sim.load(def, System.nanoTime(), mode == 1);
         rebuildRoadPath();
         dayTime = def.dayTime < 0 ? 0.25 : def.dayTime;
         for (int i = 0; i < rain.length; i++) {
@@ -247,10 +264,20 @@ final class Game {
             levelBtns[i] = new RectF(x, y, x + bw, y + bh);
         }
 
-        // shop + back buttons
-        float shw = Math.min(width * 0.2f, 260), shh = Math.min(width, height) * 0.1f;
-        btnShop.set(width - pad - shw, pad, width - pad, pad + shh);
-        btnBack.set(pad, pad, pad + shw * 0.7f, pad + shh);
+        // top-right pill buttons: HELP · TUNE · SHOP
+        float shh = Math.min(width, height) * 0.09f;
+        float pw = Math.min(width * 0.15f, 200), gpw = pw * 0.1f;
+        btnShop.set(width - pad - pw, pad, width - pad, pad + shh);
+        btnTune.set(btnShop.left - gpw - pw, pad, btnShop.left - gpw, pad + shh);
+        btnHelp.set(btnTune.left - gpw - pw * 0.7f, pad, btnTune.left - gpw, pad + shh);
+        btnBack.set(pad, pad, pad + pw * 0.8f, pad + shh);
+        // mode toggle (left side, under the XP bar)
+        btnMode.set(pad, pad + Math.min(width, height) * 0.17f, pad + width * 0.24f, pad + Math.min(width, height) * 0.17f + shh);
+        // tuning sliders
+        float tbw = Math.min(width * 0.5f, 660), tbh = Math.min(width, height) * 0.05f;
+        float tbx = width / 2f - tbw / 2f, tby = height * 0.36f;
+        for (int i = 0; i < 3; i++)
+            tuneBars[i] = new RectF(tbx, tby + i * tbh * 2.4f, tbx + tbw, tby + i * tbh * 2.4f + tbh);
 
         // shop cards: 3 x 2 grid
         int sc = 3;
@@ -305,6 +332,7 @@ final class Game {
         if (sim.lapsDone > prevLaps) {
             prevLaps = sim.lapsDone;
             double lt = sim.lastLapTime;
+            if (lt > 0.5 && (raceBestLap == 0 || lt < raceBestLap)) raceBestLap = lt;
             if (lt > 0.5 && (bestLap == 0 || lt < bestLap)) {
                 bestLap = lt;
                 if (prefs != null) prefs.edit().putFloat("bestLap", (float) bestLap).apply();
@@ -345,6 +373,7 @@ final class Game {
                 if (prefs != null) prefs.edit().putInt("unlocked", unlocked).apply();
             }
             if (!awarded) {
+                addLeaderboard(level, (float) raceBestLap);
                 awardRace();
                 dailyJustWon = false;
                 if (!dailyDoneToday && dailyMet()) {
@@ -430,6 +459,8 @@ final class Game {
 
         if (state == TITLE) renderTitle(g);
         else if (state == SHOP) renderShop(g);
+        else if (state == TUNE) renderTune(g);
+        else if (state == TUTORIAL) renderTutorial(g);
         else if (state == COUNTDOWN) renderCountdown(g);
         else if (state == FINISHED) renderResults(g);
     }
@@ -1024,8 +1055,12 @@ final class Game {
         tmp.set(pad0, xby, pad0 + xbw * ((xp % 150) / 150f), xby + xbh);
         g.drawRoundRect(tmp, xbh / 2, xbh / 2, ui);
 
-        // SHOP button (top-right)
-        drawPillButton(g, btnShop, "SHOP  " + coins + "¢", 0xFFFFC23D, true);
+        // top-right buttons + mode toggle
+        drawPillButton(g, btnShop, "SHOP", 0xFFFFC23D, true);
+        drawPillButton(g, btnTune, "TUNE", 0xFF8CFF45, true);
+        drawPillButton(g, btnHelp, "?", 0xFF19E0FF, true);
+        drawPillButton(g, btnMode, mode == 0 ? "MODE: GRAND PRIX" : "MODE: TIME TRIAL",
+                mode == 0 ? 0xFFFF8A1E : 0xFF6CE0FF, true);
 
         for (int i = 0; i < levelBtns.length; i++) {
             boolean locked = i >= unlocked;
@@ -1220,6 +1255,110 @@ final class Game {
         g.drawText(status, r.centerX(), r.bottom - u * 0.12f, text);
     }
 
+    private static final String[] TUNE_LABEL = {"ACCEL  <->  TOP SPEED", "BALANCED  <->  HANDLING", "NIMBLE  <->  STABLE"};
+
+    private int tuneVal(int i) { return i == 0 ? tuneSpeed : i == 1 ? tuneHandling : tuneStab; }
+
+    private void setTune(int i, int v) {
+        v = Math.max(-100, Math.min(100, v));
+        if (i == 0) tuneSpeed = v; else if (i == 1) tuneHandling = v; else tuneStab = v;
+        applyLoadout();
+        saveTuning();
+    }
+
+    private void renderTune(Canvas g) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF2102A1A, 0xF2070518}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+        float unit = Math.min(width, height), pad = unit * 0.04f;
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFF8CFF45);
+        text.setTextSize(unit * 0.07f);
+        g.drawText("CAR TUNING", width / 2f, pad + unit * 0.07f, text);
+        drawPillButton(g, btnBack, "BACK", 0xFF19E0FF, true);
+
+        for (int i = 0; i < 3; i++) {
+            RectF b = tuneBars[i];
+            text.setTextAlign(Paint.Align.LEFT);
+            text.setColor(i == tuneSel ? 0xFFFFFFFF : 0xFFB9B2E6);
+            text.setTextSize(b.height() * 0.7f);
+            g.drawText(TUNE_LABEL[i], b.left, b.top - b.height() * 0.4f, text);
+            // track
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(0x44101830);
+            g.drawRoundRect(b, b.height() / 2, b.height() / 2, ui);
+            ui.setColor(0x55FFFFFF);
+            g.drawRect(b.centerX() - 2, b.top, b.centerX() + 2, b.bottom, ui);   // centre mark
+            // knob
+            float kx = b.left + (tuneVal(i) + 100) / 200f * b.width();
+            ui.setColor(i == tuneSel ? 0xFF8CFF45 : 0xFF6CE0FF);
+            g.drawCircle(kx, b.centerY(), b.height() * 0.7f, ui);
+            text.setTextAlign(Paint.Align.RIGHT);
+            text.setColor(0xFFFFFFFF);
+            g.drawText((tuneVal(i) > 0 ? "+" : "") + tuneVal(i), b.right, b.bottom + b.height() * 0.9f, text);
+        }
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFF7F88B0);
+        text.setTextSize(unit * 0.026f);
+        g.drawText("drag sliders (or D-pad: pick / adjust).  every gain costs something elsewhere.",
+                width / 2f, height * 0.9f, text);
+    }
+
+    private static final String[][] TUTORIAL_PAGES = {
+            {"WELCOME TO TURBO CIRCUIT", "A top-down arcade racer.", "Let's cover the basics."},
+            {"STEER & GO", "Hold ▲ to accelerate, ◀ ▶ to steer.", "DRIFT (handbrake) slides you through bends."},
+            {"DRIFT = NITRO", "Drifting fills your NITRO meter.", "Tap NITRO for a burst of speed."},
+            {"ITEMS & ? BOXES", "Grab ? boxes for TURBO, OIL or SHIELD.", "Use them with the ITEM button."},
+            {"RAMPS & SHORTCUTS", "Blue ramps launch you; yellow-dashed", "side roads cut the lap. Mind the weather!"},
+            {"PROGRESS", "Win coins & XP, buy upgrades in the SHOP,", "TUNE your car and chase ghost lap records."},
+    };
+
+    private void renderTutorial(Canvas g) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF21A0E33, 0xF2070518}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+        float unit = Math.min(width, height);
+        String[] p = TUTORIAL_PAGES[Math.min(tutorialPage, TUTORIAL_PAGES.length - 1)];
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setShadowLayer(14, 0, 0, 0xFFFF2E88);
+        text.setColor(0xFF19E0FF);
+        text.setTextSize(unit * 0.08f);
+        g.drawText(p[0], width / 2f, height * 0.34f, text);
+        text.clearShadowLayer();
+        text.setColor(0xFFFFFFFF);
+        text.setTextSize(unit * 0.04f);
+        g.drawText(p[1], width / 2f, height * 0.48f, text);
+        g.drawText(p[2], width / 2f, height * 0.55f, text);
+
+        // page dots
+        ui.setStyle(Paint.Style.FILL);
+        float dy = height * 0.68f, dgap = unit * 0.045f, dx = width / 2f - (TUTORIAL_PAGES.length - 1) * dgap / 2f;
+        for (int i = 0; i < TUTORIAL_PAGES.length; i++) {
+            ui.setColor(i == tutorialPage ? 0xFF19E0FF : 0x55FFFFFF);
+            g.drawCircle(dx + i * dgap, dy, unit * 0.01f, ui);
+        }
+        float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 3));
+        text.setColor(0xFFFFFFFF);
+        text.setAlpha((int) (120 + 135 * pulse));
+        text.setTextSize(unit * 0.04f);
+        g.drawText(tutorialPage < TUTORIAL_PAGES.length - 1 ? "TAP / (A) : NEXT" : "TAP / (A) : START RACING", width / 2f, height * 0.8f, text);
+        text.setAlpha(255);
+        text.setColor(0xFF7F88B0);
+        text.setTextSize(unit * 0.026f);
+        g.drawText("(skip anytime — find this again via ? on the menu)", width / 2f, height * 0.9f, text);
+    }
+
+    private void advanceTutorial() {
+        tutorialPage++;
+        if (tutorialPage >= TUTORIAL_PAGES.length) {
+            seenTutorial = true;
+            if (prefs != null) prefs.edit().putBoolean("seenTutorial", true).apply();
+            state = TITLE;
+        }
+    }
+
     private void renderCountdown(Canvas g) {
         g.drawColor(0x55000000);
         text.setTextAlign(Paint.Align.CENTER);
@@ -1241,7 +1380,7 @@ final class Game {
         text.setShadowLayer(16, 0, 0, 0xFFFF2E88);
         text.setColor(0xFF19E0FF);
         text.setTextSize(Math.min(width, height) * 0.1f);
-        g.drawText(lastFinishWon ? "YOU WIN!" : "FINISH", width / 2f, height * 0.18f, text);
+        g.drawText(mode == 1 ? "TIME TRIAL" : (lastFinishWon ? "YOU WIN!" : "FINISH"), width / 2f, height * 0.18f, text);
         text.clearShadowLayer();
 
         List<Standing> st = new ArrayList<>();
@@ -1266,6 +1405,24 @@ final class Game {
                 g.drawText(fmt(sim.finishTime), width / 2f + unit * 0.34f, y, text);
             }
             y += unit * 0.07f;
+        }
+
+        // track records (leaderboard) on the right
+        float[] lb = loadLeaderboard(level);
+        text.setTextAlign(Paint.Align.LEFT);
+        text.setColor(0xFF8CFF45);
+        text.setTextSize(unit * 0.04f);
+        float lx = width / 2f + unit * 0.12f, ly = height * 0.34f;
+        g.drawText("TRACK RECORDS", lx, ly, text);
+        text.setTextSize(unit * 0.038f);
+        for (int i = 0; i < Math.min(5, lb.length); i++) {
+            boolean mine = Math.abs(lb[i] - raceBestLap) < 0.005f;
+            text.setColor(mine ? 0xFFFFE34D : 0xFFCFC8FF);
+            g.drawText((i + 1) + ".  " + fmt(lb[i]) + (mine ? "  <" : ""), lx, ly + unit * 0.06f * (i + 1), text);
+        }
+        if (lb.length == 0) {
+            text.setColor(0xFF7F88B0);
+            g.drawText("set your first record!", lx, ly + unit * 0.06f, text);
         }
 
         // rewards
@@ -1327,7 +1484,10 @@ final class Game {
         if (state == TITLE) {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
-                if (btnShop.contains(x, y)) { state = SHOP; return; }
+                if (btnShop.contains(x, y)) { state = SHOP; shopSel = 0; return; }
+                if (btnTune.contains(x, y)) { state = TUNE; tuneSel = 0; return; }
+                if (btnHelp.contains(x, y)) { state = TUTORIAL; tutorialPage = 0; return; }
+                if (btnMode.contains(x, y)) { mode = 1 - mode; loadLevel(level); return; }
                 for (int i = 0; i < 3; i++)
                     if (tireBtns[i].contains(x, y)) {
                         tire = i; applyLoadout();
@@ -1350,8 +1510,29 @@ final class Game {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
                 if (btnBack.contains(x, y)) { state = TITLE; return; }
                 for (int i = 0; i < SHOP_N; i++)
-                    if (shopCards[i].contains(x, y)) { tapShop(i); return; }
+                    if (shopCards[i].contains(x, y)) { shopSel = i; tapShop(i); return; }
             }
+            return;
+        }
+        if (state == TUNE) {
+            if (action == MotionEvent.ACTION_DOWN && btnBack.contains(e.getX(e.getActionIndex()), e.getY(e.getActionIndex()))) {
+                state = TITLE; return;
+            }
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+                float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
+                for (int i = 0; i < 3; i++) {
+                    RectF b = tuneBars[i];
+                    if (x >= b.left - 30 && x <= b.right + 30 && y >= b.top - b.height() && y <= b.bottom + b.height()) {
+                        tuneSel = i;
+                        setTune(i, Math.round((x - b.left) / b.width() * 200 - 100));
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+        if (state == TUTORIAL) {
+            if (action == MotionEvent.ACTION_DOWN) advanceTutorial();
             return;
         }
         if (state == FINISHED) {
@@ -1415,10 +1596,26 @@ final class Game {
                 case KeyEvent.KEYCODE_BUTTON_A:
                 case KeyEvent.KEYCODE_DPAD_CENTER:
                 case KeyEvent.KEYCODE_ENTER: if (level < unlocked) startRace(level); return true;
-                case KeyEvent.KEYCODE_BUTTON_Y: state = SHOP; return true;
+                case KeyEvent.KEYCODE_BUTTON_Y: state = SHOP; shopSel = 0; return true;
                 case KeyEvent.KEYCODE_BUTTON_X:
                     tire = (tire + 1) % 3; applyLoadout();
                     if (prefs != null) prefs.edit().putInt("tire", tire).apply(); return true;
+                case KeyEvent.KEYCODE_BUTTON_L1: mode = 1 - mode; loadLevel(level); return true;
+                case KeyEvent.KEYCODE_BUTTON_R1: state = TUNE; tuneSel = 0; return true;
+                case KeyEvent.KEYCODE_BUTTON_START: state = TUTORIAL; tutorialPage = 0; return true;
+                default: return false;
+            }
+        }
+        if (state == TUTORIAL) { advanceTutorial(); return true; }
+        if (state == TUNE) {
+            switch (code) {
+                case KeyEvent.KEYCODE_DPAD_UP: tuneSel = (tuneSel + 2) % 3; return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN: tuneSel = (tuneSel + 1) % 3; return true;
+                case KeyEvent.KEYCODE_DPAD_LEFT: setTune(tuneSel, tuneVal(tuneSel) - 10); return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT: setTune(tuneSel, tuneVal(tuneSel) + 10); return true;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BACK:
+                case KeyEvent.KEYCODE_BUTTON_A: state = TITLE; return true;
                 default: return false;
             }
         }
@@ -1493,6 +1690,7 @@ final class Game {
         tapBoost = tapItem = false;
         awarded = false;
         offTrackEver = hitEver = false;
+        raceBestLap = 0;
         state = COUNTDOWN;
         countdown = 3.99;
     }
@@ -1518,6 +1716,41 @@ final class Game {
         // tyre compound strategy
         if (tire == 0) { sim.mods.grip *= 1.10; sim.mods.rainGrip *= 0.72; }      // soft: dry grip, poor wet
         else if (tire == 2) { sim.mods.grip *= 0.95; sim.mods.rainGrip *= 1.70; } // wet: great in rain
+        // tuning sliders (zero-sum-ish trade-offs)
+        double s = tuneSpeed / 100.0, h = tuneHandling / 100.0, st = tuneStab / 100.0;
+        sim.mods.topSpeed *= 1 + 0.08 * s - 0.05 * h;
+        sim.mods.accel *= 1 - 0.06 * s;
+        sim.mods.grip *= 1 + 0.12 * h;
+        sim.mods.turn *= 1 + 0.10 * h - 0.08 * st;
+        sim.mods.bumpResist *= 1 + 0.30 * st;
+    }
+
+    private void saveTuning() {
+        if (prefs != null) prefs.edit().putInt("tuneSpeed", tuneSpeed)
+                .putInt("tuneHandling", tuneHandling).putInt("tuneStab", tuneStab).apply();
+    }
+
+    private float[] loadLeaderboard(int t) {
+        if (prefs == null) return new float[0];
+        String s = prefs.getString("lb" + t, "");
+        if (s.isEmpty()) return new float[0];
+        String[] p = s.split(",");
+        java.util.ArrayList<Float> v = new java.util.ArrayList<>();
+        for (String q : p) try { v.add(Float.parseFloat(q)); } catch (NumberFormatException ignored) {}
+        float[] out = new float[v.size()];
+        for (int i = 0; i < out.length; i++) out[i] = v.get(i);
+        return out;
+    }
+
+    private void addLeaderboard(int t, float lap) {
+        if (prefs == null || lap <= 0) return;
+        java.util.ArrayList<Float> v = new java.util.ArrayList<>();
+        for (float f : loadLeaderboard(t)) v.add(f);
+        v.add(lap);
+        java.util.Collections.sort(v);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(5, v.size()); i++) { if (i > 0) sb.append(','); sb.append(v.get(i)); }
+        prefs.edit().putString("lb" + t, sb.toString()).apply();
     }
 
     private void computeDaily() {
@@ -1547,12 +1780,17 @@ final class Game {
     }
 
     private void awardRace() {
-        int p = Math.min(sim.position(), 4);
-        int[] coinByPlace = {0, 150, 90, 55, 30};
-        int[] xpByPlace = {0, 100, 65, 40, 25};
         int oldLevel = driverLevel();
-        gainCoins = 80 + coinByPlace[p] + level * 12;
-        gainXp = 50 + xpByPlace[p] + level * 6;
+        if (mode == 1) {                 // time trial: flat payout, reward comes from records
+            gainCoins = 60 + level * 8;
+            gainXp = 35 + level * 4;
+        } else {
+            int p = Math.min(sim.position(), 4);
+            int[] coinByPlace = {0, 150, 90, 55, 30};
+            int[] xpByPlace = {0, 100, 65, 40, 25};
+            gainCoins = 80 + coinByPlace[p] + level * 12;
+            gainXp = 50 + xpByPlace[p] + level * 6;
+        }
         coins += gainCoins;
         xp += gainXp;
         leveledUp = driverLevel() > oldLevel;
