@@ -53,22 +53,33 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 break;
             }
             case MotionEvent.ACTION_POINTER_UP:
-            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_UP: {
+                releasePointer(e.getPointerId(e.getActionIndex()));
+                break;
+            }
             case MotionEvent.ACTION_CANCEL: {
-                int idx = e.getActionIndex();
-                int pid = e.getPointerId(idx);
-                if (pid == movePointerId) {
-                    movePointerId = -1;
-                    input.setMove(0f, 0f);
-                } else if (pid == lookPointerId) {
-                    lookPointerId = -1;
-                } else if (pid == firePointerId) {
-                    firePointerId = -1;
-                }
+                // The whole gesture is cancelled (e.g. system interruption): no
+                // per-pointer up events will follow, so release ALL pointers and
+                // stop moving — otherwise a latched finger leaves controls stuck.
+                movePointerId = -1;
+                lookPointerId = -1;
+                firePointerId = -1;
+                input.setMove(0f, 0f);
                 break;
             }
         }
         return true;
+    }
+
+    private void releasePointer(int pid) {
+        if (pid == movePointerId) {
+            movePointerId = -1;
+            input.setMove(0f, 0f);
+        } else if (pid == lookPointerId) {
+            lookPointerId = -1;
+        } else if (pid == firePointerId) {
+            firePointerId = -1;
+        }
     }
 
     private void assign(int pid, float x, float y) {
