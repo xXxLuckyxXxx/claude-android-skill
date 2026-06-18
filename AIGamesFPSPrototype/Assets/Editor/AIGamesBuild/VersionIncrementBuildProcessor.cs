@@ -19,14 +19,28 @@ namespace AIGames.EditorTools
         {
             if (report.summary.platform != BuildTarget.Android) return;
 
-            int next = PlayerSettings.Android.bundleVersionCode + 1;
-            PlayerSettings.Android.bundleVersionCode = next;
+            // A shared, monotonic counter exported by the CI workflow
+            // (AIGAMES_VERSION_CODE = github.run_number) is authoritative when
+            // present. The native builder reads the SAME variable, so both
+            // builders stay on ONE increasing sequence even though each fresh
+            // checkout starts ProjectSettings back at 1. Without this, every CI
+            // run (and any later cross-builder APK) would collide on the same
+            // versionCode and Android would reject the "update" as a downgrade.
+            string shared = System.Environment.GetEnvironmentVariable("AIGAMES_VERSION_CODE");
+            if (int.TryParse(shared, out int code) && code > 0)
+            {
+                PlayerSettings.Android.bundleVersionCode = code;
+                Debug.Log($"[AIGames] versionCode set from AIGAMES_VERSION_CODE = {code}.");
+            }
+            else
+            {
+                code = PlayerSettings.Android.bundleVersionCode + 1;   // local fallback
+                PlayerSettings.Android.bundleVersionCode = code;
+                Debug.Log($"[AIGames] versionCode auto-incremented -> {code} (local).");
+            }
 
-            // Persist immediately so the bump survives even if the build aborts.
+            // Persist immediately so the value survives even if the build aborts.
             AssetDatabase.SaveAssets();
-
-            Debug.Log($"[AIGames] versionCode auto-incremented -> {next} " +
-                      $"(versionName {PlayerSettings.bundleVersion}).");
         }
     }
 }

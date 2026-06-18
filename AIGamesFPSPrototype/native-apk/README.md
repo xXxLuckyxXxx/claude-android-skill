@@ -16,7 +16,7 @@ this one).
 |--------|-------|
 | applicationId | `com.aigames.fpsprototype` (same as the Unity project) |
 | Signing | `../keystore/aigames-release.keystore` (same key) |
-| versionCode | auto-incremented by `build-apk.sh` on every run |
+| versionCode | `AIGAMES_VERSION_CODE` env if set (shared CI counter), else local auto-increment |
 | Render | OpenGL ES 2.0: lit checkered floor + shaded box arena |
 | Controls | left half = move stick, right half = look, landscape, immersive |
 
@@ -54,6 +54,24 @@ Run `./native-apk/build-apk.sh` twice. The `versionCode` increments each time
 (e.g. 2 → 3). Install the first APK, then install the second **without
 uninstalling** — it upgrades in place because the applicationId and signing
 key are identical and the versionCode is higher.
+
+### One monotonic counter across builders / CI
+
+A `versionCode` must be strictly increasing for a *single* install lineage,
+and a fresh CI checkout would otherwise restart the local counter. So both
+builders honour a shared override and fall back to a local counter only for
+ad-hoc builds:
+
+```bash
+AIGAMES_VERSION_CODE=$BUILD_NUMBER ./native-apk/build-apk.sh   # native
+# Unity reads the same env var in VersionIncrementBuildProcessor.cs
+```
+
+In CI the workflow exports `AIGAMES_VERSION_CODE: ${{ github.run_number }}`, so
+the native and Unity builders share one increasing sequence. **Rule of thumb:**
+one install lineage = one monotonic source. Locally, the native counter
+(`version.properties`) and Unity's `AndroidBundleVersionCode` are independent —
+pick one builder per device, or drive both from `AIGAMES_VERSION_CODE`.
 
 ## Pipeline
 

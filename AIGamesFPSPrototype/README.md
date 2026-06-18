@@ -51,7 +51,7 @@ wenn **alle drei** Bedingungen erfüllt sind — und genau die setzt dieses Proj
 |---|-----------|-----------|
 | 1 | **identische `applicationId`** | fix `com.aigames.fpsprototype` (`BuildScript.cs`) |
 | 2 | **gleicher Signaturschlüssel** | derselbe Keystore für **jeden** Build (`generate-keystore.sh`, `BuildScript.ApplySigning`, `launcherTemplate.gradle`) |
-| 3 | **streng steigender `versionCode`** | automatisch +1 pro Build (`VersionIncrementBuildProcessor.cs`) |
+| 3 | **streng steigender `versionCode`** | `AIGAMES_VERSION_CODE` (in CI = `github.run_number`, von Unity **und** native geteilt), sonst +1 pro Build (`VersionIncrementBuildProcessor.cs`) |
 
 Debug- **und** Release-Builds werden mit **demselben** Schlüssel signiert — dadurch
 lässt sich auch ein Release-Build über einen vorher installierten Debug-Build

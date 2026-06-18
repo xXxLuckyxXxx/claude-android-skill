@@ -32,12 +32,20 @@ STOREPASS="$(prop storePassword "$PROPS")"
 KEYPASS="$(prop keyPassword "$PROPS")"
 ALIAS="$(prop keyAlias "$PROPS")"
 
-# --- auto-increment versionCode ---------------------------------------------
+# --- versionCode: shared monotonic env counter (authoritative) OR local -----
+#     AIGAMES_VERSION_CODE is exported by CI (= github.run_number) and is shared
+#     with the Unity builder, so both stay on ONE increasing sequence. Only the
+#     local fallback writes back to version.properties.
 VP="$HERE/version.properties"
-CODE=$(( $(prop versionCode "$VP") + 1 ))
 NAME="$(prop versionName "$VP")"
-sed -i "s/^versionCode=.*/versionCode=$CODE/" "$VP"
-echo "→ versionCode = $CODE   versionName = $NAME"
+if [ -n "${AIGAMES_VERSION_CODE:-}" ]; then
+    CODE="$AIGAMES_VERSION_CODE"
+    echo "→ versionCode = $CODE (from AIGAMES_VERSION_CODE)   versionName = $NAME"
+else
+    CODE=$(( $(prop versionCode "$VP") + 1 ))
+    sed -i "s/^versionCode=.*/versionCode=$CODE/" "$VP"
+    echo "→ versionCode = $CODE (local counter)   versionName = $NAME"
+fi
 
 rm -rf "$OUT"; mkdir -p "$OUT/classes" "$OUT/stubs"
 
