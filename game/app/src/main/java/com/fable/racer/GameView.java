@@ -2,6 +2,7 @@ package com.fable.racer;
 
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -9,8 +10,15 @@ import android.view.SurfaceView;
 /** Hosts the game loop on its own thread and forwards touch input. */
 public class GameView extends SurfaceView implements SurfaceHolder.Callback {
 
+    // Render at a capped internal resolution and let the display scale it up.
+    // Software-canvas cost scales with pixel count, so this is the big perf win
+    // on high-res phones; the upscale is done by the compositor (near-free).
+    private static final int MAX_LONG_SIDE = 1600;
+
     private GameThread thread;
     private Game game;
+    private int bufW, bufH;
+    private final Matrix touchMatrix = new Matrix();
 
     public GameView(Context context) {
         super(context);
@@ -40,10 +48,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
-        int w = getWidth();
-        int h = getHeight();
-        if (w == 0 || h == 0) { w = 1280; h = 720; }
-        game = new Game(getContext(), w, h);
+        int vw = getWidth(), vh = getHeight();
+        if (vw == 0 || vh == 0) { vw = 1280; vh = 720; }
+        float scale = Math.min(1f, (float) MAX_LONG_SIDE / Math.max(vw, vh));
+        bufW = Math.max(640, Math.round(vw * scale));
+        bufH = Math.max(360, Math.round(vh * scale));
+        holder.setFixedSize(bufW, bufH);     // render buffer; system upscales to the view
+        game = new Game(getContext(), bufW, bufH);
         thread = new GameThread(holder, game);
         thread.setRunning(true);
         thread.start();
@@ -51,7 +62,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        if (game != null && width > 0 && height > 0) game.resize(width, height);
+        if (game != null && width > 0 && height > 0) { bufW = width; bufH = height; game.resize(width, height); }
     }
 
     @Override
@@ -74,7 +85,14 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        if (game != null) game.handleTouch(event);
+        if (game != null) {
+            int vw = getWidth(), vh = getHeight();
+            if (vw > 0 && vh > 0 && (vw != bufW || vh != bufH)) {
+                touchMatrix.setScale(bufW / (float) vw, bufH / (float) vh);
+                event.transform(touchMatrix);     // map view pixels -> render-buffer pixels
+            }
+            game.handleTouch(event);
+        }
         return true;
     }
 

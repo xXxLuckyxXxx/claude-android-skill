@@ -683,13 +683,6 @@ final class Game {
         g.scale((float) (zoom * zoomMul), (float) (zoom * zoomMul));
         g.translate((float) -camX, (float) -camY);
 
-        // grass texture grain over the themed ground (tiles + scrolls in world space)
-        float hw = (float) (width / (zoom * zoomMul)) * 0.6f + 64;
-        float hh = (float) (height / (zoom * zoomMul)) * 0.6f + 64;
-        texPaint.setStyle(Paint.Style.FILL);
-        texPaint.setShader(grassShaderTex);
-        g.drawRect((float) camX - hw, (float) camY - hh, (float) camX + hw, (float) camY + hh, texPaint);
-
         drawScenery(g, false);          // ground shadows first
         drawSkidMarks(g);
         drawShortcuts(g);
