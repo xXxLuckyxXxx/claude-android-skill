@@ -55,7 +55,7 @@ public final class SimTest {
         }
 
         double dt = 1.0 / 60;
-        double maxGameTime = 300;
+        double maxGameTime = 400;
         int steps = 0, maxSteps = (int) (maxGameTime / dt);
         double topSpeed = 0;
         boolean jumped = false, picked = false, boosted = false, nan = false;

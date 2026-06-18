@@ -135,10 +135,10 @@ final class Sim {
         // NOVA (balanced), SAGE (smooth, consistent, hugs the racing line).
         int[] cols = {0xFFFF4D6B, 0xFFFFC23D, 0xFF6CE0FF};
         String[] names = {"BLAZE", "NOVA", "SAGE"};
-        double[] spdMul = {1.07, 1.0, 0.99};
-        double[] skill = {0.45, 0.7, 0.92};      // higher = fewer mistakes
-        double[] aggr = {1.7, 1.0, 0.6};
-        double[] weave = {34, 14, 4};
+        double[] spdMul = {1.14, 1.06, 1.03};    // faster rivals
+        double[] skill = {0.62, 0.82, 0.97};     // higher = fewer mistakes
+        double[] aggr = {1.9, 1.1, 0.7};
+        double[] weave = {26, 11, 3};            // tighter racing lines
         for (int i = 0; i < 3; i++) {
             Ai a = new Ai();
             int idx0 = (startIdx - (i + 1) * 5 + N) % N;
@@ -414,7 +414,7 @@ final class Sim {
             if (a.eliminated) continue;            // knocked out in elimination mode
             double prog = a.lap * (double) N + a.t;
             double diff = playerProg - prog;
-            double rubber = 1 + Math.max(-0.18, Math.min(0.22, diff / (N * 0.5)));
+            double rubber = 1 + Math.max(-0.06, Math.min(0.22, diff / (N * 0.5)));
             double spd = a.baseSpeed * rubber;
 
             // personality: occasional "mistakes" (a brief lift), rarer for skilled drivers
