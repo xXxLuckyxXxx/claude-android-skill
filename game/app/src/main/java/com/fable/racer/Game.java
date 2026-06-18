@@ -33,8 +33,10 @@ import java.util.Random;
  */
 final class Game {
 
-    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5, TUTORIAL = 6, STYLE = 7, CHAMP = 8;
+    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5,
+            TUTORIAL = 6, STYLE = 7, CHAMP = 8, SETUP = 9;
     private int state = TITLE;
+    private final RectF[] menuBtns = new RectF[6];   // main-menu buttons
 
     // unlockable cosmetics (bought with coins)
     private static final String[] THEME_NAME = {"CLASSIC", "SAKURA", "DESERT", "SYNTHWAVE", "ARCTIC", "TOXIC"};
@@ -103,6 +105,7 @@ final class Game {
     private double raceBestLap;
     private int tutorialPage;
     private boolean seenTutorial;
+    private int menuSel;
 
     // ---- shop / upgrades ----
     private static final int SHOP_N = 6;
@@ -361,40 +364,42 @@ final class Game {
         btnBoost.set(width - pad - r * 1.7f, by - r * 1.9f, width - pad + r * 0.3f, by - r * 1.9f + r * 1.6f);
         btnItem.set(width - pad - r * 3.9f, by - r * 1.9f, width - pad - r * 2.3f, by - r * 1.9f + r * 1.6f);
 
-        float sw = Math.min(width, height) * 0.066f;
-        float sx = width / 2f - sw * 3.3f, sy = height * 0.74f;
-        for (int i = 0; i < swatches.length; i++)
-            swatches[i] = new RectF(sx + i * sw * 1.1f, sy, sx + i * sw * 1.1f + sw, sy + sw);
+        float shh = Math.min(width, height) * 0.09f;
+        float pwBack = Math.min(width * 0.14f, 190);
+        btnBack.set(pad, pad, pad + pwBack, pad + shh);
 
-        // tyre compound selector (row below the colour swatches)
-        float tw0 = Math.min(width * 0.12f, 150), th0 = Math.min(width, height) * 0.07f;
-        float tx = width / 2f - (tw0 * 3 + 2 * tw0 * 0.1f) / 2f, ty = height * 0.84f;
-        for (int i = 0; i < 3; i++)
-            tireBtns[i] = new RectF(tx + i * tw0 * 1.1f, ty, tx + i * tw0 * 1.1f + tw0, ty + th0);
+        // ---- main menu (TITLE): 3 x 2 big buttons + music toggle + daily banner ----
+        float mbw = Math.min(width * 0.34f, 470), mbh = height * 0.135f;
+        float mgx = mbw * 0.08f, mgy = mbh * 0.30f;
+        float mtw = 2 * mbw + mgx, mStartX = width / 2f - mtw / 2f, mStartY = height * 0.32f;
+        for (int i = 0; i < menuBtns.length; i++) {
+            int col = i % 2, row = i / 2;
+            float x = mStartX + col * (mbw + mgx), y = mStartY + row * (mbh + mgy);
+            menuBtns[i] = new RectF(x, y, x + mbw, y + mbh);
+        }
+        btnMusic.set(width - pad - pwBack, pad, width - pad, pad + shh);
+        float dcw = Math.min(width * 0.66f, 820);
+        dailyCard.set(width / 2f - dcw / 2f, height - pad - shh, width / 2f + dcw / 2f, height - pad);
 
-        // daily challenge card (wide bar)
-        float dcw = Math.min(width * 0.62f, 760), dch = Math.min(width, height) * 0.1f;
-        dailyCard.set(width / 2f - dcw / 2f, height * 0.6f, width / 2f + dcw / 2f, height * 0.6f + dch);
-
-        int cols = 4, rows = (levelBtns.length + cols - 1) / cols;
-        float bw = Math.min(width * 0.21f, 320), bh = height * 0.125f;
-        float gapX = bw * 0.12f, gapY = bh * 0.22f;
-        float totalW = cols * bw + (cols - 1) * gapX;
-        float startX = width / 2f - totalW / 2f, startY = height * 0.27f;
+        // ---- race-setup window ----
+        float pwid = Math.min(width * 0.22f, 300);
+        btnMode.set(width / 2f - pwid / 2f, height * 0.15f, width / 2f + pwid / 2f, height * 0.15f + shh);
+        btnRandom.set(width - pad - pwid, height * 0.15f, width - pad, height * 0.15f + shh);
+        float band = height * 0.30f;
+        float tw0 = Math.min(width * 0.1f, 135), th0 = shh * 0.9f;
+        float txx = width * 0.27f - (3 * tw0 * 1.1f) / 2f;
+        for (int i = 0; i < 3; i++) tireBtns[i] = new RectF(txx + i * tw0 * 1.1f, band, txx + i * tw0 * 1.1f + tw0, band + th0);
+        float sw = Math.min(width, height) * 0.062f;
+        float sxx = width * 0.68f - (6 * sw * 1.15f) / 2f;
+        for (int i = 0; i < swatches.length; i++) swatches[i] = new RectF(sxx + i * sw * 1.15f, band, sxx + i * sw * 1.15f + sw, band + sw);
+        int cols = 4;
+        float bw = Math.min(width * 0.21f, 340), bh = height * 0.17f, gapX = bw * 0.1f, gapY = bh * 0.16f;
+        float totalW = cols * bw + (cols - 1) * gapX, startX = width / 2f - totalW / 2f, startY = height * 0.42f;
         for (int i = 0; i < levelBtns.length; i++) {
             int col = i % cols, row = i / cols;
             float x = startX + col * (bw + gapX), y = startY + row * (bh + gapY);
             levelBtns[i] = new RectF(x, y, x + bw, y + bh);
         }
-
-        // top-right pill buttons: ? · STYLE · TUNE · SHOP
-        float shh = Math.min(width, height) * 0.09f;
-        float pw = Math.min(width * 0.13f, 180), gpw = pw * 0.1f;
-        btnShop.set(width - pad - pw, pad, width - pad, pad + shh);
-        btnTune.set(btnShop.left - gpw - pw, pad, btnShop.left - gpw, pad + shh);
-        btnStyle.set(btnTune.left - gpw - pw, pad, btnTune.left - gpw, pad + shh);
-        btnHelp.set(btnStyle.left - gpw - pw * 0.55f, pad, btnStyle.left - gpw, pad + shh);
-        btnBack.set(pad, pad, pad + pw * 0.9f, pad + shh);
         // style screen: 6 theme cards (3x2) + 4 skin chips
         float tcw = Math.min(width * 0.27f, 360), tch = height * 0.2f;
         float tgx = tcw * 0.07f, tgy = tch * 0.14f;
@@ -408,22 +413,15 @@ final class Game {
         float ctw = 4 * chw + 3 * (chw * 0.08f), csx = width / 2f - ctw / 2f, csy = height * 0.78f;
         for (int i = 0; i < 4; i++)
             skinChips[i] = new RectF(csx + i * (chw + chw * 0.08f), csy, csx + i * (chw + chw * 0.08f) + chw, csy + chh2);
-        // menu second row: MODE · CHAMPIONSHIP · RANDOM · MUSIC
-        float prow = height * 0.185f, pwid = Math.min(width * 0.18f, 250), pgap = pwid * 0.05f;
-        float totalP = 4 * pwid + 3 * pgap, px0 = width / 2f - totalP / 2f;
-        btnMode.set(px0, prow, px0 + pwid, prow + shh);
-        btnChamp.set(px0 + (pwid + pgap), prow, px0 + (pwid + pgap) + pwid, prow + shh);
-        btnRandom.set(px0 + 2 * (pwid + pgap), prow, px0 + 2 * (pwid + pgap) + pwid, prow + shh);
-        btnMusic.set(px0 + 3 * (pwid + pgap), prow, px0 + 3 * (pwid + pgap) + pwid, prow + shh);
-        // random-track code steppers + reroll + go (shown when RANDOM is active)
-        float cw0 = Math.min(width * 0.055f, 70), ccx = width / 2f - 5 * cw0 * 1.2f / 2f, ccy = height * 0.46f;
+        // random-track code steppers + reroll + go (race-setup window, when RANDOM on)
+        float cw0 = Math.min(width * 0.06f, 78), ccx = width / 2f - 5 * cw0 * 1.2f / 2f, ccy = height * 0.56f;
         for (int i = 0; i < 5; i++) {
             float dx0 = ccx + i * cw0 * 1.2f;
-            codeUp[i] = new RectF(dx0, ccy - cw0 * 1.0f, dx0 + cw0, ccy - cw0 * 0.1f);
-            codeDn[i] = new RectF(dx0, ccy + cw0 * 1.0f, dx0 + cw0, ccy + cw0 * 1.9f);
+            codeUp[i] = new RectF(dx0, ccy - cw0, dx0 + cw0, ccy - cw0 * 0.1f);
+            codeDn[i] = new RectF(dx0, ccy + cw0, dx0 + cw0, ccy + cw0 * 1.9f);
         }
-        btnReroll.set(width / 2f - pwid - pgap, height * 0.6f, width / 2f - pgap, height * 0.6f + shh);
-        btnGo.set(width / 2f + pgap, height * 0.6f, width / 2f + pgap + pwid, height * 0.6f + shh);
+        btnReroll.set(width / 2f - pwid - 12, height * 0.72f, width / 2f - 12, height * 0.72f + shh);
+        btnGo.set(width / 2f + 12, height * 0.72f, width / 2f + 12 + pwid, height * 0.72f + shh);
         // tuning sliders
         float tbw = Math.min(width * 0.5f, 660), tbh = Math.min(width, height) * 0.05f;
         float tbx = width / 2f - tbw / 2f, tby = height * 0.36f;
@@ -713,6 +711,7 @@ final class Game {
         renderBanners(g);
 
         if (state == TITLE) renderTitle(g);
+        else if (state == SETUP) renderSetup(g);
         else if (state == CHAMP) renderChamp(g);
         else if (state == SHOP) renderShop(g);
         else if (state == STYLE) renderStyle(g);
@@ -1345,18 +1344,19 @@ final class Game {
 
     private void drawButton(Canvas g, RectF r, String label, boolean active, int accent) {
         ui.setStyle(Paint.Style.FILL);
-        ui.setColor(active ? 0x66102038 : 0x33101830);
+        ui.setColor(active ? (0xFF000000 | (accent & 0xFFFFFF)) : 0xE61A2336);   // solid (opaque)
         g.drawOval(r, ui);
         ui.setStyle(Paint.Style.STROKE);
-        ui.setStrokeWidth(r.width() * 0.045f);
-        ui.setColor(active ? accent : 0x88FFFFFF);
+        ui.setStrokeWidth(r.width() * 0.05f);
+        ui.setColor(active ? 0xFFFFFFFF : (0xCC000000 | (accent & 0xFFFFFF)));
         g.drawOval(r, ui);
         ui.setStyle(Paint.Style.FILL);
-        text.clearShadowLayer();
-        text.setColor(active ? accent : 0xCCFFFFFF);
+        text.setShadowLayer(5, 0, 1, 0xCC000000);
+        text.setColor(active ? 0xFF0A1018 : 0xFFFFFFFF);
         text.setTextAlign(Paint.Align.CENTER);
-        text.setTextSize(r.height() * (label.length() > 2 ? 0.22f : 0.42f));
-        g.drawText(label, r.centerX(), r.centerY() + r.height() * 0.1f, text);
+        fitText(label, r.width() * 0.78f, r.height() * (label.length() > 2 ? 0.26f : 0.44f));
+        g.drawText(label, r.centerX(), r.centerY() + r.height() * 0.12f, text);
+        text.clearShadowLayer();
     }
 
     private void drawTrackThumb(Canvas g, float[][] wp, RectF rect, int accent) {
@@ -1390,65 +1390,132 @@ final class Game {
         g.drawPath(tmpPath, road);
     }
 
+    private static final String[] MENU_LABEL = {"RACE", "CHAMPIONSHIP", "SHOP", "STYLE", "TUNE", "HOW TO PLAY"};
+    private static final int[] MENU_ACCENT = {0xFF42E2B8, 0xFFFFE34D, 0xFFFFC23D, 0xFFFF6FB1, 0xFF8CFF45, 0xFF19E0FF};
+
     private void renderTitle(Canvas g) {
         drawMenuBackdrop(g, 0xF21A0E33, 0xF2090518);
+        float unit = Math.min(width, height), pad = unit * 0.04f;
 
         text.setTextAlign(Paint.Align.CENTER);
         float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 2));
-        text.setShadowLayer(16 + 16 * pulse, 0, 0, 0xFFFF2E88);
+        text.setShadowLayer(14 + 14 * pulse, 0, 0, 0xFFFF2E88);
         text.setColor(0xFF19E0FF);
-        text.setTextSize(Math.min(width, height) * 0.12f);
-        g.drawText("TURBO CIRCUIT", width / 2f, height * 0.17f, text);
+        text.setTextSize(unit * 0.12f);
+        g.drawText("TURBO CIRCUIT", width / 2f, height * 0.2f, text);
         text.clearShadowLayer();
 
-        text.setColor(0xFFB9B2E6);
-        text.setTextSize(Math.min(width, height) * 0.03f);
-        g.drawText("SELECT A LEVEL", width / 2f, height * 0.27f, text);
+        // coins + level + xp (top-left)
+        text.setTextAlign(Paint.Align.LEFT);
+        text.setShadowLayer(6, 0, 1, 0xCC000000);
+        text.setColor(0xFFFFD24D);
+        text.setTextSize(unit * 0.045f);
+        g.drawText(coins + " ¢", pad, pad + unit * 0.045f, text);
+        text.setColor(0xFF8AF0FF);
+        g.drawText("LV " + driverLevel(), pad, pad + unit * 0.105f, text);
+        text.clearShadowLayer();
+        float xbw = width * 0.16f, xbh = unit * 0.016f, xby = pad + unit * 0.125f;
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0xFF223044);
+        g.drawRoundRect(rr(pad, xby, pad + xbw, xby + xbh), xbh / 2, xbh / 2, ui);
+        ui.setColor(0xFF8AF0FF);
+        g.drawRoundRect(rr(pad, xby, pad + xbw * ((xp % 150) / 150f), xby + xbh), xbh / 2, xbh / 2, ui);
 
-        // coins + driver level header (top-left)
-        float unit0 = Math.min(width, height), pad0 = unit0 * 0.04f;
+        drawPillButton(g, btnMusic, musicOn ? "MUSIC ON" : "MUSIC OFF", 0xFFB66BFF, true);
+
+        for (int i = 0; i < menuBtns.length; i++) {
+            drawPillButton(g, menuBtns[i], MENU_LABEL[i], MENU_ACCENT[i], true);
+            if (i == menuSel) {                       // controller cursor highlight
+                ui.setStyle(Paint.Style.STROKE);
+                ui.setStrokeWidth(5);
+                ui.setColor(0xFFFFFFFF);
+                g.drawRoundRect(menuBtns[i], menuBtns[i].height() * 0.28f, menuBtns[i].height() * 0.28f, ui);
+                ui.setStyle(Paint.Style.FILL);
+            }
+        }
+
+        // daily banner (slim, bottom)
+        boolean dailyActive = !dailyDoneToday;
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(dailyDoneToday ? 0xFF18402F : 0xFF40331A);
+        g.drawRoundRect(dailyCard, 12, 12, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(3);
+        ui.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFC23D);
+        g.drawRoundRect(dailyCard, 12, 12, ui);
+        ui.setStyle(Paint.Style.FILL);
         text.setTextAlign(Paint.Align.LEFT);
         text.setColor(0xFFFFD24D);
-        text.setTextSize(unit0 * 0.04f);
-        g.drawText(coins + " ¢", pad0, pad0 + unit0 * 0.04f, text);
-        text.setColor(0xFF8AF0FF);
-        g.drawText("LV " + driverLevel(), pad0, pad0 + unit0 * 0.095f, text);
-        float xbw = width * 0.16f, xbh = unit0 * 0.016f, xby = pad0 + unit0 * 0.12f;
-        ui.setStyle(Paint.Style.FILL);
-        ui.setColor(0x55FFFFFF);
-        tmp.set(pad0, xby, pad0 + xbw, xby + xbh);
-        g.drawRoundRect(tmp, xbh / 2, xbh / 2, ui);
-        ui.setColor(0xFF8AF0FF);
-        tmp.set(pad0, xby, pad0 + xbw * ((xp % 150) / 150f), xby + xbh);
-        g.drawRoundRect(tmp, xbh / 2, xbh / 2, ui);
+        fitText("DAILY: " + dailyDesc(), dailyCard.width() * 0.74f, dailyCard.height() * 0.42f);
+        g.drawText("DAILY: " + dailyDesc(), dailyCard.left + dailyCard.width() * 0.03f, dailyCard.centerY() + dailyCard.height() * 0.15f, text);
+        text.setTextAlign(Paint.Align.RIGHT);
+        text.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFD24D);
+        text.setTextSize(dailyCard.height() * 0.42f);
+        g.drawText(dailyDoneToday ? "DONE" : "+" + DAILY_REWARD, dailyCard.right - dailyCard.width() * 0.03f, dailyCard.centerY() + dailyCard.height() * 0.15f, text);
+    }
 
-        // top-right buttons
-        drawPillButton(g, btnShop, "SHOP", 0xFFFFC23D, true);
-        drawPillButton(g, btnTune, "TUNE", 0xFF8CFF45, true);
-        drawPillButton(g, btnStyle, "STYLE", 0xFFFF6FB1, true);
-        drawPillButton(g, btnHelp, "?", 0xFF19E0FF, true);
-        // second row: mode / championship / random / music
+    private RectF rr(float l, float t, float r, float b) { tmp.set(l, t, r, b); return tmp; }
+
+    private void renderSetup(Canvas g) {
+        drawMenuBackdrop(g, 0xF2122036, 0xF2070518);
+        float unit = Math.min(width, height);
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setShadowLayer(8, 0, 1, 0xCC000000);
+        text.setColor(0xFF42E2B8);
+        text.setTextSize(unit * 0.06f);
+        g.drawText("RACE SETUP", width / 2f, unit * 0.09f, text);
+        text.clearShadowLayer();
+
+        drawPillButton(g, btnBack, "BACK", 0xFF19E0FF, true);
         drawPillButton(g, btnMode, MODE_NAME[mode], 0xFFFF8A1E, true);
-        drawPillButton(g, btnChamp, champ ? "SEASON R" + (champRound + 1) : "CHAMPIONSHIP", 0xFFFFE34D, true);
-        drawPillButton(g, btnRandom, randomTrack ? "RANDOM: ON" : "RANDOM: OFF", 0xFF6CE0FF, true);
-        drawPillButton(g, btnMusic, musicOn ? "MUSIC: ON" : "MUSIC: OFF", 0xFFB66BFF, true);
+        drawPillButton(g, btnRandom, randomTrack ? "RANDOM ON" : "RANDOM OFF", 0xFF6CE0FF, true);
 
-        if (randomTrack) { renderRandomPanel(g); }
-        else for (int i = 0; i < levelBtns.length; i++) {
+        // tyres + colours band
+        text.setColor(0xFF9FB0D0);
+        text.setTextSize(unit * 0.026f);
+        g.drawText("TYRES", (tireBtns[0].left + tireBtns[2].right) / 2, tireBtns[0].top - unit * 0.012f, text);
+        g.drawText("CAR", (swatches[0].left + swatches[5].right) / 2, swatches[0].top - unit * 0.012f, text);
+        for (int i = 0; i < 3; i++) {
+            boolean sel = tire == i;
+            int acc = i == 0 ? 0xFFFF6B6B : (i == 1 ? 0xFFFFD24D : 0xFF6CE0FF);
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(sel ? acc : 0xFF1B2740);
+            g.drawRoundRect(tireBtns[i], 10, 10, ui);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(sel ? 4 : 2);
+            ui.setColor(sel ? 0xFFFFFFFF : 0xAACCD8FF);
+            g.drawRoundRect(tireBtns[i], 10, 10, ui);
+            ui.setStyle(Paint.Style.FILL);
+            text.setColor(sel ? 0xFF101820 : 0xFFE8EEFF);
+            fitText(TIRE_NAME[i], tireBtns[i].width() * 0.84f, tireBtns[i].height() * 0.4f);
+            g.drawText(TIRE_NAME[i], tireBtns[i].centerX(), tireBtns[i].centerY() + tireBtns[i].height() * 0.14f, text);
+        }
+        for (int i = 0; i < swatches.length; i++) {
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(CAR_COLORS[i]);
+            g.drawOval(swatches[i], ui);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(i == playerColorIdx ? 5 : 2);
+            ui.setColor(i == playerColorIdx ? 0xFFFFFFFF : 0x66FFFFFF);
+            g.drawOval(swatches[i], ui);
+        }
+        ui.setStyle(Paint.Style.FILL);
+
+        if (randomTrack) { renderRandomPanel(g); return; }
+
+        for (int i = 0; i < levelBtns.length; i++) {
             boolean locked = i >= unlocked;
             RectF r = levelBtns[i];
-            int accent = i == level ? 0xFF19E0FF : 0xFF7E8AD0;
+            int accent = MENU_ACCENT[i % MENU_ACCENT.length];
             ui.setStyle(Paint.Style.FILL);
-            ui.setColor(locked ? 0x33101830 : (i == level ? 0x5519E0FF : 0x44102038));
+            ui.setColor(locked ? 0xFF161C2A : 0xFF1A2438);    // opaque cards
             g.drawRoundRect(r, 14, 14, ui);
-
             if (!locked) {
-                // mini track preview
-                tmp2.set(r.left, r.top + r.height() * 0.06f, r.right, r.bottom - r.height() * 0.34f);
+                tmp2.set(r.left, r.top + r.height() * 0.06f, r.right, r.bottom - r.height() * 0.32f);
                 drawTrackThumb(g, Tracks.LEVELS[i].wp, tmp2, accent);
             } else {
-                float cxL = r.centerX(), cyL = r.centerY() - r.height() * 0.06f, s = r.height() * 0.2f;
-                ui.setColor(0x77FFFFFF);
+                float cxL = r.centerX(), cyL = r.centerY() - r.height() * 0.04f, s = r.height() * 0.2f;
+                ui.setColor(0x88FFFFFF);
                 ui.setStyle(Paint.Style.STROKE);
                 ui.setStrokeWidth(s * 0.2f);
                 tmp.set(cxL - s * 0.4f, cyL - s * 0.95f, cxL + s * 0.4f, cyL - s * 0.05f);
@@ -1457,100 +1524,36 @@ final class Game {
                 tmp.set(cxL - s * 0.55f, cyL - s * 0.3f, cxL + s * 0.55f, cyL + s * 0.6f);
                 g.drawRoundRect(tmp, s * 0.16f, s * 0.16f, ui);
             }
-
             ui.setStyle(Paint.Style.STROKE);
-            ui.setStrokeWidth(i == level ? 4 : 3);
-            ui.setColor(locked ? 0x55FFFFFF : accent);
+            ui.setStrokeWidth(3);
+            ui.setColor(locked ? 0x66FFFFFF : accent);
             g.drawRoundRect(r, 14, 14, ui);
             ui.setStyle(Paint.Style.FILL);
 
-            text.setShadowLayer(6, 0, 1, 0xCC000000);
-            text.setColor(locked ? 0x66FFFFFF : 0xFFFFFFFF);
+            text.setShadowLayer(6, 0, 1, 0xEE000000);
+            text.setColor(locked ? 0x99FFFFFF : 0xFFFFFFFF);
             String ln = locked ? "LOCKED" : Tracks.LEVELS[i].name;
-            fitText(ln, r.width() * 0.9f, r.width() * 0.11f);
-            g.drawText(ln, r.centerX(), r.bottom - r.height() * 0.1f, text);
+            fitText(ln, r.width() * 0.92f, r.width() * 0.115f);
+            g.drawText(ln, r.centerX(), r.bottom - r.height() * 0.09f, text);
             text.clearShadowLayer();
-
             if (!locked) {
                 int wb = Tracks.LEVELS[i].weatherBias;
                 String wt = wb == 1 ? "RAIN" : (wb == 2 ? "VARIES" : "DRY");
                 text.setTextAlign(Paint.Align.RIGHT);
                 text.setColor(wb == 1 ? 0xFF8AD8FF : 0xFFB9B2E6);
-                text.setTextSize(r.width() * 0.06f);
-                g.drawText(wt, r.right - r.width() * 0.06f, r.top + r.height() * 0.18f, text);
+                text.setTextSize(r.width() * 0.07f);
+                g.drawText(wt, r.right - r.width() * 0.06f, r.top + r.height() * 0.2f, text);
                 text.setTextAlign(Paint.Align.CENTER);
             }
-            if (i == dailyTrack && !dailyDoneToday) {           // daily-challenge marker
+            if (i == dailyTrack && !dailyDoneToday) {
                 ui.setStyle(Paint.Style.FILL);
                 ui.setColor(0xFFFFC23D);
-                g.drawCircle(r.left + r.width() * 0.1f, r.top + r.height() * 0.16f, r.width() * 0.03f, ui);
+                g.drawCircle(r.left + r.width() * 0.1f, r.top + r.height() * 0.16f, r.width() * 0.035f, ui);
             }
         }
-
-        // daily challenge bar (free play only)
-        if (!randomTrack && !champ) {
-            ui.setStyle(Paint.Style.FILL);
-            ui.setColor(dailyDoneToday ? 0x3342E2B8 : 0x44FFC23D);
-            g.drawRoundRect(dailyCard, 14, 14, ui);
-            ui.setStyle(Paint.Style.STROKE);
-            ui.setStrokeWidth(3);
-            ui.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFC23D);
-            g.drawRoundRect(dailyCard, 14, 14, ui);
-            ui.setStyle(Paint.Style.FILL);
-            text.clearShadowLayer();
-            text.setTextAlign(Paint.Align.LEFT);
-            text.setColor(0xFFFFD24D);
-            text.setTextSize(dailyCard.height() * 0.26f);
-            g.drawText("DAILY CHALLENGE", dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.34f, text);
-            text.setColor(0xFFFFFFFF);
-            fitText(dailyDesc(), dailyCard.width() * 0.74f, dailyCard.height() * 0.22f);
-            g.drawText(dailyDesc(), dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.68f, text);
-            text.setTextAlign(Paint.Align.RIGHT);
-            text.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFD24D);
-            text.setTextSize(dailyCard.height() * 0.26f);
-            g.drawText(dailyDoneToday ? "DONE" : "+" + DAILY_REWARD + " ¢",
-                    dailyCard.right - dailyCard.width() * 0.03f, dailyCard.centerY() + dailyCard.height() * 0.08f, text);
-            text.setTextAlign(Paint.Align.CENTER);
-        }
-
-        // tyre compound selector
-        for (int i = 0; i < 3; i++) {
-            boolean sel = tire == i;
-            int acc = i == 0 ? 0xFFFF6B6B : (i == 1 ? 0xFFFFD24D : 0xFF6CE0FF);
-            ui.setStyle(Paint.Style.FILL);
-            ui.setColor(sel ? (0x55000000 | (acc & 0xFFFFFF)) : 0x33101830);
-            g.drawRoundRect(tireBtns[i], 10, 10, ui);
-            ui.setStyle(Paint.Style.STROKE);
-            ui.setStrokeWidth(sel ? 4 : 2);
-            ui.setColor(sel ? acc : 0x88FFFFFF);
-            g.drawRoundRect(tireBtns[i], 10, 10, ui);
-            ui.setStyle(Paint.Style.FILL);
-            text.clearShadowLayer();
-            text.setColor(sel ? acc : 0xCCFFFFFF);
-            text.setTextSize(tireBtns[i].height() * 0.42f);
-            g.drawText(TIRE_NAME[i], tireBtns[i].centerX(), tireBtns[i].centerY() + tireBtns[i].height() * 0.15f, text);
-        }
         text.setColor(0xFF7F88B0);
-        text.setTextSize(Math.min(width, height) * 0.024f);
-        g.drawText("TYRES", tireBtns[0].left - Math.min(width, height) * 0.05f, tireBtns[1].centerY() + tireBtns[1].height() * 0.12f, text);
-
-        for (int i = 0; i < swatches.length; i++) {
-            ui.setStyle(Paint.Style.FILL);
-            ui.setColor(CAR_COLORS[i]);
-            g.drawOval(swatches[i], ui);
-            if (i == playerColorIdx) {
-                ui.setStyle(Paint.Style.STROKE);
-                ui.setStrokeWidth(4);
-                ui.setColor(0xFFFFFFFF);
-                g.drawOval(swatches[i], ui);
-            }
-        }
-        ui.setStyle(Paint.Style.FILL);
-
-        text.setColor(0xFF7F88B0);
-        text.setTextSize(Math.min(width, height) * 0.022f);
-        g.drawText("drift = nitro  •  ? = item  •  blue = jump  •  shortcuts  •  ghost = your best lap",
-                width / 2f, height * 0.95f, text);
+        text.setTextSize(unit * 0.026f);
+        g.drawText("tap a track to race", width / 2f, height * 0.97f, text);
     }
 
     private void renderRandomPanel(Canvas g) {
@@ -1615,17 +1618,18 @@ final class Game {
 
     private void drawPillButton(Canvas g, RectF r, String label, int accent, boolean enabled) {
         float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 2.5));
+        // solid, opaque button with a dark face and a bright animated accent rim
         ui.setStyle(Paint.Style.FILL);
-        ui.setColor(enabled ? 0x66201433 : 0x22202030);
-        g.drawRoundRect(r, r.height() / 2, r.height() / 2, ui);
+        ui.setColor(enabled ? 0xFF1B2742 : 0xFF161A24);
+        g.drawRoundRect(r, r.height() * 0.28f, r.height() * 0.28f, ui);
         ui.setStyle(Paint.Style.STROKE);
-        ui.setStrokeWidth(3 + (enabled ? pulse * 1.5f : 0));
-        ui.setColor(enabled ? accent : 0x55FFFFFF);
-        g.drawRoundRect(r, r.height() / 2, r.height() / 2, ui);
+        ui.setStrokeWidth(3 + (enabled ? pulse * 2f : 0));
+        ui.setColor(enabled ? (0xFF000000 | (accent & 0xFFFFFF)) : 0xFF55607A);
+        g.drawRoundRect(r, r.height() * 0.28f, r.height() * 0.28f, ui);
         ui.setStyle(Paint.Style.FILL);
         text.setTextAlign(Paint.Align.CENTER);
-        text.setShadowLayer(6, 0, 1, 0xCC000000);
-        text.setColor(enabled ? 0xFFFFFFFF : 0x77FFFFFF);
+        text.setShadowLayer(6, 0, 1, 0xEE000000);
+        text.setColor(enabled ? (0xFF000000 | (accent & 0xFFFFFF)) : 0x88FFFFFF);
         fitText(label, r.width() * 0.86f, r.height() * 0.4f);
         g.drawText(label, r.centerX(), r.centerY() + text.getTextSize() * 0.34f, text);
         text.clearShadowLayer();
@@ -2048,18 +2052,21 @@ final class Game {
         if (state == TITLE) {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
-                if (btnShop.contains(x, y)) { state = SHOP; shopSel = 0; return; }
-                if (btnTune.contains(x, y)) { state = TUNE; tuneSel = 0; return; }
-                if (btnStyle.contains(x, y)) { state = STYLE; styleSel = theme; return; }
-                if (btnHelp.contains(x, y)) { state = TUTORIAL; tutorialPage = 0; return; }
-                if (btnMode.contains(x, y)) { mode = (mode + 1) % 4; loadLevel(level); return; }
-                if (btnChamp.contains(x, y)) { startChampionship(); return; }
-                if (btnRandom.contains(x, y)) { randomTrack = !randomTrack; loadLevel(level); return; }
                 if (btnMusic.contains(x, y)) {
                     musicOn = !musicOn;
                     if (prefs != null) prefs.edit().putBoolean("music", musicOn).apply();
                     return;
                 }
+                for (int i = 0; i < menuBtns.length; i++) if (menuBtns[i].contains(x, y)) { menuAction(i); return; }
+            }
+            return;
+        }
+        if (state == SETUP) {
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+                float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
+                if (btnBack.contains(x, y)) { state = TITLE; return; }
+                if (btnMode.contains(x, y)) { mode = (mode + 1) % 4; loadLevel(level); return; }
+                if (btnRandom.contains(x, y)) { randomTrack = !randomTrack; loadLevel(level); return; }
                 for (int i = 0; i < 3; i++)
                     if (tireBtns[i].contains(x, y)) {
                         tire = i; applyLoadout();
@@ -2184,21 +2191,32 @@ final class Game {
         if (!down) return false;
         if (state == TITLE) {
             switch (code) {
+                case KeyEvent.KEYCODE_DPAD_LEFT: menuSel = (menuSel + 5) % 6; return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT: menuSel = (menuSel + 1) % 6; return true;
+                case KeyEvent.KEYCODE_DPAD_UP: menuSel = (menuSel + 4) % 6; return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN: menuSel = (menuSel + 2) % 6; return true;
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_ENTER: menuAction(menuSel); return true;
+                case KeyEvent.KEYCODE_BUTTON_Y:
+                    musicOn = !musicOn;
+                    if (prefs != null) prefs.edit().putBoolean("music", musicOn).apply(); return true;
+                default: return false;
+            }
+        }
+        if (state == SETUP) {
+            switch (code) {
                 case KeyEvent.KEYCODE_DPAD_LEFT: navLevel(-1); return true;
                 case KeyEvent.KEYCODE_DPAD_RIGHT: navLevel(1); return true;
                 case KeyEvent.KEYCODE_DPAD_UP: navLevel(-4); return true;
                 case KeyEvent.KEYCODE_DPAD_DOWN: navLevel(4); return true;
                 case KeyEvent.KEYCODE_BUTTON_A:
                 case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_ENTER: if (level < unlocked) startRace(level); return true;
-                case KeyEvent.KEYCODE_BUTTON_Y: state = SHOP; shopSel = 0; return true;
-                case KeyEvent.KEYCODE_BUTTON_X:
-                    tire = (tire + 1) % 3; applyLoadout();
-                    if (prefs != null) prefs.edit().putInt("tire", tire).apply(); return true;
-                case KeyEvent.KEYCODE_BUTTON_L1: mode = 1 - mode; loadLevel(level); return true;
-                case KeyEvent.KEYCODE_BUTTON_R1: state = TUNE; tuneSel = 0; return true;
-                case KeyEvent.KEYCODE_BUTTON_L2: state = STYLE; styleSel = theme; return true;
-                case KeyEvent.KEYCODE_BUTTON_START: state = TUTORIAL; tutorialPage = 0; return true;
+                case KeyEvent.KEYCODE_ENTER: startRace(randomTrack ? 0 : level); return true;
+                case KeyEvent.KEYCODE_BUTTON_X: mode = (mode + 1) % 4; loadLevel(level); return true;
+                case KeyEvent.KEYCODE_BUTTON_Y: randomTrack = !randomTrack; loadLevel(level); return true;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BACK: state = TITLE; return true;
                 default: return false;
             }
         }
@@ -2293,6 +2311,17 @@ final class Game {
         }
         applyLoadout();
         saveProfile();
+    }
+
+    private void menuAction(int i) {
+        switch (i) {
+            case 0: randomTrack = false; loadLevel(level); state = SETUP; break;   // RACE
+            case 1: startChampionship(); break;                                     // CHAMPIONSHIP
+            case 2: state = SHOP; shopSel = 0; break;                               // SHOP
+            case 3: state = STYLE; styleSel = theme; break;                         // STYLE
+            case 4: state = TUNE; tuneSel = 0; break;                               // TUNE
+            case 5: state = TUTORIAL; tutorialPage = 0; break;                      // HOW TO PLAY
+        }
     }
 
     private void startChampionship() {
