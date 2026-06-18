@@ -21,7 +21,7 @@ final class Sim {
     static final double DRAG = 90;
     static final double MAX_SPEED = 600;
     static final double BOOST_SPEED = 940;
-    static final double GRIP_NORMAL = 6.5;
+    static final double GRIP_NORMAL = 7.6;   // higher = more planted, less slidey
     static final double GRIP_DRIFT = 1.4;
     static final double TURN_RATE = 3.0;
     static final double TURN_REF = 150;
@@ -48,7 +48,7 @@ final class Sim {
     final List<Ai> ais = new ArrayList<>();
 
     // ---- player ----
-    double carX, carY, carAngle, vx, vy;
+    double carX, carY, carAngle, vx, vy, steerInput;
     double nitro, shield, spin, boostTime;
     double jumpZ, jumpVel;
     boolean airborne, onTrack, drifting;
@@ -118,7 +118,7 @@ final class Sim {
         carX = cx[startIdx];
         carY = cy[startIdx];
         carAngle = Math.atan2(dirY[startIdx], dirX[startIdx]);
-        vx = vy = 0;
+        vx = vy = 0; steerInput = 0;
         lapsDone = 0; prevIdx = startIdx;
         raceTime = lapTime = finishTime = 0;
         nitro = 0; heldItem = IT_NONE;
@@ -267,12 +267,14 @@ final class Sim {
         double vForward = vx * ca + vy * sa;
         double vLat = -vx * sa + vy * ca;
 
+        double softCap = MAX_SPEED * mods.topSpeed;
         boolean spinning = spin > 0;
         if (spinning) {
             spin -= dt; carAngle += dt * 14; left = right = false;
             vForward *= (1 - 2.5 * dt);
         } else if (!airborne) {
-            if (gas) vForward += ACCEL * mods.accel * dt;
+            // power tapers as you approach top speed (engine feel), gentle launch
+            if (gas) vForward += ACCEL * mods.accel * dt * (1 - 0.55 * Math.min(1, Math.max(0, vForward) / softCap));
             else if (brake) vForward -= BRAKE * mods.brake * dt;
             else vForward -= Math.signum(vForward) * Math.min(Math.abs(vForward), DRAG * dt);
         } else {
@@ -283,13 +285,15 @@ final class Sim {
         if (boostEdge && boostTime <= 0 && nitro > 0.25) {
             boostTime = 1.4 * mods.boost; nitro = Math.max(0, nitro - 0.6); evBoost = true;
         }
-        double topSpeed = MAX_SPEED * mods.topSpeed;
+        double topSpeed = softCap;
         if (boostTime > 0) { boostTime -= dt; topSpeed = BOOST_SPEED * mods.topSpeed; vForward += 600 * mods.boost * dt; }
 
         if (itemEdge && heldItem != IT_NONE && !spinning) useItem();
 
-        double steer = left ? -1 : (right ? 1 : 0);
-        drifting = brake && Math.abs(vForward) > 120 && steer != 0 && !spinning && !airborne;
+        // smoothed steering input -> a planted, weighty feel instead of on/off snap
+        double target = left ? -1 : (right ? 1 : 0);
+        steerInput += (target - steerInput) * Math.min(1, dt * 9);
+        drifting = brake && Math.abs(vForward) > 120 && target != 0 && !spinning && !airborne;
 
         if (!airborne) {
             double grip = (drifting ? GRIP_DRIFT : GRIP_NORMAL) * mods.grip;
@@ -300,7 +304,9 @@ final class Sim {
 
         double speedAbs = Math.abs(vForward);
         double steerScale = airborne ? 0.35 : 1.0;
-        double turn = steer * TURN_RATE * mods.turn * dt * Math.min(1, speedAbs / TURN_REF) * (vForward >= 0 ? 1 : -1) * steerScale;
+        double lowRamp = Math.min(1, speedAbs / 110);            // need some roll to turn
+        double highTaper = 1 - 0.42 * Math.min(1, speedAbs / MAX_SPEED);  // calmer at speed
+        double turn = steerInput * TURN_RATE * mods.turn * dt * lowRamp * highTaper * (vForward >= 0 ? 1 : -1) * steerScale;
         if (drifting) turn *= 1.7;
         carAngle += turn;
 

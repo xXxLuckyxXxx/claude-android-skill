@@ -31,8 +31,27 @@ import java.util.Random;
  */
 final class Game {
 
-    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5, TUTORIAL = 6;
+    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5, TUTORIAL = 6, STYLE = 7;
     private int state = TITLE;
+
+    // unlockable cosmetics (bought with coins)
+    private static final String[] THEME_NAME = {"CLASSIC", "SAKURA", "DESERT", "SYNTHWAVE", "ARCTIC", "TOXIC"};
+    private static final int[] THEME_COST = {0, 250, 300, 450, 450, 400};
+    // {grass, asphalt, centre-line, tree-tint (0 = default green)}
+    private static final int[][] THEME = {
+            {0xFF2E7D52, 0xFF3C3F55, 0xFFFFE34D, 0},
+            {0xFF3A8C6A, 0xFF4A4458, 0xFFFFC0E0, 0xFFFF6FA8},
+            {0xFFB5894E, 0xFF534C44, 0xFFFFE08A, 0xFF8A7A3A},
+            {0xFF241A3A, 0xFF2A2350, 0xFFFF2E88, 0xFF6A3AA0},
+            {0xFFBFD8E8, 0xFF5A6470, 0xFFFFFFFF, 0xFF8FB0C0},
+            {0xFF2F6B2A, 0xFF3A4A30, 0xFF9CFF3D, 0xFF4FA030},
+    };
+    private static final String[] SKIN_NAME = {"SOLID", "STRIPE", "SPLIT", "CARBON"};
+    private static final int[] SKIN_COST = {0, 150, 200, 250};
+    private int theme, carSkin, ownedThemes = 1, ownedSkins = 1, styleSel;
+    private final RectF[] themeCards = new RectF[6];
+    private final RectF[] skinChips = new RectF[4];
+    private final RectF btnStyle = new RectF();
 
     // race mode: 0 = grand prix vs rivals, 1 = time trial vs your ghost
     private int mode = 0;
@@ -158,6 +177,10 @@ final class Game {
             tuneHandling = prefs.getInt("tuneHandling", 0);
             tuneStab = prefs.getInt("tuneStab", 0);
             seenTutorial = prefs.getBoolean("seenTutorial", false);
+            theme = prefs.getInt("theme", 0);
+            carSkin = prefs.getInt("skin", 0);
+            ownedThemes = prefs.getInt("ownedThemes", 1) | 1;
+            ownedSkins = prefs.getInt("ownedSkins", 1) | 1;
         }
         computeDaily();
         if (!seenTutorial) { state = TUTORIAL; tutorialPage = 0; }
@@ -264,13 +287,27 @@ final class Game {
             levelBtns[i] = new RectF(x, y, x + bw, y + bh);
         }
 
-        // top-right pill buttons: HELP · TUNE · SHOP
+        // top-right pill buttons: ? · STYLE · TUNE · SHOP
         float shh = Math.min(width, height) * 0.09f;
-        float pw = Math.min(width * 0.15f, 200), gpw = pw * 0.1f;
+        float pw = Math.min(width * 0.13f, 180), gpw = pw * 0.1f;
         btnShop.set(width - pad - pw, pad, width - pad, pad + shh);
         btnTune.set(btnShop.left - gpw - pw, pad, btnShop.left - gpw, pad + shh);
-        btnHelp.set(btnTune.left - gpw - pw * 0.7f, pad, btnTune.left - gpw, pad + shh);
-        btnBack.set(pad, pad, pad + pw * 0.8f, pad + shh);
+        btnStyle.set(btnTune.left - gpw - pw, pad, btnTune.left - gpw, pad + shh);
+        btnHelp.set(btnStyle.left - gpw - pw * 0.55f, pad, btnStyle.left - gpw, pad + shh);
+        btnBack.set(pad, pad, pad + pw * 0.9f, pad + shh);
+        // style screen: 6 theme cards (3x2) + 4 skin chips
+        float tcw = Math.min(width * 0.27f, 360), tch = height * 0.2f;
+        float tgx = tcw * 0.07f, tgy = tch * 0.14f;
+        float ttw = 3 * tcw + 2 * tgx, tsx = width / 2f - ttw / 2f, tsy = height * 0.2f;
+        for (int i = 0; i < 6; i++) {
+            int col = i % 3, row = i / 3;
+            float x = tsx + col * (tcw + tgx), y = tsy + row * (tch + tgy);
+            themeCards[i] = new RectF(x, y, x + tcw, y + tch);
+        }
+        float chw = Math.min(width * 0.16f, 220), chh2 = height * 0.1f;
+        float ctw = 4 * chw + 3 * (chw * 0.08f), csx = width / 2f - ctw / 2f, csy = height * 0.78f;
+        for (int i = 0; i < 4; i++)
+            skinChips[i] = new RectF(csx + i * (chw + chw * 0.08f), csy, csx + i * (chw + chw * 0.08f) + chw, csy + chh2);
         // mode toggle (left side, under the XP bar)
         btnMode.set(pad, pad + Math.min(width, height) * 0.17f, pad + width * 0.24f, pad + Math.min(width, height) * 0.17f + shh);
         // tuning sliders
@@ -419,8 +456,8 @@ final class Game {
 
     void render(Canvas g) {
         float darkness = nightAmount();
-        int grass = lerp(0xFF2E7D52, 0xFF0A2238, darkness * 0.85f);
-        if (sim.weather == 1) grass = lerp(grass, 0xFF20465A, 0.4f);
+        int grass = lerp(THEME[theme][0], 0xFF0A2238, darkness * 0.85f);
+        if (sim.wetness > 0.1) grass = lerp(grass, 0xFF20465A, 0.4f * (float) sim.wetness);
         g.drawColor(grass);
 
         g.save();
@@ -449,7 +486,7 @@ final class Game {
 
         if (darkness > 0.02f) drawNightLighting(g, darkness);
         drawColorGrade(g, darkness);
-        if (sim.weather == 1) drawRain(g);
+        if (sim.wetness > 0.12) drawRain(g, (float) sim.wetness);
         if (sim.boostTime > 0) drawSpeedLines(g);
         drawVignette(g);
 
@@ -459,6 +496,7 @@ final class Game {
 
         if (state == TITLE) renderTitle(g);
         else if (state == SHOP) renderShop(g);
+        else if (state == STYLE) renderStyle(g);
         else if (state == TUNE) renderTune(g);
         else if (state == TUTORIAL) renderTutorial(g);
         else if (state == COUNTDOWN) renderCountdown(g);
@@ -480,6 +518,7 @@ final class Game {
 
     private void drawScenery(Canvas g, boolean canopy) {
         ui.setStyle(Paint.Style.FILL);
+        int tint = THEME[theme][3];
         for (float[] s : scenery) {
             float x = s[0], y = s[1], r = s[2];
             int type = (int) s[3];
@@ -491,13 +530,13 @@ final class Game {
             }
             switch (type) {
                 case 0: // tree
-                    ui.setColor(0xFF14532B); g.drawCircle(x, y, r, ui);
-                    ui.setColor(0xFF1E7A40); g.drawCircle(x - r * 0.22f, y - r * 0.22f, r * 0.78f, ui);
-                    ui.setColor(0xFF35A95C); g.drawCircle(x - r * 0.34f, y - r * 0.34f, r * 0.5f, ui);
+                    ui.setColor(tcol(0xFF14532B, tint)); g.drawCircle(x, y, r, ui);
+                    ui.setColor(tcol(0xFF1E7A40, tint)); g.drawCircle(x - r * 0.22f, y - r * 0.22f, r * 0.78f, ui);
+                    ui.setColor(tcol(0xFF35A95C, tint)); g.drawCircle(x - r * 0.34f, y - r * 0.34f, r * 0.5f, ui);
                     break;
                 case 1: // bush
-                    ui.setColor(0xFF1C6E3A); g.drawCircle(x, y, r, ui);
-                    ui.setColor(0xFF2A9150); g.drawCircle(x - r * 0.3f, y - r * 0.2f, r * 0.6f, ui);
+                    ui.setColor(tcol(0xFF1C6E3A, tint)); g.drawCircle(x, y, r, ui);
+                    ui.setColor(tcol(0xFF2A9150, tint)); g.drawCircle(x - r * 0.3f, y - r * 0.2f, r * 0.6f, ui);
                     break;
                 case 2: // rock
                     ui.setColor(0xFF6B6F7A); tmp.set(x - r, y - r * 0.8f, x + r, y + r * 0.8f);
@@ -576,17 +615,17 @@ final class Game {
         road.setColor(0xFFEDEDF5);
         road.setStrokeWidth(Sim.ROAD_HALF * 2 + 4);
         g.drawPath(roadPath, road);
-        // asphalt
-        int asphalt = sim.weather == 1 ? 0xFF34384E : 0xFF3C3F55;
+        // asphalt (theme colour, darkened when wet)
+        int asphalt = lerp(THEME[theme][1], 0xFF1B2030, 0.35f * (float) sim.wetness);
         road.setColor(asphalt);
         road.setStrokeWidth(Sim.ROAD_HALF * 2 - 6);
         g.drawPath(roadPath, road);
-        // subtle sheen down the middle
-        road.setColor(0x14FFFFFF);
+        // wet sheen / dry sheen down the middle
+        road.setColor(sim.wetness > 0.3 ? (((int) (0x33 * sim.wetness) << 24) | 0x9FC8E0) : 0x14FFFFFF);
         road.setStrokeWidth(Sim.ROAD_HALF * 1.1f);
         g.drawPath(roadPath, road);
         // animated dashed centre line
-        road.setColor(0xFFFFE34D);
+        road.setColor(THEME[theme][2]);
         road.setStrokeWidth(6);
         road.setPathEffect(new DashPathEffect(new float[]{34, 30}, (float) dash));
         g.drawPath(roadPath, road);
@@ -735,6 +774,23 @@ final class Game {
         g.drawRoundRect(tmp, 16, 16, ui);
         ui.setShader(null);
 
+        // player paint scheme (skin)
+        if (player && carSkin == 1) {            // racing stripe
+            ui.setColor(0xEEFFFFFF);
+            tmp.set(-L / 2, -W * 0.16f, L / 2, W * 0.16f);
+            g.drawRect(tmp, ui);
+        } else if (player && carSkin == 2) {     // two-tone split (front half lighter)
+            ui.setColor(0x55FFFFFF);
+            tmp.set(0, -W / 2, L / 2, W / 2);
+            g.drawRoundRect(tmp, 16, 16, ui);
+        } else if (player && carSkin == 3) {     // carbon
+            ui.setColor(0x66101018);
+            tmp.set(-L / 2, -W / 2, L / 2, W / 2);
+            g.drawRoundRect(tmp, 16, 16, ui);
+            ui.setColor(0x22FFFFFF);
+            for (int s2 = -2; s2 <= 2; s2++) g.drawRect(s2 * L * 0.12f, -W / 2, s2 * L * 0.12f + 2, W / 2, ui);
+        }
+
         // glossy specular highlight along the top flank
         ui.setColor(0x40FFFFFF);
         tmp.set(-L * 0.42f, -W * 0.42f, L * 0.42f, -W * 0.12f);
@@ -811,13 +867,16 @@ final class Game {
         ui.setShader(null);
     }
 
-    private void drawRain(Canvas g) {
-        ui.setColor(0x223A6A8A);
+    private void drawRain(Canvas g, float intensity) {
+        ui.setColor(((int) (0x22 * intensity) << 24) | 0x3A6A8A);
         g.drawRect(0, 0, width, height, ui);
         ui.setStrokeWidth(2);
-        ui.setColor(0x88BFE0FF);
+        int a = (int) (0x88 * intensity);
+        ui.setColor((a << 24) | 0xBFE0FF);
         double t = titlePulse;
-        for (float[] r : rain) {
+        int n = (int) (rain.length * Math.min(1, intensity + 0.2));
+        for (int i = 0; i < n; i++) {
+            float[] r = rain[i];
             float x = r[0] * width;
             float y = (float) ((r[1] + t * (0.8 + r[2])) % 1) * height;
             g.drawLine(x, y, x - 6, y + 18 * r[2], ui);
@@ -1058,6 +1117,7 @@ final class Game {
         // top-right buttons + mode toggle
         drawPillButton(g, btnShop, "SHOP", 0xFFFFC23D, true);
         drawPillButton(g, btnTune, "TUNE", 0xFF8CFF45, true);
+        drawPillButton(g, btnStyle, "STYLE", 0xFFFF6FB1, true);
         drawPillButton(g, btnHelp, "?", 0xFF19E0FF, true);
         drawPillButton(g, btnMode, mode == 0 ? "MODE: GRAND PRIX" : "MODE: TIME TRIAL",
                 mode == 0 ? 0xFFFF8A1E : 0xFF6CE0FF, true);
@@ -1305,6 +1365,97 @@ final class Game {
                 width / 2f, height * 0.9f, text);
     }
 
+    private void renderStyle(Canvas g) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF22A0E2A, 0xF2070518}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+        float unit = Math.min(width, height), pad = unit * 0.04f;
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFFFF6FB1);
+        text.setTextSize(unit * 0.07f);
+        g.drawText("STYLE  &  THEMES", width / 2f, pad + unit * 0.07f, text);
+        text.setTextAlign(Paint.Align.RIGHT);
+        text.setColor(0xFFFFD24D);
+        text.setTextSize(unit * 0.045f);
+        g.drawText(coins + " ¢", width - pad, pad + unit * 0.05f, text);
+        drawPillButton(g, btnBack, "BACK", 0xFF19E0FF, true);
+
+        for (int i = 0; i < 6; i++) {
+            RectF r = themeCards[i];
+            boolean own = (ownedThemes & (1 << i)) != 0;
+            boolean active = theme == i;
+            // mini preview: grass fill + road swatch + tree dot
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(THEME[i][0]);
+            g.drawRoundRect(r, 14, 14, ui);
+            ui.setColor(THEME[i][1]);
+            tmp.set(r.left + r.width() * 0.1f, r.centerY() - r.height() * 0.12f, r.right - r.width() * 0.1f, r.centerY() + r.height() * 0.12f);
+            g.drawRoundRect(tmp, 8, 8, ui);
+            ui.setColor(THEME[i][2]);
+            g.drawRect(r.centerX() - 3, tmp.top, r.centerX() + 3, tmp.bottom, ui);
+            ui.setColor(THEME[i][3] == 0 ? 0xFF1E7A40 : THEME[i][3]);
+            g.drawCircle(r.left + r.width() * 0.18f, r.top + r.height() * 0.22f, r.width() * 0.05f, ui);
+
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(i == styleSel ? 6 : (active ? 4 : 2));
+            ui.setColor(i == styleSel ? 0xFFFFFFFF : (active ? 0xFF42E2B8 : 0x88FFFFFF));
+            g.drawRoundRect(r, 14, 14, ui);
+            ui.setStyle(Paint.Style.FILL);
+
+            text.setTextAlign(Paint.Align.CENTER);
+            text.setColor(0xFF000000);
+            text.setTextSize(r.height() * 0.16f);
+            g.drawText(THEME_NAME[i], r.centerX() + 1, r.top + r.height() * 0.92f + 1, text);
+            text.setColor(0xFFFFFFFF);
+            g.drawText(THEME_NAME[i], r.centerX(), r.top + r.height() * 0.92f, text);
+            text.setColor(active ? 0xFF42E2B8 : (own ? 0xFFB9B2E6 : 0xFFFFD24D));
+            text.setTextSize(r.height() * 0.13f);
+            g.drawText(active ? "ACTIVE" : (own ? "TAP TO USE" : THEME_COST[i] + " ¢"),
+                    r.centerX(), r.top + r.height() * 0.16f, text);
+        }
+
+        // skin chips
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFFB9B2E6);
+        text.setTextSize(unit * 0.03f);
+        g.drawText("CAR FINISH", width / 2f, skinChips[0].top - unit * 0.02f, text);
+        for (int i = 0; i < 4; i++) {
+            RectF r = skinChips[i];
+            boolean own = (ownedSkins & (1 << i)) != 0;
+            boolean active = carSkin == i;
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(active ? 0x5542E2B8 : 0x33101830);
+            g.drawRoundRect(r, 10, 10, ui);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(active ? 4 : 2);
+            ui.setColor(active ? 0xFF42E2B8 : 0x88FFFFFF);
+            g.drawRoundRect(r, 10, 10, ui);
+            ui.setStyle(Paint.Style.FILL);
+            text.clearShadowLayer();
+            text.setColor(0xFFFFFFFF);
+            text.setTextSize(r.height() * 0.3f);
+            g.drawText(SKIN_NAME[i], r.centerX(), r.centerY(), text);
+            text.setColor(active ? 0xFF42E2B8 : (own ? 0xFFB9B2E6 : 0xFFFFD24D));
+            text.setTextSize(r.height() * 0.22f);
+            g.drawText(active ? "ACTIVE" : (own ? "USE" : SKIN_COST[i] + " ¢"), r.centerX(), r.bottom - r.height() * 0.12f, text);
+        }
+    }
+
+    private void tapTheme(int i) {
+        if ((ownedThemes & (1 << i)) != 0) { theme = i; }
+        else if (coins >= THEME_COST[i]) { coins -= THEME_COST[i]; ownedThemes |= (1 << i); theme = i; }
+        else return;
+        if (prefs != null) prefs.edit().putInt("theme", theme).putInt("ownedThemes", ownedThemes).putInt("coins", coins).apply();
+    }
+
+    private void tapSkin(int i) {
+        if ((ownedSkins & (1 << i)) != 0) { carSkin = i; }
+        else if (coins >= SKIN_COST[i]) { coins -= SKIN_COST[i]; ownedSkins |= (1 << i); carSkin = i; }
+        else return;
+        if (prefs != null) prefs.edit().putInt("skin", carSkin).putInt("ownedSkins", ownedSkins).putInt("coins", coins).apply();
+    }
+
     private static final String[][] TUTORIAL_PAGES = {
             {"WELCOME TO TURBO CIRCUIT", "A top-down arcade racer.", "Let's cover the basics."},
             {"STEER & GO", "Hold ▲ to accelerate, ◀ ▶ to steer.", "DRIFT (handbrake) slides you through bends."},
@@ -1462,6 +1613,10 @@ final class Game {
                 | ((int) (ag + (bg - ag) * t) << 8) | (int) (ab + (bb - ab) * t);
     }
 
+    private static int tcol(int base, int tint) {
+        return tint == 0 ? base : lerp(base, tint, 0.55f);
+    }
+
     private static int lighten(int c, float f) {
         int r = Math.min(255, (int) (((c >> 16) & 0xff) * f));
         int gg = Math.min(255, (int) (((c >> 8) & 0xff) * f));
@@ -1486,6 +1641,7 @@ final class Game {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
                 if (btnShop.contains(x, y)) { state = SHOP; shopSel = 0; return; }
                 if (btnTune.contains(x, y)) { state = TUNE; tuneSel = 0; return; }
+                if (btnStyle.contains(x, y)) { state = STYLE; styleSel = theme; return; }
                 if (btnHelp.contains(x, y)) { state = TUTORIAL; tutorialPage = 0; return; }
                 if (btnMode.contains(x, y)) { mode = 1 - mode; loadLevel(level); return; }
                 for (int i = 0; i < 3; i++)
@@ -1528,6 +1684,15 @@ final class Game {
                         return;
                     }
                 }
+            }
+            return;
+        }
+        if (state == STYLE) {
+            if (action == MotionEvent.ACTION_DOWN) {
+                float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
+                if (btnBack.contains(x, y)) { state = TITLE; return; }
+                for (int i = 0; i < 6; i++) if (themeCards[i].contains(x, y)) { styleSel = i; tapTheme(i); return; }
+                for (int i = 0; i < 4; i++) if (skinChips[i].contains(x, y)) { tapSkin(i); return; }
             }
             return;
         }
@@ -1602,11 +1767,27 @@ final class Game {
                     if (prefs != null) prefs.edit().putInt("tire", tire).apply(); return true;
                 case KeyEvent.KEYCODE_BUTTON_L1: mode = 1 - mode; loadLevel(level); return true;
                 case KeyEvent.KEYCODE_BUTTON_R1: state = TUNE; tuneSel = 0; return true;
+                case KeyEvent.KEYCODE_BUTTON_L2: state = STYLE; styleSel = theme; return true;
                 case KeyEvent.KEYCODE_BUTTON_START: state = TUTORIAL; tutorialPage = 0; return true;
                 default: return false;
             }
         }
         if (state == TUTORIAL) { advanceTutorial(); return true; }
+        if (state == STYLE) {
+            switch (code) {
+                case KeyEvent.KEYCODE_DPAD_LEFT: styleSel = (styleSel + 5) % 6; return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT: styleSel = (styleSel + 1) % 6; return true;
+                case KeyEvent.KEYCODE_DPAD_UP: styleSel = (styleSel + 3) % 6; return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN: styleSel = (styleSel + 3) % 6; return true;
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_ENTER: tapTheme(styleSel); return true;
+                case KeyEvent.KEYCODE_BUTTON_X: tapSkin((carSkin + 1) % 4); return true;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BACK: state = TITLE; return true;
+                default: return false;
+            }
+        }
         if (state == TUNE) {
             switch (code) {
                 case KeyEvent.KEYCODE_DPAD_UP: tuneSel = (tuneSel + 2) % 3; return true;
