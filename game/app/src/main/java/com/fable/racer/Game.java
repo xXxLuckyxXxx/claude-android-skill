@@ -13,6 +13,8 @@ import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 
 import java.util.ArrayList;
@@ -61,6 +63,22 @@ final class Game {
 
     private final RectF btnShop = new RectF(), btnBack = new RectF();
     private final RectF[] shopCards = new RectF[SHOP_N];
+
+    // tyre compound strategy: 0 soft, 1 medium, 2 wet
+    private int tire = 1;
+    private final RectF[] tireBtns = new RectF[3];
+    private static final String[] TIRE_NAME = {"SOFT", "MED", "WET"};
+
+    // daily challenge (deterministic from the date)
+    private long today;
+    private int dailyTrack, dailyType;        // 0 win, 1 clean lap-set, 2 no spinouts
+    private boolean dailyDoneToday, dailyJustWon, offTrackEver, hitEver;
+    private final RectF dailyCard = new RectF();
+    private static final int DAILY_REWARD = 350;
+
+    // controller state (merged with touch); separate button vs axis sources
+    private boolean kLeft, kRight, kGas, kBrake, aLeft, aRight, aGas, aBrake;
+    private int shopSel;
 
     private int width, height;
     private double zoom = 1.2;
@@ -123,7 +141,9 @@ final class Game {
                 equipped[i] = (eq & (1 << i)) != 0;
                 trackBest[i] = prefs.getFloat("tb" + i, 0f);
             }
+            tire = prefs.getInt("tire", 1);
         }
+        computeDaily();
         text.setTypeface(Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD));
         for (int i = 0; i < stars.length; i++) {
             stars[i][0] = rnd.nextFloat(); stars[i][1] = rnd.nextFloat() * 0.7f;
@@ -201,16 +221,26 @@ final class Game {
         btnBoost.set(width - pad - r * 1.7f, by - r * 1.9f, width - pad + r * 0.3f, by - r * 1.9f + r * 1.6f);
         btnItem.set(width - pad - r * 3.9f, by - r * 1.9f, width - pad - r * 2.3f, by - r * 1.9f + r * 1.6f);
 
-        float sw = Math.min(width, height) * 0.07f;
-        float sx = width / 2f - sw * 3.3f, sy = height * 0.8f;
+        float sw = Math.min(width, height) * 0.066f;
+        float sx = width / 2f - sw * 3.3f, sy = height * 0.74f;
         for (int i = 0; i < swatches.length; i++)
             swatches[i] = new RectF(sx + i * sw * 1.1f, sy, sx + i * sw * 1.1f + sw, sy + sw);
 
+        // tyre compound selector (row below the colour swatches)
+        float tw0 = Math.min(width * 0.12f, 150), th0 = Math.min(width, height) * 0.07f;
+        float tx = width / 2f - (tw0 * 3 + 2 * tw0 * 0.1f) / 2f, ty = height * 0.84f;
+        for (int i = 0; i < 3; i++)
+            tireBtns[i] = new RectF(tx + i * tw0 * 1.1f, ty, tx + i * tw0 * 1.1f + tw0, ty + th0);
+
+        // daily challenge card (wide bar)
+        float dcw = Math.min(width * 0.62f, 760), dch = Math.min(width, height) * 0.1f;
+        dailyCard.set(width / 2f - dcw / 2f, height * 0.6f, width / 2f + dcw / 2f, height * 0.6f + dch);
+
         int cols = 4, rows = (levelBtns.length + cols - 1) / cols;
-        float bw = Math.min(width * 0.21f, 320), bh = height * 0.13f;
-        float gapX = bw * 0.12f, gapY = bh * 0.28f;
+        float bw = Math.min(width * 0.21f, 320), bh = height * 0.125f;
+        float gapX = bw * 0.12f, gapY = bh * 0.22f;
         float totalW = cols * bw + (cols - 1) * gapX;
-        float startX = width / 2f - totalW / 2f, startY = height * 0.36f;
+        float startX = width / 2f - totalW / 2f, startY = height * 0.27f;
         for (int i = 0; i < levelBtns.length; i++) {
             int col = i % cols, row = i / cols;
             float x = startX + col * (bw + gapX), y = startY + row * (bh + gapY);
@@ -253,14 +283,17 @@ final class Game {
         }
         if (state == FINISHED) { idleAudio(); updateParticles(dt); return; }
 
-        // RACING
-        sim.update(dt, keyLeft, keyRight, keyGas, keyBrake, tapBoost, tapItem);
+        // RACING (touch flags merged with controller button + axis flags)
+        sim.update(dt, keyLeft || kLeft || aLeft, keyRight || kRight || aRight,
+                keyGas || kGas || aGas, keyBrake || kBrake || aBrake, tapBoost, tapItem);
         tapBoost = tapItem = false;
+
+        if (!sim.onTrack) offTrackEver = true;
 
         // events -> audio + fx
         if (sim.evBoost && audio != null) audio.blip(EngineAudio.BLIP_BOOST);
         if (sim.evPickup && audio != null) audio.blip(EngineAudio.BLIP_PICKUP);
-        if (sim.evHit) { shake = 8; if (audio != null) audio.blip(EngineAudio.BLIP_HIT); }
+        if (sim.evHit) { shake = 8; hitEver = true; if (audio != null) audio.blip(EngineAudio.BLIP_HIT); }
         if (sim.evJump && audio != null) audio.blip(EngineAudio.BLIP_BOOST);
         if (sim.evLand) shake = Math.max(shake, 4);
         sim.clearEvents();
@@ -311,7 +344,18 @@ final class Game {
                 unlocked = next + 1;
                 if (prefs != null) prefs.edit().putInt("unlocked", unlocked).apply();
             }
-            if (!awarded) { awardRace(); awarded = true; }
+            if (!awarded) {
+                awardRace();
+                dailyJustWon = false;
+                if (!dailyDoneToday && dailyMet()) {
+                    coins += DAILY_REWARD;
+                    dailyDoneToday = true;
+                    dailyJustWon = true;
+                    if (prefs != null) prefs.edit().putLong("dailyDone", today).apply();
+                    saveProfile();
+                }
+                awarded = true;
+            }
             state = FINISHED;
         }
     }
@@ -1017,7 +1061,67 @@ final class Game {
             text.setColor(locked ? 0x66FFFFFF : 0xFFFFFFFF);
             text.setTextSize(r.width() * 0.09f);
             g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.bottom - r.height() * 0.1f, text);
+
+            if (!locked) {
+                int wb = Tracks.LEVELS[i].weatherBias;
+                String wt = wb == 1 ? "RAIN" : (wb == 2 ? "VARIES" : "DRY");
+                text.setTextAlign(Paint.Align.RIGHT);
+                text.setColor(wb == 1 ? 0xFF8AD8FF : 0xFFB9B2E6);
+                text.setTextSize(r.width() * 0.06f);
+                g.drawText(wt, r.right - r.width() * 0.06f, r.top + r.height() * 0.18f, text);
+                text.setTextAlign(Paint.Align.CENTER);
+            }
+            if (i == dailyTrack && !dailyDoneToday) {           // daily-challenge marker
+                ui.setStyle(Paint.Style.FILL);
+                ui.setColor(0xFFFFC23D);
+                g.drawCircle(r.left + r.width() * 0.1f, r.top + r.height() * 0.16f, r.width() * 0.03f, ui);
+            }
         }
+
+        // daily challenge bar
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(dailyDoneToday ? 0x3342E2B8 : 0x44FFC23D);
+        g.drawRoundRect(dailyCard, 14, 14, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(3);
+        ui.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFC23D);
+        g.drawRoundRect(dailyCard, 14, 14, ui);
+        ui.setStyle(Paint.Style.FILL);
+        text.clearShadowLayer();
+        text.setTextAlign(Paint.Align.LEFT);
+        text.setColor(0xFFFFD24D);
+        text.setTextSize(dailyCard.height() * 0.26f);
+        g.drawText("DAILY CHALLENGE", dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.34f, text);
+        text.setColor(0xFFFFFFFF);
+        text.setTextSize(dailyCard.height() * 0.22f);
+        g.drawText(dailyDesc(), dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.68f, text);
+        text.setTextAlign(Paint.Align.RIGHT);
+        text.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFD24D);
+        text.setTextSize(dailyCard.height() * 0.26f);
+        g.drawText(dailyDoneToday ? "DONE" : "+" + DAILY_REWARD + " ¢",
+                dailyCard.right - dailyCard.width() * 0.03f, dailyCard.centerY() + dailyCard.height() * 0.08f, text);
+        text.setTextAlign(Paint.Align.CENTER);
+
+        // tyre compound selector
+        for (int i = 0; i < 3; i++) {
+            boolean sel = tire == i;
+            int acc = i == 0 ? 0xFFFF6B6B : (i == 1 ? 0xFFFFD24D : 0xFF6CE0FF);
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(sel ? (0x55000000 | (acc & 0xFFFFFF)) : 0x33101830);
+            g.drawRoundRect(tireBtns[i], 10, 10, ui);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(sel ? 4 : 2);
+            ui.setColor(sel ? acc : 0x88FFFFFF);
+            g.drawRoundRect(tireBtns[i], 10, 10, ui);
+            ui.setStyle(Paint.Style.FILL);
+            text.clearShadowLayer();
+            text.setColor(sel ? acc : 0xCCFFFFFF);
+            text.setTextSize(tireBtns[i].height() * 0.42f);
+            g.drawText(TIRE_NAME[i], tireBtns[i].centerX(), tireBtns[i].centerY() + tireBtns[i].height() * 0.15f, text);
+        }
+        text.setColor(0xFF7F88B0);
+        text.setTextSize(Math.min(width, height) * 0.024f);
+        g.drawText("TYRES", tireBtns[0].left - Math.min(width, height) * 0.05f, tireBtns[1].centerY() + tireBtns[1].height() * 0.12f, text);
 
         for (int i = 0; i < swatches.length; i++) {
             ui.setStyle(Paint.Style.FILL);
@@ -1032,14 +1136,10 @@ final class Game {
         }
         ui.setStyle(Paint.Style.FILL);
 
-        if (bestLap > 0) {
-            text.setColor(0xFF8AF0FF);
-            text.setTextSize(Math.min(width, height) * 0.028f);
-            g.drawText("BEST LAP " + fmt(bestLap), width / 2f, height * 0.74f, text);
-        }
         text.setColor(0xFF7F88B0);
-        text.setTextSize(Math.min(width, height) * 0.024f);
-        g.drawText("drift = nitro  •  ? = item  •  blue = jump  •  yellow dashes = shortcut", width / 2f, height * 0.92f, text);
+        text.setTextSize(Math.min(width, height) * 0.022f);
+        g.drawText("drift = nitro  •  ? = item  •  blue = jump  •  shortcuts  •  ghost = your best lap",
+                width / 2f, height * 0.95f, text);
     }
 
     private void drawPillButton(Canvas g, RectF r, String label, int accent, boolean enabled) {
@@ -1091,8 +1191,8 @@ final class Game {
         ui.setColor(own && equipped[i] ? 0x3342E2B8 : 0x33101830);
         g.drawRoundRect(r, 16, 16, ui);
         ui.setStyle(Paint.Style.STROKE);
-        ui.setStrokeWidth(3);
-        ui.setColor(accent);
+        ui.setStrokeWidth(i == shopSel ? 5 : 3);
+        ui.setColor(i == shopSel ? 0xFFFFFFFF : accent);
         g.drawRoundRect(r, 16, 16, ui);
         ui.setStyle(Paint.Style.FILL);
 
@@ -1146,8 +1246,7 @@ final class Game {
 
         List<Standing> st = new ArrayList<>();
         st.add(new Standing("YOU", sim.lapsDone * (double) sim.N + sim.prevIdx, CAR_COLORS[playerColorIdx], sim.finishTime));
-        int n = 1;
-        for (Sim.Ai a : sim.ais) st.add(new Standing("CPU " + (n++), a.lap * (double) sim.N + a.t, a.color, 0));
+        for (Sim.Ai a : sim.ais) st.add(new Standing(a.name, a.lap * (double) sim.N + a.t, a.color, 0));
         Collections.sort(st, new Comparator<Standing>() {
             public int compare(Standing a, Standing b) { return Double.compare(b.prog, a.prog); }
         });
@@ -1177,7 +1276,12 @@ final class Game {
         if (leveledUp) {
             text.setColor(0xFF42E2B8);
             text.setTextSize(unit * 0.05f);
-            g.drawText("LEVEL UP!  NOW LV " + driverLevel(), width / 2f, height * 0.8f, text);
+            g.drawText("LEVEL UP!  NOW LV " + driverLevel(), width / 2f, height * 0.79f, text);
+        }
+        if (dailyJustWon) {
+            text.setColor(0xFFFFC23D);
+            text.setTextSize(unit * 0.045f);
+            g.drawText("DAILY CHALLENGE COMPLETE!  +" + DAILY_REWARD + " ¢", width / 2f, height * 0.84f, text);
         }
 
         boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
@@ -1224,6 +1328,12 @@ final class Game {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
                 float x = e.getX(e.getActionIndex()), y = e.getY(e.getActionIndex());
                 if (btnShop.contains(x, y)) { state = SHOP; return; }
+                for (int i = 0; i < 3; i++)
+                    if (tireBtns[i].contains(x, y)) {
+                        tire = i; applyLoadout();
+                        if (prefs != null) prefs.edit().putInt("tire", i).apply();
+                        return;
+                    }
                 for (int i = 0; i < swatches.length; i++)
                     if (swatches[i].contains(x, y)) {
                         playerColorIdx = i;
@@ -1275,6 +1385,92 @@ final class Game {
         }
     }
 
+    // ----------------------------------------------------- controller input
+
+    boolean onKey(int code, boolean down) {
+        if (state == RACING || state == COUNTDOWN) {
+            switch (code) {
+                case KeyEvent.KEYCODE_DPAD_LEFT: kLeft = down; return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT: kRight = down; return true;
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_DPAD_UP:
+                case KeyEvent.KEYCODE_SPACE: kGas = down; return true;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BUTTON_R1:
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                case KeyEvent.KEYCODE_SHIFT_LEFT: kBrake = down; return true;
+                case KeyEvent.KEYCODE_BUTTON_X:
+                case KeyEvent.KEYCODE_BUTTON_L1: if (down) tapBoost = true; return true;
+                case KeyEvent.KEYCODE_BUTTON_Y: if (down) tapItem = true; return true;
+                default: return false;
+            }
+        }
+        if (!down) return false;
+        if (state == TITLE) {
+            switch (code) {
+                case KeyEvent.KEYCODE_DPAD_LEFT: navLevel(-1); return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT: navLevel(1); return true;
+                case KeyEvent.KEYCODE_DPAD_UP: navLevel(-4); return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN: navLevel(4); return true;
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_ENTER: if (level < unlocked) startRace(level); return true;
+                case KeyEvent.KEYCODE_BUTTON_Y: state = SHOP; return true;
+                case KeyEvent.KEYCODE_BUTTON_X:
+                    tire = (tire + 1) % 3; applyLoadout();
+                    if (prefs != null) prefs.edit().putInt("tire", tire).apply(); return true;
+                default: return false;
+            }
+        }
+        if (state == SHOP) {
+            switch (code) {
+                case KeyEvent.KEYCODE_DPAD_LEFT: shopSel = (shopSel + SHOP_N - 1) % SHOP_N; return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT: shopSel = (shopSel + 1) % SHOP_N; return true;
+                case KeyEvent.KEYCODE_DPAD_UP: shopSel = (shopSel + SHOP_N - 3) % SHOP_N; return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN: shopSel = (shopSel + 3) % SHOP_N; return true;
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_DPAD_CENTER: tapShop(shopSel); return true;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BACK: state = TITLE; return true;
+                default: return false;
+            }
+        }
+        if (state == FINISHED) {
+            boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
+            switch (code) {
+                case KeyEvent.KEYCODE_BUTTON_A:
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                    if (hasNext) startRace(level + 1); else { state = TITLE; loadLevel(level); } return true;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                case KeyEvent.KEYCODE_BACK: state = TITLE; loadLevel(level); return true;
+                default: return false;
+            }
+        }
+        return false;
+    }
+
+    boolean onMotion(MotionEvent e) {
+        if ((e.getSource() & InputDevice.SOURCE_CLASS_JOYSTICK) != InputDevice.SOURCE_CLASS_JOYSTICK) return false;
+        float x = e.getAxisValue(MotionEvent.AXIS_X);
+        float hat = e.getAxisValue(MotionEvent.AXIS_HAT_X);
+        float steer = Math.abs(hat) > Math.abs(x) ? hat : x;
+        aLeft = steer < -0.4f;
+        aRight = steer > 0.4f;
+        float rt = Math.max(e.getAxisValue(MotionEvent.AXIS_RTRIGGER), e.getAxisValue(MotionEvent.AXIS_GAS));
+        float lt = Math.max(e.getAxisValue(MotionEvent.AXIS_LTRIGGER), e.getAxisValue(MotionEvent.AXIS_BRAKE));
+        aGas = rt > 0.3f;
+        aBrake = lt > 0.3f;
+        return true;
+    }
+
+    private void navLevel(int d) {
+        int ni = level + d;
+        ni = Math.max(0, Math.min(ni, Math.min(unlocked, Tracks.LEVELS.length) - 1));
+        if (ni != level) loadLevel(ni);
+    }
+
     private void tapShop(int i) {
         if (owned[i]) {
             equipped[i] = !equipped[i];
@@ -1293,8 +1489,10 @@ final class Game {
         loadLevel(lvl);
         camX = sim.carX; camY = sim.carY;
         keyLeft = keyRight = keyGas = keyBrake = false;
+        kLeft = kRight = kGas = kBrake = aLeft = aRight = aGas = aBrake = false;
         tapBoost = tapItem = false;
         awarded = false;
+        offTrackEver = hitEver = false;
         state = COUNTDOWN;
         countdown = 3.99;
     }
@@ -1317,6 +1515,35 @@ final class Game {
     private void applyLoadout() {
         sim.mods.reset();
         for (int i = 0; i < SHOP_N; i++) if (owned[i] && equipped[i]) applyItem(sim.mods, i);
+        // tyre compound strategy
+        if (tire == 0) { sim.mods.grip *= 1.10; sim.mods.rainGrip *= 0.72; }      // soft: dry grip, poor wet
+        else if (tire == 2) { sim.mods.grip *= 0.95; sim.mods.rainGrip *= 1.70; } // wet: great in rain
+    }
+
+    private void computeDaily() {
+        today = System.currentTimeMillis() / 86400000L;
+        long s = today * 2654435761L;
+        dailyTrack = (int) Math.floorMod(s, Tracks.LEVELS.length);
+        dailyType = (int) Math.floorMod(s / 7, 3);
+        dailyDoneToday = prefs != null && prefs.getLong("dailyDone", -1) == today;
+    }
+
+    private String dailyDesc() {
+        String where = Tracks.LEVELS[dailyTrack].name.replaceAll("^\\d+ · ", "");
+        switch (dailyType) {
+            case 0: return "Win on " + where;
+            case 1: return "Clean race on " + where + " (stay on track)";
+            default: return "No spin-outs on " + where;
+        }
+    }
+
+    private boolean dailyMet() {
+        if (level != dailyTrack) return false;
+        switch (dailyType) {
+            case 0: return sim.position() == 1;
+            case 1: return !offTrackEver;
+            default: return !hitEver;
+        }
     }
 
     private void awardRace() {

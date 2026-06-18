@@ -118,14 +118,26 @@ final class Sim {
         clearEvents();
 
         ais.clear();
-        int[] cols = {0xFFFF4D9D, 0xFFFFC23D, 0xFF8CFF45};
+        // Three rival personalities: BLAZE (fast, aggressive, erratic),
+        // NOVA (balanced), SAGE (smooth, consistent, hugs the racing line).
+        int[] cols = {0xFFFF4D6B, 0xFFFFC23D, 0xFF6CE0FF};
+        String[] names = {"BLAZE", "NOVA", "SAGE"};
+        double[] spdMul = {1.07, 1.0, 0.99};
+        double[] skill = {0.45, 0.7, 0.92};      // higher = fewer mistakes
+        double[] aggr = {1.7, 1.0, 0.6};
+        double[] weave = {34, 14, 4};
         for (int i = 0; i < 3; i++) {
             Ai a = new Ai();
             int idx0 = (startIdx - (i + 1) * 5 + N) % N;
             a.offset = (i - 1) * 46f;
             a.t = idx0;
-            a.baseSpeed = def.aiBase + i * 1.2;
+            a.baseSpeed = (def.aiBase + i * 1.0) * spdMul[i];
             a.color = cols[i];
+            a.name = names[i];
+            a.skill = skill[i];
+            a.aggr = aggr[i];
+            a.weave = weave[i];
+            a.mistakeTimer = 2 + i;
             a.x = cx[idx0] + dirY[idx0] * a.offset;
             a.y = cy[idx0] - dirX[idx0] * a.offset;
             a.angle = Math.atan2(dirY[idx0], dirX[idx0]);
@@ -325,7 +337,8 @@ final class Sim {
             if (d2 < 52 * 52 && d2 > 0.01) {
                 double d = Math.sqrt(d2), push = (52 - d) / 2, nxp = dx / d, nyp = dy / d;
                 double f = shield > 0 ? 2.4 : 1.0;
-                carX += nxp * push / mods.bumpResist; carY += nyp * push / mods.bumpResist;
+                // aggressive rivals shove the player harder
+                carX += nxp * push * a.aggr / mods.bumpResist; carY += nyp * push * a.aggr / mods.bumpResist;
                 a.x -= nxp * push * f; a.y -= nyp * push * f; a.bump = 0.4;
             }
         }
@@ -366,11 +379,23 @@ final class Sim {
             double diff = playerProg - prog;
             double rubber = 1 + Math.max(-0.18, Math.min(0.22, diff / (N * 0.5)));
             double spd = a.baseSpeed * rubber;
+
+            // personality: occasional "mistakes" (a brief lift), rarer for skilled drivers
+            a.mistakeTimer -= dt;
+            if (a.mistakeTimer <= 0) {
+                a.mistakeTimer = 2.5 + rnd.nextDouble() * 3;
+                if (rnd.nextDouble() > a.skill) a.slow = 0.35 + rnd.nextDouble() * 0.5;
+            }
+            if (a.slow > 0) { a.slow -= dt; spd *= 0.5; }
             if (a.bump > 0) { a.bump -= dt; spd *= 0.5; }
+
             a.t += spd * dt;
             if (a.t >= N) { a.t -= N; a.lap++; }
             int ai = ((int) a.t) % N;
-            double tx = cx[ai] + dirY[ai] * a.offset, ty = cy[ai] - dirX[ai] * a.offset;
+            // weaving / line: aggressive drivers wander, smooth ones hug the line
+            a.wobble += dt * 1.7;
+            double off = a.offset + Math.sin(a.wobble) * a.weave;
+            double tx = cx[ai] + dirY[ai] * off, ty = cy[ai] - dirX[ai] * off;
             a.x += (tx - a.x) * Math.min(1, dt * 5);
             a.y += (ty - a.y) * Math.min(1, dt * 5);
             a.angle = Math.atan2(dirY[ai], dirX[ai]);
@@ -394,6 +419,8 @@ final class Sim {
 
     static final class Ai {
         double t, baseSpeed, offset, x, y, angle, bump;
+        double skill, aggr, weave, mistakeTimer, slow, wobble;
+        String name = "CPU";
         int lap, color;
     }
 

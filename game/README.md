@@ -24,6 +24,18 @@ Researched the most-loved mechanics in the racing genre and packed in a lot:
 14. **Persistent best lap** (saved across sessions) + car **colour selection**
 15. Camera follow with look-ahead, screen shake, speed-lines and a neon HUD
 
+### Daily challenge, tyres, rivals & controllers
+
+- **Daily challenge**: a date-seeded objective (win / clean race / no spin-outs on
+  a specific track) for a big coin bonus, once per day
+- **Tyre strategy**: pick Soft / Medium / Wet before a race — each trades dry grip
+  against wet grip, and every track shows its weather (DRY / RAIN / VARIES)
+- **Rival personalities**: BLAZE (fast, aggressive, erratic), NOVA (balanced) and
+  SAGE (smooth, consistent, defensive) — they make mistakes, weave and shove
+  differently, and race under their own names
+- **Gamepad support**: stick/D-pad to steer, triggers or A/B to gas/brake-drift,
+  X = nitro, Y = item; full menu & shop navigation with the D-pad + A/B/Y
+
 ### Campaign, shop & ghost
 
 - **Driver level + XP + coins**: every race pays out coins and XP based on your

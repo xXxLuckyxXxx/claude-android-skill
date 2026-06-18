@@ -16,6 +16,26 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
         super(context);
         getHolder().addCallback(this);
         setFocusable(true);
+        setFocusableInTouchMode(true);
+        requestFocus();
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
+        if (game != null && event.getRepeatCount() == 0 && game.onKey(keyCode, true)) return true;
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, android.view.KeyEvent event) {
+        if (game != null && game.onKey(keyCode, false)) return true;
+        return super.onKeyUp(keyCode, event);
+    }
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        if (game != null && game.onMotion(event)) return true;
+        return super.onGenericMotionEvent(event);
     }
 
     @Override
