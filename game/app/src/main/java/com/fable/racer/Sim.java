@@ -177,6 +177,12 @@ final class Sim {
                 k++;
             }
         }
+        // drive the circuit the other way round (reverse traversal direction)
+        for (int i = 0; i < N / 2; i++) {
+            int j = N - 1 - i;
+            float tx = cx[i]; cx[i] = cx[j]; cx[j] = tx;
+            float ty = cy[i]; cy[i] = cy[j]; cy[j] = ty;
+        }
         minX = minY = Float.MAX_VALUE; maxX = maxY = -Float.MAX_VALUE;
         for (int i = 0; i < N; i++) {
             int nx = (i + 1) % N, pv = (i - 1 + N) % N;

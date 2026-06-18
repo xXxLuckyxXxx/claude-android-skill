@@ -164,6 +164,9 @@ final class Game {
 
     private final float[][] rain = new float[120][3];
     private final float[][] stars = new float[90][3];
+    private final float[][] menuDots = new float[44][4];   // x,y,speed,size — animated menu bg
+    private int renderedState = -1;
+    private double transT;                                  // screen-transition fade
     private final List<Particle> particles = new ArrayList<>();
     private final List<float[]> skidMarks = new ArrayList<>();
     private final List<float[]> scenery = new ArrayList<>();  // x,y,r,type
@@ -229,6 +232,12 @@ final class Game {
         for (int i = 0; i < stars.length; i++) {
             stars[i][0] = rnd.nextFloat(); stars[i][1] = rnd.nextFloat() * 0.7f;
             stars[i][2] = 0.6f + rnd.nextFloat() * 1.8f;
+        }
+        for (int i = 0; i < menuDots.length; i++) {
+            menuDots[i][0] = rnd.nextFloat();
+            menuDots[i][1] = rnd.nextFloat();
+            menuDots[i][2] = 0.02f + rnd.nextFloat() * 0.06f;
+            menuDots[i][3] = 1.5f + rnd.nextFloat() * 3.5f;
         }
         try { audio = new EngineAudio(); } catch (Throwable t) { audio = null; }
         loadLevel(0);
@@ -392,6 +401,7 @@ final class Game {
         overtakeT = Math.max(0, overtakeT - dt);
         elimBannerT = Math.max(0, elimBannerT - dt);
         flash = Math.max(0, flash - dt * 2);
+        transT = Math.max(0, transT - dt);
 
         if (state == TITLE || state == SHOP || state == TUNE || state == STYLE || state == TUTORIAL || state == CHAMP) {
             idleAudio(); return;
@@ -599,6 +609,7 @@ final class Game {
     // --------------------------------------------------------------- render
 
     void render(Canvas g) {
+        if (state != renderedState) { transT = 0.35; renderedState = state; }
         float darkness = nightAmount();
         int grass = lerp(THEME[theme][0], 0xFF0A2238, darkness * 0.85f);
         if (sim.wetness > 0.1) grass = lerp(grass, 0xFF20465A, 0.4f * (float) sim.wetness);
@@ -655,6 +666,11 @@ final class Game {
         else if (state == TUTORIAL) renderTutorial(g);
         else if (state == COUNTDOWN) renderCountdown(g);
         else if (state == FINISHED) renderResults(g);
+
+        if (transT > 0) {                          // screen-transition fade
+            ui.setColor(((int) (Math.min(1, transT / 0.35) * 200) << 24));
+            g.drawRect(0, 0, width, height, ui);
+        }
     }
 
     private float nightAmount() {
@@ -760,10 +776,7 @@ final class Game {
     }
 
     private void renderChamp(Canvas g) {
-        ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF21A0E33, 0xF2070518}, null, Shader.TileMode.CLAMP));
-        g.drawRect(0, 0, width, height, ui);
-        ui.setShader(null);
+        drawMenuBackdrop(g, 0xF21A0E33, 0xF2070518);
         float unit = Math.min(width, height);
         boolean done = champRound >= CHAMP_TRACKS.length - 1;
         String[] names = {"YOU", "BLAZE", "NOVA", "SAGE"};
@@ -1312,11 +1325,7 @@ final class Game {
     }
 
     private void renderTitle(Canvas g) {
-        ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height,
-                new int[]{0xF21A0E33, 0xE6140A28, 0xF2090518}, null, Shader.TileMode.CLAMP));
-        g.drawRect(0, 0, width, height, ui);
-        ui.setShader(null);
+        drawMenuBackdrop(g, 0xF21A0E33, 0xF2090518);
 
         text.setTextAlign(Paint.Align.CENTER);
         float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 2));
@@ -1389,10 +1398,12 @@ final class Game {
             g.drawRoundRect(r, 14, 14, ui);
             ui.setStyle(Paint.Style.FILL);
 
-            text.clearShadowLayer();
+            text.setShadowLayer(6, 0, 1, 0xCC000000);
             text.setColor(locked ? 0x66FFFFFF : 0xFFFFFFFF);
-            text.setTextSize(r.width() * 0.09f);
-            g.drawText(locked ? "LOCKED" : Tracks.LEVELS[i].name, r.centerX(), r.bottom - r.height() * 0.1f, text);
+            String ln = locked ? "LOCKED" : Tracks.LEVELS[i].name;
+            fitText(ln, r.width() * 0.9f, r.width() * 0.11f);
+            g.drawText(ln, r.centerX(), r.bottom - r.height() * 0.1f, text);
+            text.clearShadowLayer();
 
             if (!locked) {
                 int wb = Tracks.LEVELS[i].weatherBias;
@@ -1426,7 +1437,7 @@ final class Game {
             text.setTextSize(dailyCard.height() * 0.26f);
             g.drawText("DAILY CHALLENGE", dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.34f, text);
             text.setColor(0xFFFFFFFF);
-            text.setTextSize(dailyCard.height() * 0.22f);
+            fitText(dailyDesc(), dailyCard.width() * 0.74f, dailyCard.height() * 0.22f);
             g.drawText(dailyDesc(), dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.68f, text);
             text.setTextAlign(Paint.Align.RIGHT);
             text.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFD24D);
@@ -1529,28 +1540,48 @@ final class Game {
         loadLevel(0);   // refresh procedural preview
     }
 
+    /** Sets the text paint size so {@code s} fits within {@code maxW}. */
+    private void fitText(String s, float maxW, float size) {
+        text.setTextSize(size);
+        float w = text.measureText(s);
+        if (w > maxW && w > 0) text.setTextSize(size * maxW / w);
+    }
+
     private void drawPillButton(Canvas g, RectF r, String label, int accent, boolean enabled) {
+        float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 2.5));
         ui.setStyle(Paint.Style.FILL);
-        ui.setColor(enabled ? 0x552A1A40 : 0x22202030);
+        ui.setColor(enabled ? 0x66201433 : 0x22202030);
         g.drawRoundRect(r, r.height() / 2, r.height() / 2, ui);
         ui.setStyle(Paint.Style.STROKE);
-        ui.setStrokeWidth(3);
+        ui.setStrokeWidth(3 + (enabled ? pulse * 1.5f : 0));
         ui.setColor(enabled ? accent : 0x55FFFFFF);
         g.drawRoundRect(r, r.height() / 2, r.height() / 2, ui);
         ui.setStyle(Paint.Style.FILL);
-        text.clearShadowLayer();
         text.setTextAlign(Paint.Align.CENTER);
+        text.setShadowLayer(6, 0, 1, 0xCC000000);
         text.setColor(enabled ? 0xFFFFFFFF : 0x77FFFFFF);
-        text.setTextSize(r.height() * 0.4f);
-        g.drawText(label, r.centerX(), r.centerY() + r.height() * 0.14f, text);
+        fitText(label, r.width() * 0.86f, r.height() * 0.4f);
+        g.drawText(label, r.centerX(), r.centerY() + text.getTextSize() * 0.34f, text);
+        text.clearShadowLayer();
+    }
+
+    private void drawMenuBackdrop(Canvas g, int top, int bottom) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{top, bottom}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+        // drifting neon motes
+        for (float[] d : menuDots) {
+            float x = d[0] * width;
+            float y = (float) ((d[1] - titlePulse * d[2]) % 1 + 1) % 1 * height;
+            float a = (float) (0.25 + 0.25 * Math.sin(titlePulse * 2 + d[0] * 10));
+            ui.setColor(((int) (a * 90) << 24) | 0x19E0FF);
+            g.drawCircle(x, y, d[3], ui);
+        }
     }
 
     private void renderShop(Canvas g) {
-        ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height,
-                new int[]{0xF21A0E33, 0xF2090518}, null, Shader.TileMode.CLAMP));
-        g.drawRect(0, 0, width, height, ui);
-        ui.setShader(null);
+        drawMenuBackdrop(g, 0xF21A0E33, 0xF2090518);
 
         float unit = Math.min(width, height), pad = unit * 0.04f;
         text.setTextAlign(Paint.Align.CENTER);
@@ -1584,16 +1615,19 @@ final class Game {
         ui.setStyle(Paint.Style.FILL);
 
         float u = r.height();
+        float maxW = r.width() - u * 0.24f;
         text.setTextAlign(Paint.Align.LEFT);
-        text.clearShadowLayer();
+        text.setShadowLayer(5, 0, 1, 0xCC000000);
         text.setColor(0xFFFFFFFF);
-        text.setTextSize(u * 0.15f);
+        fitText(SHOP_NAME[i], maxW, u * 0.15f);
         g.drawText(SHOP_NAME[i], r.left + u * 0.12f, r.top + u * 0.2f, text);
         text.setColor(0xFF8CFF8C);
-        text.setTextSize(u * 0.1f);
+        fitText(SHOP_PRO[i], maxW, u * 0.1f);
         g.drawText(SHOP_PRO[i], r.left + u * 0.12f, r.top + u * 0.4f, text);
         text.setColor(0xFFFF8A9B);
+        fitText(SHOP_CON[i], maxW, u * 0.1f);
         g.drawText(SHOP_CON[i], r.left + u * 0.12f, r.top + u * 0.56f, text);
+        text.clearShadowLayer();
 
         text.setTextAlign(Paint.Align.CENTER);
         String status;
@@ -1603,8 +1637,10 @@ final class Game {
         else if (lockedByLevel) { status = "REACH LV " + SHOP_REQ[i]; sc = 0xFFFF8A9B; }
         else { status = "BUY  " + SHOP_COST[i] + " ¢" + (canBuy ? "" : "  (need coins)"); sc = canBuy ? 0xFFFFD24D : 0xFF888EA0; }
         text.setColor(sc);
-        text.setTextSize(u * 0.12f);
+        text.setShadowLayer(5, 0, 1, 0xCC000000);
+        fitText(status, r.width() * 0.92f, u * 0.13f);
         g.drawText(status, r.centerX(), r.bottom - u * 0.12f, text);
+        text.clearShadowLayer();
     }
 
     private static final String[] TUNE_LABEL = {"ACCEL  <->  TOP SPEED", "BALANCED  <->  HANDLING", "NIMBLE  <->  STABLE"};
@@ -1619,10 +1655,7 @@ final class Game {
     }
 
     private void renderTune(Canvas g) {
-        ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF2102A1A, 0xF2070518}, null, Shader.TileMode.CLAMP));
-        g.drawRect(0, 0, width, height, ui);
-        ui.setShader(null);
+        drawMenuBackdrop(g, 0xF2102A1A, 0xF2070518);
         float unit = Math.min(width, height), pad = unit * 0.04f;
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFF8CFF45);
@@ -1658,10 +1691,7 @@ final class Game {
     }
 
     private void renderStyle(Canvas g) {
-        ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF22A0E2A, 0xF2070518}, null, Shader.TileMode.CLAMP));
-        g.drawRect(0, 0, width, height, ui);
-        ui.setShader(null);
+        drawMenuBackdrop(g, 0xF22A0E2A, 0xF2070518);
         float unit = Math.min(width, height), pad = unit * 0.04f;
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFFFF6FB1);
@@ -1696,9 +1726,9 @@ final class Game {
             ui.setStyle(Paint.Style.FILL);
 
             text.setTextAlign(Paint.Align.CENTER);
+            fitText(THEME_NAME[i], r.width() * 0.84f, r.height() * 0.17f);
             text.setColor(0xFF000000);
-            text.setTextSize(r.height() * 0.16f);
-            g.drawText(THEME_NAME[i], r.centerX() + 1, r.top + r.height() * 0.92f + 1, text);
+            g.drawText(THEME_NAME[i], r.centerX() + 1.5f, r.top + r.height() * 0.92f + 1.5f, text);
             text.setColor(0xFFFFFFFF);
             g.drawText(THEME_NAME[i], r.centerX(), r.top + r.height() * 0.92f, text);
             text.setColor(active ? 0xFF42E2B8 : (own ? 0xFFB9B2E6 : 0xFFFFD24D));
@@ -1758,10 +1788,7 @@ final class Game {
     };
 
     private void renderTutorial(Canvas g) {
-        ui.setStyle(Paint.Style.FILL);
-        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF21A0E33, 0xF2070518}, null, Shader.TileMode.CLAMP));
-        g.drawRect(0, 0, width, height, ui);
-        ui.setShader(null);
+        drawMenuBackdrop(g, 0xF21A0E33, 0xF2070518);
         float unit = Math.min(width, height);
         String[] p = TUTORIAL_PAGES[Math.min(tutorialPage, TUTORIAL_PAGES.length - 1)];
         text.setTextAlign(Paint.Align.CENTER);
