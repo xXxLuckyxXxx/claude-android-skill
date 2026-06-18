@@ -89,5 +89,32 @@ final class Tracks {
                     new double[][]{{0.20, 0.33, 340}, {0.56, 0.70, -320}}),
     };
 
+    /** Builds a fully procedural circuit from a 5-digit share code (0..99999). */
+    static Def random(int code) {
+        long seed = 0x9E3779B97F4A7C15L ^ (code * 2654435761L);
+        Random r = new Random(seed);
+        double rx = 1300 + r.nextInt(750);
+        double ry = 1050 + r.nextInt(650);
+        int n = 14 + r.nextInt(9);
+        double jit = 0.18 + r.nextDouble() * 0.16;
+        int laps = 3 + r.nextInt(2);
+        double ai = 23 + r.nextDouble() * 7;
+        int weather = r.nextInt(3);
+        double day = r.nextDouble();
+        double[] jumps = fracs(r, 1 + r.nextInt(3), 0.1, 0.9);
+        double[] pads = fracs(r, 2 + r.nextInt(3), 0.05, 0.95);
+        double[] boxes = fracs(r, 2 + r.nextInt(2), 0.1, 0.9);
+        double[][] sc = {{0.20 + r.nextDouble() * 0.08, 0.34 + r.nextDouble() * 0.08,
+                (r.nextBoolean() ? 1 : -1) * (270 + r.nextInt(130))}};
+        return new Def(String.format("RANDOM %05d", code), loop(rx, ry, n, seed, jit),
+                laps, ai, weather, day, jumps, pads, boxes, sc);
+    }
+
+    private static double[] fracs(Random r, int count, double lo, double hi) {
+        double[] f = new double[count];
+        for (int i = 0; i < count; i++) f[i] = lo + (hi - lo) * (i + r.nextDouble() * 0.6) / count;
+        return f;
+    }
+
     private Tracks() {}
 }

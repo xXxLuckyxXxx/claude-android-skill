@@ -405,6 +405,7 @@ final class Sim {
     private void updateAis(double dt) {
         double playerProg = lapsDone * (double) N + prevIdx;
         for (Ai a : ais) {
+            if (a.eliminated) continue;            // knocked out in elimination mode
             double prog = a.lap * (double) N + a.t;
             double diff = playerProg - prog;
             double rubber = 1 + Math.max(-0.18, Math.min(0.22, diff / (N * 0.5)));
@@ -452,6 +453,7 @@ final class Sim {
         double skill, aggr, weave, mistakeTimer, slow, wobble;
         String name = "CPU";
         int lap, color;
+        boolean eliminated;
     }
 
     static final class ItemBox {

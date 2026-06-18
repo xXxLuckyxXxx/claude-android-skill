@@ -38,6 +38,14 @@ final class EngineAudio {
     private double fxPhase, fxFreq, fxFreq2;
     private float fxAmp, fxDecay;
 
+    // procedural synthwave music layer
+    private volatile boolean musicOn;
+    private volatile float musicLevel = 0.5f;
+    private int musStep;
+    private double musStepPos, bassPh, arpPh, kickPh, kickEnv, hatEnv, arpEnv;
+    private static final int[] BASS = {0, 0, 3, 0, 5, 5, 3, 0, 0, 0, 7, 0, 5, 3, 2, 0};
+    private static final int[] ARP = {12, 15, 19, 24, 19, 15, 12, 15, 12, 17, 20, 24, 20, 17, 15, 12};
+
     EngineAudio() {
         try {
             int min = AudioTrack.getMinBufferSize(RATE,
@@ -66,6 +74,8 @@ final class EngineAudio {
     }
 
     void blip(int type) { blipReq = type; }
+
+    void setMusic(boolean on, float level) { this.musicOn = on; this.musicLevel = level; }
 
     void release() {
         running = false;
@@ -113,6 +123,32 @@ final class EngineAudio {
                         sample += (Math.sin(fxPhase) * 0.6 + Math.sin(fxPhase * (fxFreq2 / fxFreq)) * 0.4) * e;
                         fxAmp *= fxDecay;
                         fxLeft--;
+                    }
+
+                    // procedural synthwave music
+                    if (musicOn && musicLevel > 0.01f) {
+                        double sps = RATE * 60.0 / 132.0 / 4.0;
+                        musStepPos += 1;
+                        if (musStepPos >= sps) {
+                            musStepPos -= sps;
+                            musStep = (musStep + 1) % 16;
+                            if (musStep % 4 == 0) { kickEnv = 1.0; kickPh = 0; }
+                            hatEnv = 0.7;
+                            arpEnv = 1.0;
+                        }
+                        double bassF = 55.0 * Math.pow(2, BASS[musStep] / 12.0);
+                        bassPh += 2 * Math.PI * bassF / RATE;
+                        double bass = (((bassPh / (2 * Math.PI)) % 1) * 2 - 1) * 0.5;
+                        double arpF = 110.0 * Math.pow(2, ARP[musStep] / 12.0);
+                        arpPh += 2 * Math.PI * arpF / RATE;
+                        double arp = (Math.sin(arpPh) * 0.6 + Math.sin(arpPh * 2) * 0.2) * 0.3 * arpEnv;
+                        arpEnv *= 0.9997;
+                        kickPh += 2 * Math.PI * (45 + 90 * kickEnv) / RATE;
+                        double kick = Math.sin(kickPh) * kickEnv;
+                        kickEnv *= 0.9992;
+                        double hat = (Math.random() * 2 - 1) * hatEnv * 0.15;
+                        hatEnv *= 0.985;
+                        sample += (bass * 0.5 + arp + kick * 0.8 + hat) * 0.22 * musicLevel;
                     }
 
                     if (sample > 1) sample = 1;

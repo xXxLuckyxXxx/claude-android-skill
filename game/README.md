@@ -24,6 +24,19 @@ Researched the most-loved mechanics in the racing genre and packed in a lot:
 14. **Persistent best lap** (saved across sessions) + car **colour selection**
 15. Camera follow with look-ahead, screen shake, speed-lines and a neon HUD
 
+### Championship, race modes, random tracks, music & juice
+
+- **Championship season**: a 5-round series with F1-style points and a live
+  standings table; win the season for the trophy
+- **Race modes**: Grand Prix, Time Trial, **Elimination** (the last-placed racer
+  is knocked out on a timer) and **Drift Trial** (score by drifting)
+- **Procedural random tracks** from a 5-digit **share code** — reroll or type a
+  friend's code to race the exact same circuit
+- **Procedural synthwave music** that intensifies with speed (toggle on the menu)
+- **Juice**: countdown camera zoom, finish flourish + flash, overtake banners
+  and haptic vibration on crashes, jumps and boosts
+- **Directional shadows** that move with the time-of-day sun for real depth
+
 ### Time trial, tuning, dynamic weather & tutorial
 
 - **Time-trial mode**: a solo run against your ghost (no rivals, no items) with a

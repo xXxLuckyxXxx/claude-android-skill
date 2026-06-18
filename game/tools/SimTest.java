@@ -21,6 +21,8 @@ public final class SimTest {
         System.out.println("== TIME TRIAL (solo vs ghost, no AI) ==");
         failures += runLevel(0, false, true);
         failures += runLevel(Tracks.LEVELS.length - 1, false, true);
+        System.out.println("== PROCEDURAL RANDOM TRACKS ==");
+        for (int code : new int[]{0, 12345, 48213, 99999, 7}) failures += runRandom(code);
         System.out.println();
         if (failures == 0) System.out.println("PLAYTEST PASSED — all levels completable.");
         else System.out.println("PLAYTEST FAILED — " + failures + " problem(s).");
@@ -28,9 +30,16 @@ public final class SimTest {
     }
 
     private static int runLevel(int lvl, boolean modded, boolean tt) {
-        Tracks.Def def = Tracks.LEVELS[lvl];
+        return runDef(Tracks.LEVELS[lvl], 1234 + lvl, modded, tt);
+    }
+
+    private static int runRandom(int code) {
+        return runDef(Tracks.random(code), code, false, false);
+    }
+
+    private static int runDef(Tracks.Def def, long seed, boolean modded, boolean tt) {
         Sim sim = new Sim();
-        sim.load(def, 1234 + lvl, tt);
+        sim.load(def, seed, tt);
         if (modded) {
             // stack every upgrade's effect, pros and cons, to stress the model
             sim.mods.topSpeed = 1.12 * 0.93 * 0.96;

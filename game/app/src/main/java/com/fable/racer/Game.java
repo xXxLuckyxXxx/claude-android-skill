@@ -31,7 +31,7 @@ import java.util.Random;
  */
 final class Game {
 
-    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5, TUTORIAL = 6, STYLE = 7;
+    private static final int TITLE = 0, COUNTDOWN = 1, RACING = 2, FINISHED = 3, SHOP = 4, TUNE = 5, TUTORIAL = 6, STYLE = 7, CHAMP = 8;
     private int state = TITLE;
 
     // unlockable cosmetics (bought with coins)
@@ -53,8 +53,45 @@ final class Game {
     private final RectF[] skinChips = new RectF[4];
     private final RectF btnStyle = new RectF();
 
-    // race mode: 0 = grand prix vs rivals, 1 = time trial vs your ghost
-    private int mode = 0;
+    // race modes
+    private static final int MODE_GP = 0, MODE_TT = 1, MODE_ELIM = 2, MODE_DRIFT = 3;
+    private static final String[] MODE_NAME = {"GRAND PRIX", "TIME TRIAL", "ELIMINATION", "DRIFT TRIAL"};
+    private int mode = MODE_GP;
+    private boolean solo() { return mode == MODE_TT || mode == MODE_DRIFT; }
+
+    // current track (fixed level or procedural)
+    private Tracks.Def curDef;
+    private boolean randomTrack;
+    private int trackCode = 1234;
+    private final RectF btnRandom = new RectF(), btnReroll = new RectF(), btnGo = new RectF();
+    private final RectF[] codeUp = new RectF[5], codeDn = new RectF[5];
+
+    // championship season
+    private static final int[] CHAMP_TRACKS = {0, 2, 4, 6, 7};
+    private static final int[] CHAMP_PTS = {25, 18, 15, 12};
+    private boolean champ;
+    private int champRound;
+    private final int[] champScore = new int[4];   // 0=YOU,1=BLAZE,2=NOVA,3=SAGE
+    private final RectF btnChamp = new RectF();
+
+    // elimination + drift
+    private double elimTimer;
+    private boolean playerOut;
+    private String elimBanner;
+    private double elimBannerT;
+    private double driftScore, driftCombo;
+
+    // juice
+    private double zoomMul = 1, finishTimer, flash;
+    private int prevPos = 1;
+    private String overtakeBanner;
+    private double overtakeT;
+
+    // atmosphere
+    private boolean musicOn = true;
+    private final RectF btnMusic = new RectF();
+    private float shX, shY, shAlpha;     // directional shadow offset (sun)
+    private android.os.Vibrator vibrator;
     // car tuning sliders (-100..100), trade-offs applied on top of upgrades
     private int tuneSpeed, tuneHandling, tuneStab;
     private final RectF[] tuneBars = new RectF[3];
@@ -181,7 +218,11 @@ final class Game {
             carSkin = prefs.getInt("skin", 0);
             ownedThemes = prefs.getInt("ownedThemes", 1) | 1;
             ownedSkins = prefs.getInt("ownedSkins", 1) | 1;
+            musicOn = prefs.getBoolean("music", true);
         }
+        try {
+            if (ctx != null) vibrator = (android.os.Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
+        } catch (Throwable t) { vibrator = null; }
         computeDaily();
         if (!seenTutorial) { state = TUTORIAL; tutorialPage = 0; }
         text.setTypeface(Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD));
@@ -198,10 +239,10 @@ final class Game {
 
     private void loadLevel(int lvl) {
         level = Math.max(0, Math.min(Tracks.LEVELS.length - 1, lvl));
-        Tracks.Def def = Tracks.LEVELS[level];
-        sim.load(def, System.nanoTime(), mode == 1);
+        curDef = randomTrack ? Tracks.random(trackCode) : Tracks.LEVELS[level];
+        sim.load(curDef, randomTrack ? trackCode : System.nanoTime(), solo());
         rebuildRoadPath();
-        dayTime = def.dayTime < 0 ? 0.25 : def.dayTime;
+        dayTime = curDef.dayTime < 0 ? 0.25 : curDef.dayTime;
         for (int i = 0; i < rain.length; i++) {
             rain[i][0] = rnd.nextFloat(); rain[i][1] = rnd.nextFloat(); rain[i][2] = 0.5f + rnd.nextFloat();
         }
@@ -211,7 +252,7 @@ final class Game {
         prevLaps = 0;
         lapRec.clear();
         recTimer = 0;
-        ghost = loadGhost(level);
+        ghost = randomTrack ? null : loadGhost(level);
         applyLoadout();
         camX = (sim.minX + sim.maxX) / 2;
         camY = (sim.minY + sim.maxY) / 2;
@@ -308,8 +349,22 @@ final class Game {
         float ctw = 4 * chw + 3 * (chw * 0.08f), csx = width / 2f - ctw / 2f, csy = height * 0.78f;
         for (int i = 0; i < 4; i++)
             skinChips[i] = new RectF(csx + i * (chw + chw * 0.08f), csy, csx + i * (chw + chw * 0.08f) + chw, csy + chh2);
-        // mode toggle (left side, under the XP bar)
-        btnMode.set(pad, pad + Math.min(width, height) * 0.17f, pad + width * 0.24f, pad + Math.min(width, height) * 0.17f + shh);
+        // menu second row: MODE · CHAMPIONSHIP · RANDOM · MUSIC
+        float prow = height * 0.185f, pwid = Math.min(width * 0.18f, 250), pgap = pwid * 0.05f;
+        float totalP = 4 * pwid + 3 * pgap, px0 = width / 2f - totalP / 2f;
+        btnMode.set(px0, prow, px0 + pwid, prow + shh);
+        btnChamp.set(px0 + (pwid + pgap), prow, px0 + (pwid + pgap) + pwid, prow + shh);
+        btnRandom.set(px0 + 2 * (pwid + pgap), prow, px0 + 2 * (pwid + pgap) + pwid, prow + shh);
+        btnMusic.set(px0 + 3 * (pwid + pgap), prow, px0 + 3 * (pwid + pgap) + pwid, prow + shh);
+        // random-track code steppers + reroll + go (shown when RANDOM is active)
+        float cw0 = Math.min(width * 0.055f, 70), ccx = width / 2f - 5 * cw0 * 1.2f / 2f, ccy = height * 0.46f;
+        for (int i = 0; i < 5; i++) {
+            float dx0 = ccx + i * cw0 * 1.2f;
+            codeUp[i] = new RectF(dx0, ccy - cw0 * 1.0f, dx0 + cw0, ccy - cw0 * 0.1f);
+            codeDn[i] = new RectF(dx0, ccy + cw0 * 1.0f, dx0 + cw0, ccy + cw0 * 1.9f);
+        }
+        btnReroll.set(width / 2f - pwid - pgap, height * 0.6f, width / 2f - pgap, height * 0.6f + shh);
+        btnGo.set(width / 2f + pgap, height * 0.6f, width / 2f + pgap + pwid, height * 0.6f + shh);
         // tuning sliders
         float tbw = Math.min(width * 0.5f, 660), tbh = Math.min(width, height) * 0.05f;
         float tbx = width / 2f - tbw / 2f, tby = height * 0.36f;
@@ -334,38 +389,54 @@ final class Game {
     void update(double dt) {
         titlePulse += dt;
         dayTime += dt / 90.0; if (dayTime >= 1) dayTime -= 1;
+        overtakeT = Math.max(0, overtakeT - dt);
+        elimBannerT = Math.max(0, elimBannerT - dt);
+        flash = Math.max(0, flash - dt * 2);
 
-        if (state == TITLE) { idleAudio(); return; }
+        if (state == TITLE || state == SHOP || state == TUNE || state == STYLE || state == TUTORIAL || state == CHAMP) {
+            idleAudio(); return;
+        }
         if (state == COUNTDOWN) {
             int prev = (int) Math.ceil(countdown);
             countdown -= dt;
             int now = (int) Math.ceil(countdown);
             if (now != prev && now >= 1 && now <= 3 && audio != null) audio.blip(EngineAudio.BLIP_COUNT);
-            if (countdown <= 0) { state = RACING; if (audio != null) audio.blip(EngineAudio.BLIP_GO); }
+            zoomMul = 1 + 0.5 * Math.max(0, countdown / 3.99);     // start zoomed in
+            if (countdown <= 0) { state = RACING; if (audio != null) audio.blip(EngineAudio.BLIP_GO); vibrate(40); }
             idleAudio();
             return;
         }
         if (state == FINISHED) { idleAudio(); updateParticles(dt); return; }
 
-        // RACING (touch flags merged with controller button + axis flags)
-        sim.update(dt, keyLeft || kLeft || aLeft, keyRight || kRight || aRight,
-                keyGas || kGas || aGas, keyBrake || kBrake || aBrake, tapBoost, tapItem);
+        // ---- RACING ----
+        boolean lockInput = finishTimer > 0 || playerOut;
+        boolean L = !lockInput && (keyLeft || kLeft || aLeft);
+        boolean R = !lockInput && (keyRight || kRight || aRight);
+        boolean G = !lockInput && (keyGas || kGas || aGas);
+        boolean B = !lockInput && (keyBrake || kBrake || aBrake);
+        sim.update(dt, L, R, G, B, !lockInput && tapBoost, !lockInput && tapItem);
         tapBoost = tapItem = false;
 
-        if (!sim.onTrack) offTrackEver = true;
+        if (!sim.onTrack) { offTrackEver = true; shake = Math.min(shake + dt * 22, 4); }
 
-        // events -> audio + fx
         if (sim.evBoost && audio != null) audio.blip(EngineAudio.BLIP_BOOST);
         if (sim.evPickup && audio != null) audio.blip(EngineAudio.BLIP_PICKUP);
-        if (sim.evHit) { shake = 8; hitEver = true; if (audio != null) audio.blip(EngineAudio.BLIP_HIT); }
-        if (sim.evJump && audio != null) audio.blip(EngineAudio.BLIP_BOOST);
-        if (sim.evLand) shake = Math.max(shake, 4);
+        if (sim.evHit) { shake = 8; hitEver = true; vibrate(60); if (audio != null) audio.blip(EngineAudio.BLIP_HIT); }
+        if (sim.evJump) { vibrate(25); if (audio != null) audio.blip(EngineAudio.BLIP_BOOST); }
+        if (sim.evLand) { shake = Math.max(shake, 4); vibrate(35); }
         sim.clearEvents();
 
-        if (!sim.onTrack) shake = Math.min(shake + dt * 22, 4);
-        if (sim.drifting) { emitSmoke(); addSkid(); }
+        if (sim.drifting) {
+            emitSmoke(); addSkid();
+            if (mode == MODE_DRIFT) driftScore += sim.speed() * dt * 0.04;
+        }
 
-        // best lap + ghost recording
+        // overtake banner (position improved)
+        int pos = sim.position();
+        if (pos < prevPos && raceBestLap >= 0) { overtakeBanner = "OVERTAKE!  P" + pos; overtakeT = 1.6; }
+        prevPos = pos;
+
+        // best lap + ghost recording (skip on random tracks)
         if (sim.lapsDone > prevLaps) {
             prevLaps = sim.lapsDone;
             double lt = sim.lastLapTime;
@@ -374,7 +445,7 @@ final class Game {
                 bestLap = lt;
                 if (prefs != null) prefs.edit().putFloat("bestLap", (float) bestLap).apply();
             }
-            if (lt > 0.5 && (trackBest[level] == 0 || lt < trackBest[level]) && lapRec.size() > 4) {
+            if (!randomTrack && lt > 0.5 && (trackBest[level] == 0 || lt < trackBest[level]) && lapRec.size() > 4) {
                 trackBest[level] = lt;
                 saveGhost(level, lapRec);
             }
@@ -387,46 +458,119 @@ final class Game {
             lapRec.add(new float[]{(float) sim.lapTime, (float) sim.carX, (float) sim.carY, (float) sim.carAngle});
         }
 
-        // camera
+        // elimination mode: knock out the last-placed racer on a timer
+        if (mode == MODE_ELIM && !sim.finished && finishTimer <= 0) {
+            elimTimer -= dt;
+            if (elimTimer <= 0 && activeRacers() > 1) { eliminateLast(); elimTimer = 7; }
+        }
+
+        // camera (with finish punch-in easing back to normal)
         double sp = sim.speed();
         double look = 120 * (sp / Sim.MAX_SPEED);
         double tx = sim.carX + Math.cos(sim.carAngle) * look;
         double ty = sim.carY + Math.sin(sim.carAngle) * look;
         camX += (tx - camX) * Math.min(1, dt * 6);
         camY += (ty - camY) * Math.min(1, dt * 6);
+        zoomMul += (1 - zoomMul) * Math.min(1, dt * 4);
         shake = Math.max(0, shake - dt * 12);
         updateParticles(dt);
 
         if (audio != null) {
             float rpmF = (float) Math.min(1, sp / Sim.MAX_SPEED + 0.05);
             audio.set(rpmF, 1f, sim.boostTime > 0, sim.drifting ? 0.9f : 0f);
+            audio.setMusic(musicOn, (float) (0.4 + 0.45 * (sp / Sim.MAX_SPEED)));
         }
 
-        if (sim.finished) {
-            lastFinishWon = sim.position() == 1;
+        // finish flourish then results
+        if ((sim.finished || playerOut) && finishTimer <= 0 && !awarded) {
+            finishTimer = 1.2; flash = 1; zoomMul = 1.3; vibrate(playerOut ? 120 : 50);
+        }
+        if (finishTimer > 0) {
+            finishTimer -= dt;
+            if (finishTimer <= 0) finalizeFinish();
+        }
+    }
+
+    private int activeRacers() {
+        int n = playerOut ? 0 : 1;
+        for (Sim.Ai a : sim.ais) if (!a.eliminated) n++;
+        return n;
+    }
+
+    private void eliminateLast() {
+        // find the lowest progress among active racers
+        double playerProg = sim.lapsDone * (double) sim.N + sim.prevIdx;
+        Sim.Ai worst = null;
+        double worstProg = playerOut ? Double.MAX_VALUE : playerProg;
+        for (Sim.Ai a : sim.ais) {
+            if (a.eliminated) continue;
+            double p = a.lap * (double) sim.N + a.t;
+            if (p < worstProg) { worstProg = p; worst = a; }
+        }
+        if (worst == null) {                 // the player is last -> out
+            playerOut = true;
+            elimBanner = "YOU'RE ELIMINATED";
+            elimBannerT = 3;
+        } else {
+            worst.eliminated = true;
+            elimBanner = worst.name + " ELIMINATED";
+            elimBannerT = 2.2;
+            vibrate(30);
+            if (activeRacers() <= 1) { lastFinishWon = true; }   // player is the survivor
+        }
+    }
+
+    private void finalizeFinish() {
+        lastFinishWon = !playerOut && (sim.position() == 1 || (mode == MODE_ELIM && activeRacers() <= 1));
+        if (!randomTrack && !champ) {
             int next = level + 1;
             if (next < Tracks.LEVELS.length && next + 1 > unlocked) {
                 unlocked = next + 1;
                 if (prefs != null) prefs.edit().putInt("unlocked", unlocked).apply();
             }
-            if (!awarded) {
-                addLeaderboard(level, (float) raceBestLap);
-                awardRace();
-                dailyJustWon = false;
-                if (!dailyDoneToday && dailyMet()) {
-                    coins += DAILY_REWARD;
-                    dailyDoneToday = true;
-                    dailyJustWon = true;
-                    if (prefs != null) prefs.edit().putLong("dailyDone", today).apply();
-                    saveProfile();
-                }
-                awarded = true;
-            }
-            state = FINISHED;
         }
+        if (!awarded) {
+            if (!randomTrack) addLeaderboard(level, (float) raceBestLap);
+            awardRace();
+            dailyJustWon = false;
+            if (!randomTrack && !champ && !dailyDoneToday && dailyMet()) {
+                coins += DAILY_REWARD;
+                dailyDoneToday = true;
+                dailyJustWon = true;
+                if (prefs != null) prefs.edit().putLong("dailyDone", today).apply();
+                saveProfile();
+            }
+            if (champ) awardChampPoints();
+            awarded = true;
+        }
+        state = FINISHED;
     }
 
-    private void idleAudio() { if (audio != null) audio.set(0.06f, state == TITLE ? 0.5f : 0.7f, false, 0f); }
+    private void awardChampPoints() {
+        // rank YOU + rivals by progress, hand out F1-style points
+        int[] idx = {0, 1, 2, 3};
+        final double[] prog = new double[4];
+        prog[0] = playerOut ? -1 : sim.lapsDone * (double) sim.N + sim.prevIdx;
+        for (int i = 0; i < sim.ais.size() && i < 3; i++) {
+            Sim.Ai a = sim.ais.get(i);
+            prog[i + 1] = a.eliminated ? -1 : a.lap * (double) sim.N + a.t;
+        }
+        Integer[] order = {0, 1, 2, 3};
+        java.util.Arrays.sort(order, (x, y) -> Double.compare(prog[y], prog[x]));
+        for (int rank = 0; rank < 4; rank++) champScore[order[rank]] += CHAMP_PTS[rank];
+    }
+
+    @SuppressWarnings("deprecation")
+    private void vibrate(int ms) {
+        if (vibrator == null) return;
+        try { vibrator.vibrate((long) ms); } catch (Throwable ignored) {}
+    }
+
+    private void idleAudio() {
+        if (audio == null) return;
+        audio.set(0.06f, state == TITLE ? 0.5f : 0.7f, false, 0f);
+        audio.setMusic(musicOn, 0.42f);
+    }
 
     private void emitSmoke() {
         if (particles.size() > 160) return;
@@ -460,11 +604,18 @@ final class Game {
         if (sim.wetness > 0.1) grass = lerp(grass, 0xFF20465A, 0.4f * (float) sim.wetness);
         g.drawColor(grass);
 
+        // directional shadow offset from a sun that moves with the time of day
+        double sunA = dayTime * 2 * Math.PI;
+        float slen = (float) (10 + 16 * Math.abs(Math.cos(sunA)));
+        shX = (float) Math.cos(sunA + Math.PI) * slen;
+        shY = (float) Math.sin(sunA + Math.PI) * slen * 0.6f;
+        shAlpha = 0.4f * (1 - darkness * 0.6f);
+
         g.save();
         float sx = (float) (shake * (rnd.nextDouble() - 0.5));
         float sy = (float) (shake * (rnd.nextDouble() - 0.5));
         g.translate(width / 2f + sx, height / 2f + sy);
-        g.scale((float) zoom, (float) zoom);
+        g.scale((float) (zoom * zoomMul), (float) (zoom * zoomMul));
         g.translate((float) -camX, (float) -camY);
 
         drawScenery(g, false);          // ground shadows first
@@ -477,7 +628,7 @@ final class Game {
         drawOils(g);
         drawBoxes(g);
         drawScenery(g, true);           // tree canopies above the road edge
-        for (Sim.Ai a : sim.ais) drawCar(g, a.x, a.y, a.angle, a.color, false, 1f, 0f);
+        for (Sim.Ai a : sim.ais) if (!a.eliminated) drawCar(g, a.x, a.y, a.angle, a.color, false, 1f, 0f);
         drawGhost(g);
         float js = 1f + (float) sim.jumpZ * 0.012f;
         drawCar(g, sim.carX, sim.carY, sim.carAngle, CAR_COLORS[playerColorIdx], true, js, (float) sim.jumpZ * 1.4f);
@@ -489,12 +640,15 @@ final class Game {
         if (sim.wetness > 0.12) drawRain(g, (float) sim.wetness);
         if (sim.boostTime > 0) drawSpeedLines(g);
         drawVignette(g);
+        if (flash > 0) { ui.setColor(((int) (flash * 120) << 24) | 0xFFFFFF); g.drawRect(0, 0, width, height, ui); }
 
         drawRadar(g);
         renderHud(g);
         renderControls(g);
+        renderBanners(g);
 
         if (state == TITLE) renderTitle(g);
+        else if (state == CHAMP) renderChamp(g);
         else if (state == SHOP) renderShop(g);
         else if (state == STYLE) renderStyle(g);
         else if (state == TUNE) renderTune(g);
@@ -524,8 +678,8 @@ final class Game {
             int type = (int) s[3];
             float v = s[4];
             if (!canopy) {
-                ui.setColor(0x3A000000);
-                g.drawCircle(x + r * 0.3f, y + r * 0.4f, r * 0.95f, ui);
+                ui.setColor((int) (shAlpha * 150) << 24);
+                g.drawCircle(x + shX * 0.6f, y + shY * 0.6f, r * 0.95f, ui);
                 continue;
             }
             switch (type) {
@@ -572,6 +726,83 @@ final class Game {
         ui.setShader(vignette);
         g.drawRect(0, 0, width, height, ui);
         ui.setShader(null);
+    }
+
+    private void renderBanners(Canvas g) {
+        if (state != RACING) return;
+        float unit = Math.min(width, height);
+        text.clearShadowLayer();
+        text.setTextAlign(Paint.Align.CENTER);
+        if (mode == MODE_DRIFT) {
+            text.setColor(0xFFFF8A1E);
+            text.setTextSize(unit * 0.06f);
+            g.drawText("DRIFT  " + (int) driftScore, width / 2f, height * 0.1f, text);
+        } else if (mode == MODE_ELIM) {
+            text.setColor(0xFFFF4D6B);
+            text.setTextSize(unit * 0.034f);
+            g.drawText("NEXT OUT IN " + (int) Math.ceil(Math.max(0, elimTimer)) + "s    ·    " + activeRacers() + " LEFT",
+                    width / 2f, height * 0.1f, text);
+        }
+        if (overtakeT > 0 && overtakeBanner != null) {
+            text.setColor(0xFF42E2B8);
+            text.setTextSize(unit * 0.07f);
+            text.setAlpha((int) (Math.min(1, overtakeT) * 255));
+            g.drawText(overtakeBanner, width / 2f, height * 0.32f, text);
+            text.setAlpha(255);
+        }
+        if (elimBannerT > 0 && elimBanner != null) {
+            text.setColor(0xFFFFC23D);
+            text.setTextSize(unit * 0.06f);
+            text.setAlpha((int) (Math.min(1, elimBannerT) * 255));
+            g.drawText(elimBanner, width / 2f, height * 0.42f, text);
+            text.setAlpha(255);
+        }
+    }
+
+    private void renderChamp(Canvas g) {
+        ui.setStyle(Paint.Style.FILL);
+        ui.setShader(new LinearGradient(0, 0, 0, height, new int[]{0xF21A0E33, 0xF2070518}, null, Shader.TileMode.CLAMP));
+        g.drawRect(0, 0, width, height, ui);
+        ui.setShader(null);
+        float unit = Math.min(width, height);
+        boolean done = champRound >= CHAMP_TRACKS.length - 1;
+        String[] names = {"YOU", "BLAZE", "NOVA", "SAGE"};
+        int[] cols = {CAR_COLORS[playerColorIdx], 0xFFFF4D6B, 0xFFFFC23D, 0xFF6CE0FF};
+        Integer[] order = {0, 1, 2, 3};
+        java.util.Arrays.sort(order, (a, b) -> champScore[b] - champScore[a]);
+
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setShadowLayer(16, 0, 0, 0xFFFF2E88);
+        text.setColor(0xFF19E0FF);
+        text.setTextSize(unit * 0.09f);
+        g.drawText(done ? "SEASON COMPLETE" : "STANDINGS  ·  ROUND " + (champRound + 1) + "/" + CHAMP_TRACKS.length, width / 2f, height * 0.2f, text);
+        text.clearShadowLayer();
+        if (done) {
+            text.setColor(0xFFFFE34D);
+            text.setTextSize(unit * 0.05f);
+            g.drawText("CHAMPION:  " + names[order[0]], width / 2f, height * 0.3f, text);
+        }
+        float y = height * 0.4f;
+        for (int i = 0; i < 4; i++) {
+            int d = order[i];
+            text.setTextAlign(Paint.Align.LEFT);
+            ui.setColor(cols[d]);
+            float cx = width / 2f - unit * 0.2f;
+            g.drawCircle(cx, y - unit * 0.015f, unit * 0.02f, ui);
+            text.setColor(d == 0 ? 0xFFFFE34D : 0xFFFFFFFF);
+            text.setTextSize(unit * 0.05f);
+            g.drawText((i + 1) + ".  " + names[d], cx + unit * 0.04f, y, text);
+            text.setTextAlign(Paint.Align.RIGHT);
+            g.drawText(champScore[d] + " pts", width / 2f + unit * 0.2f, y, text);
+            y += unit * 0.07f;
+        }
+        float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 3));
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(0xFFFFFFFF);
+        text.setAlpha((int) (120 + 135 * pulse));
+        text.setTextSize(unit * 0.04f);
+        g.drawText(done ? "TAP TO FINISH" : "TAP FOR NEXT ROUND", width / 2f, height * 0.88f, text);
+        text.setAlpha(255);
     }
 
     private void drawShortcuts(Canvas g) {
@@ -749,14 +980,16 @@ final class Game {
     private void drawCar(Canvas g, double x, double y, double angle, int color,
                          boolean player, float scale, float shadowGap) {
         float L = 72 * scale, W = 36 * scale;
+        // world-space directional shadow (cast away from the sun, longer when airborne)
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(((int) (shAlpha * 130) << 24));
+        tmp.set((float) x - L / 2 + shX + shadowGap, (float) y - W / 2 + shY + shadowGap,
+                (float) x + L / 2 + shX + shadowGap, (float) y + W / 2 + shY + shadowGap);
+        g.drawRoundRect(tmp, 16, 16, ui);
+
         g.save();
         g.translate((float) x, (float) y);
         g.rotate((float) Math.toDegrees(angle));
-
-        ui.setStyle(Paint.Style.FILL);
-        ui.setColor(0x55000000);
-        tmp.set(-L / 2 + 4 + shadowGap, -W / 2 + 6 + shadowGap, L / 2 + 6 + shadowGap, W / 2 + 8 + shadowGap);
-        g.drawRoundRect(tmp, 14, 14, ui);
 
         if (player && sim.boostTime > 0) {
             ui.setShader(new RadialGradient(0, 0, L * 1.3f, new int[]{0x66FF8A1E, 0}, null, Shader.TileMode.CLAMP));
@@ -1114,15 +1347,19 @@ final class Game {
         tmp.set(pad0, xby, pad0 + xbw * ((xp % 150) / 150f), xby + xbh);
         g.drawRoundRect(tmp, xbh / 2, xbh / 2, ui);
 
-        // top-right buttons + mode toggle
+        // top-right buttons
         drawPillButton(g, btnShop, "SHOP", 0xFFFFC23D, true);
         drawPillButton(g, btnTune, "TUNE", 0xFF8CFF45, true);
         drawPillButton(g, btnStyle, "STYLE", 0xFFFF6FB1, true);
         drawPillButton(g, btnHelp, "?", 0xFF19E0FF, true);
-        drawPillButton(g, btnMode, mode == 0 ? "MODE: GRAND PRIX" : "MODE: TIME TRIAL",
-                mode == 0 ? 0xFFFF8A1E : 0xFF6CE0FF, true);
+        // second row: mode / championship / random / music
+        drawPillButton(g, btnMode, MODE_NAME[mode], 0xFFFF8A1E, true);
+        drawPillButton(g, btnChamp, champ ? "SEASON R" + (champRound + 1) : "CHAMPIONSHIP", 0xFFFFE34D, true);
+        drawPillButton(g, btnRandom, randomTrack ? "RANDOM: ON" : "RANDOM: OFF", 0xFF6CE0FF, true);
+        drawPillButton(g, btnMusic, musicOn ? "MUSIC: ON" : "MUSIC: OFF", 0xFFB66BFF, true);
 
-        for (int i = 0; i < levelBtns.length; i++) {
+        if (randomTrack) { renderRandomPanel(g); }
+        else for (int i = 0; i < levelBtns.length; i++) {
             boolean locked = i >= unlocked;
             RectF r = levelBtns[i];
             int accent = i == level ? 0xFF19E0FF : 0xFF7E8AD0;
@@ -1173,29 +1410,31 @@ final class Game {
             }
         }
 
-        // daily challenge bar
-        ui.setStyle(Paint.Style.FILL);
-        ui.setColor(dailyDoneToday ? 0x3342E2B8 : 0x44FFC23D);
-        g.drawRoundRect(dailyCard, 14, 14, ui);
-        ui.setStyle(Paint.Style.STROKE);
-        ui.setStrokeWidth(3);
-        ui.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFC23D);
-        g.drawRoundRect(dailyCard, 14, 14, ui);
-        ui.setStyle(Paint.Style.FILL);
-        text.clearShadowLayer();
-        text.setTextAlign(Paint.Align.LEFT);
-        text.setColor(0xFFFFD24D);
-        text.setTextSize(dailyCard.height() * 0.26f);
-        g.drawText("DAILY CHALLENGE", dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.34f, text);
-        text.setColor(0xFFFFFFFF);
-        text.setTextSize(dailyCard.height() * 0.22f);
-        g.drawText(dailyDesc(), dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.68f, text);
-        text.setTextAlign(Paint.Align.RIGHT);
-        text.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFD24D);
-        text.setTextSize(dailyCard.height() * 0.26f);
-        g.drawText(dailyDoneToday ? "DONE" : "+" + DAILY_REWARD + " ¢",
-                dailyCard.right - dailyCard.width() * 0.03f, dailyCard.centerY() + dailyCard.height() * 0.08f, text);
-        text.setTextAlign(Paint.Align.CENTER);
+        // daily challenge bar (free play only)
+        if (!randomTrack && !champ) {
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(dailyDoneToday ? 0x3342E2B8 : 0x44FFC23D);
+            g.drawRoundRect(dailyCard, 14, 14, ui);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(3);
+            ui.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFC23D);
+            g.drawRoundRect(dailyCard, 14, 14, ui);
+            ui.setStyle(Paint.Style.FILL);
+            text.clearShadowLayer();
+            text.setTextAlign(Paint.Align.LEFT);
+            text.setColor(0xFFFFD24D);
+            text.setTextSize(dailyCard.height() * 0.26f);
+            g.drawText("DAILY CHALLENGE", dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.34f, text);
+            text.setColor(0xFFFFFFFF);
+            text.setTextSize(dailyCard.height() * 0.22f);
+            g.drawText(dailyDesc(), dailyCard.left + dailyCard.width() * 0.03f, dailyCard.top + dailyCard.height() * 0.68f, text);
+            text.setTextAlign(Paint.Align.RIGHT);
+            text.setColor(dailyDoneToday ? 0xFF42E2B8 : 0xFFFFD24D);
+            text.setTextSize(dailyCard.height() * 0.26f);
+            g.drawText(dailyDoneToday ? "DONE" : "+" + DAILY_REWARD + " ¢",
+                    dailyCard.right - dailyCard.width() * 0.03f, dailyCard.centerY() + dailyCard.height() * 0.08f, text);
+            text.setTextAlign(Paint.Align.CENTER);
+        }
 
         // tyre compound selector
         for (int i = 0; i < 3; i++) {
@@ -1235,6 +1474,59 @@ final class Game {
         text.setTextSize(Math.min(width, height) * 0.022f);
         g.drawText("drift = nitro  •  ? = item  •  blue = jump  •  shortcuts  •  ghost = your best lap",
                 width / 2f, height * 0.95f, text);
+    }
+
+    private void renderRandomPanel(Canvas g) {
+        float unit = Math.min(width, height);
+        text.setTextAlign(Paint.Align.CENTER);
+        text.clearShadowLayer();
+        text.setColor(0xFF6CE0FF);
+        text.setTextSize(unit * 0.035f);
+        g.drawText("RANDOM TRACK  —  share this code to race the same circuit", width / 2f, height * 0.26f, text);
+
+        if (curDef != null) {
+            RectF tb = new RectF(width / 2f - unit * 0.16f, height * 0.28f, width / 2f + unit * 0.16f, height * 0.28f + unit * 0.16f);
+            drawTrackThumb(g, curDef.wp, tb, 0xFF6CE0FF);
+        }
+
+        // 5-digit code steppers
+        for (int i = 0; i < 5; i++) {
+            int place = (int) Math.pow(10, 4 - i);
+            int digit = (trackCode / place) % 10;
+            ui.setStyle(Paint.Style.FILL);
+            ui.setColor(0x33101830);
+            g.drawRoundRect(codeUp[i], 6, 6, ui);
+            g.drawRoundRect(codeDn[i], 6, 6, ui);
+            ui.setColor(0xFF6CE0FF);
+            // up triangle
+            tmpPath.reset();
+            tmpPath.moveTo(codeUp[i].centerX(), codeUp[i].top + codeUp[i].height() * 0.25f);
+            tmpPath.lineTo(codeUp[i].right - codeUp[i].width() * 0.25f, codeUp[i].bottom - codeUp[i].height() * 0.25f);
+            tmpPath.lineTo(codeUp[i].left + codeUp[i].width() * 0.25f, codeUp[i].bottom - codeUp[i].height() * 0.25f);
+            tmpPath.close();
+            g.drawPath(tmpPath, ui);
+            tmpPath.reset();
+            tmpPath.moveTo(codeDn[i].centerX(), codeDn[i].bottom - codeDn[i].height() * 0.25f);
+            tmpPath.lineTo(codeDn[i].right - codeDn[i].width() * 0.25f, codeDn[i].top + codeDn[i].height() * 0.25f);
+            tmpPath.lineTo(codeDn[i].left + codeDn[i].width() * 0.25f, codeDn[i].top + codeDn[i].height() * 0.25f);
+            tmpPath.close();
+            g.drawPath(tmpPath, ui);
+            text.setColor(0xFFFFFFFF);
+            text.setTextSize(unit * 0.06f);
+            g.drawText(String.valueOf(digit), codeUp[i].centerX(), (codeUp[i].bottom + codeDn[i].top) / 2 + unit * 0.02f, text);
+        }
+
+        drawPillButton(g, btnReroll, "REROLL", 0xFFFFC23D, true);
+        drawPillButton(g, btnGo, "RACE", 0xFF42E2B8, true);
+    }
+
+    private void changeDigit(int i, int delta) {
+        int place = (int) Math.pow(10, 4 - i);
+        int digit = (trackCode / place) % 10;
+        int nd = (digit + delta + 10) % 10;
+        trackCode += (nd - digit) * place;
+        trackCode = Math.max(0, Math.min(99999, trackCode));
+        loadLevel(0);   // refresh procedural preview
     }
 
     private void drawPillButton(Canvas g, RectF r, String label, int accent, boolean enabled) {
@@ -1531,8 +1823,16 @@ final class Game {
         text.setShadowLayer(16, 0, 0, 0xFFFF2E88);
         text.setColor(0xFF19E0FF);
         text.setTextSize(Math.min(width, height) * 0.1f);
-        g.drawText(mode == 1 ? "TIME TRIAL" : (lastFinishWon ? "YOU WIN!" : "FINISH"), width / 2f, height * 0.18f, text);
+        String title = playerOut ? "ELIMINATED" : (mode == MODE_DRIFT ? "DRIFT TRIAL"
+                : (mode == MODE_TT ? "TIME TRIAL" : (lastFinishWon ? "YOU WIN!" : "FINISH")));
+        g.drawText(title, width / 2f, height * 0.16f, text);
         text.clearShadowLayer();
+
+        if (mode == MODE_DRIFT) {
+            text.setColor(0xFFFF8A1E);
+            text.setTextSize(Math.min(width, height) * 0.07f);
+            g.drawText("SCORE  " + (int) driftScore, width / 2f, height * 0.27f, text);
+        }
 
         List<Standing> st = new ArrayList<>();
         st.add(new Standing("YOU", sim.lapsDone * (double) sim.N + sim.prevIdx, CAR_COLORS[playerColorIdx], sim.finishTime));
@@ -1592,14 +1892,15 @@ final class Game {
             g.drawText("DAILY CHALLENGE COMPLETE!  +" + DAILY_REWARD + " ¢", width / 2f, height * 0.84f, text);
         }
 
-        boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
+        boolean hasNext = !champ && !randomTrack && level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
         float pulse = (float) (0.5 + 0.5 * Math.sin(titlePulse * 3));
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFFFFFFFF);
         text.setAlpha((int) (120 + 135 * pulse));
         text.setTextSize(unit * 0.038f);
-        g.drawText(hasNext ? "TAP RIGHT: NEXT LEVEL    •    TAP LEFT: MENU" : "TAP TO RETURN TO MENU",
-                width / 2f, height * 0.89f, text);
+        String prompt = champ ? "TAP FOR SEASON STANDINGS"
+                : (hasNext ? "TAP RIGHT: NEXT LEVEL    •    TAP LEFT: MENU" : "TAP TO RETURN TO MENU");
+        g.drawText(prompt, width / 2f, height * 0.89f, text);
         text.setAlpha(255);
     }
 
@@ -1643,7 +1944,14 @@ final class Game {
                 if (btnTune.contains(x, y)) { state = TUNE; tuneSel = 0; return; }
                 if (btnStyle.contains(x, y)) { state = STYLE; styleSel = theme; return; }
                 if (btnHelp.contains(x, y)) { state = TUTORIAL; tutorialPage = 0; return; }
-                if (btnMode.contains(x, y)) { mode = 1 - mode; loadLevel(level); return; }
+                if (btnMode.contains(x, y)) { mode = (mode + 1) % 4; loadLevel(level); return; }
+                if (btnChamp.contains(x, y)) { startChampionship(); return; }
+                if (btnRandom.contains(x, y)) { randomTrack = !randomTrack; loadLevel(level); return; }
+                if (btnMusic.contains(x, y)) {
+                    musicOn = !musicOn;
+                    if (prefs != null) prefs.edit().putBoolean("music", musicOn).apply();
+                    return;
+                }
                 for (int i = 0; i < 3; i++)
                     if (tireBtns[i].contains(x, y)) {
                         tire = i; applyLoadout();
@@ -1656,9 +1964,22 @@ final class Game {
                         if (prefs != null) prefs.edit().putInt("color", i).apply();
                         return;
                     }
-                for (int i = 0; i < levelBtns.length; i++)
-                    if (levelBtns[i].contains(x, y) && i < unlocked) { startRace(i); return; }
+                if (randomTrack) {
+                    for (int i = 0; i < 5; i++) {
+                        if (codeUp[i].contains(x, y)) { changeDigit(i, 1); return; }
+                        if (codeDn[i].contains(x, y)) { changeDigit(i, -1); return; }
+                    }
+                    if (btnReroll.contains(x, y)) { trackCode = rnd.nextInt(100000); loadLevel(0); return; }
+                    if (btnGo.contains(x, y)) { startRace(0); return; }
+                } else {
+                    for (int i = 0; i < levelBtns.length; i++)
+                        if (levelBtns[i].contains(x, y) && i < unlocked) { startRace(i); return; }
+                }
             }
+            return;
+        }
+        if (state == CHAMP) {
+            if (action == MotionEvent.ACTION_DOWN) advanceChampionship();
             return;
         }
         if (state == SHOP) {
@@ -1703,7 +2024,8 @@ final class Game {
         if (state == FINISHED) {
             if (action == MotionEvent.ACTION_DOWN) {
                 float x = e.getX(e.getActionIndex());
-                boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
+                if (champ) { state = CHAMP; return; }
+                boolean hasNext = !randomTrack && level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
                 if (hasNext && x > width * 0.5f) startRace(level + 1);
                 else { state = TITLE; loadLevel(level); }
             }
@@ -1814,8 +2136,10 @@ final class Game {
                 default: return false;
             }
         }
+        if (state == CHAMP) { advanceChampionship(); return true; }
         if (state == FINISHED) {
-            boolean hasNext = level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
+            if (champ) { state = CHAMP; return true; }
+            boolean hasNext = !randomTrack && level + 1 < Tracks.LEVELS.length && level + 1 < unlocked;
             switch (code) {
                 case KeyEvent.KEYCODE_BUTTON_A:
                 case KeyEvent.KEYCODE_ENTER:
@@ -1863,6 +2187,17 @@ final class Game {
         saveProfile();
     }
 
+    private void startChampionship() {
+        champ = true; randomTrack = false; mode = MODE_GP; champRound = 0;
+        for (int i = 0; i < 4; i++) champScore[i] = 0;
+        startRace(CHAMP_TRACKS[0]);
+    }
+
+    private void advanceChampionship() {
+        if (champRound < CHAMP_TRACKS.length - 1) { champRound++; startRace(CHAMP_TRACKS[champRound]); }
+        else { champ = false; state = TITLE; loadLevel(level); }
+    }
+
     private void startRace(int lvl) {
         loadLevel(lvl);
         camX = sim.carX; camY = sim.carY;
@@ -1872,6 +2207,13 @@ final class Game {
         awarded = false;
         offTrackEver = hitEver = false;
         raceBestLap = 0;
+        playerOut = false;
+        driftScore = 0;
+        elimTimer = 7;
+        finishTimer = 0;
+        prevPos = sim.ais.size() + 1;
+        zoomMul = 1.5;
+        overtakeT = elimBannerT = 0;
         state = COUNTDOWN;
         countdown = 3.99;
     }
@@ -1962,15 +2304,20 @@ final class Game {
 
     private void awardRace() {
         int oldLevel = driverLevel();
-        if (mode == 1) {                 // time trial: flat payout, reward comes from records
-            gainCoins = 60 + level * 8;
-            gainXp = 35 + level * 4;
+        int diff = randomTrack ? 3 : level;
+        if (mode == MODE_DRIFT) {
+            gainCoins = 50 + (int) (driftScore);
+            gainXp = 35 + (int) (driftScore / 4);
+        } else if (mode == MODE_TT) {
+            gainCoins = 60 + diff * 8;
+            gainXp = 35 + diff * 4;
         } else {
-            int p = Math.min(sim.position(), 4);
+            int p = playerOut ? 4 : Math.min(sim.position(), 4);
             int[] coinByPlace = {0, 150, 90, 55, 30};
             int[] xpByPlace = {0, 100, 65, 40, 25};
-            gainCoins = 80 + coinByPlace[p] + level * 12;
-            gainXp = 50 + xpByPlace[p] + level * 6;
+            int champBonus = champ ? 60 : 0;
+            gainCoins = 80 + coinByPlace[p] + diff * 12 + champBonus;
+            gainXp = 50 + xpByPlace[p] + diff * 6 + champBonus;
         }
         coins += gainCoins;
         xp += gainXp;
