@@ -1,0 +1,11 @@
+# =============================================================================
+#  AIGames FPS Prototype — user ProGuard/R8 rules
+#  Active when minification is enabled (Player > Publishing > Minify).
+#  Keep Unity + IL2CPP + JNI entry points so reflection/native bridges survive.
+# =============================================================================
+-keep class com.unity3d.player.** { *; }
+-keep class bitter.jnibridge.** { *; }
+-keep class org.fmod.** { *; }
+-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }
+-dontwarn com.unity3d.player.**
+-keepattributes *Annotation*

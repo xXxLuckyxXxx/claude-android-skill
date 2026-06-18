@@ -1,0 +1,74 @@
+# =============================================================================
+#  AIGames FPS Prototype – Unity (URP) .gitignore
+#  Based on the official Unity .gitignore + Android keystore safety rules.
+# =============================================================================
+
+# ---- Unity generated folders ------------------------------------------------
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+
+# Asset meta data should only be ignored when the corresponding asset is also ignored
+!/[Aa]ssets/**/*.meta
+
+# ---- Auto-generated / IDE ----------------------------------------------------
+/[Ee]xported[Oo]bj/
+.vs/
+.gradle/
+ExportedObj/
+.consulo/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+.idea/
+*.iml
+
+# ---- Unity3D generated meta files for some intermediate types ----------------
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# ---- Unity crash / log -------------------------------------------------------
+sysinfo.txt
+*.stackdump
+crashlytics-build.properties
+
+# ---- Builds & artifacts ------------------------------------------------------
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# =============================================================================
+#  SECURITY: Android signing material must NEVER be committed.
+#  The SAME key must sign every release forever (seamless updates) — so the
+#  keystore is a precious secret that has to be BACKED UP out-of-band, never
+#  pushed to git. See scripts/generate-keystore.sh and README.md.
+# =============================================================================
+keystore/*.keystore
+keystore/*.jks
+keystore/keystore.properties
+*.keystore
+*.jks
+keystore.properties
+
+# Allow the documentation/marker files inside keystore/ to be tracked
+!keystore/.gitkeep
+!keystore/keystore.properties.example
+!keystore/README.md
