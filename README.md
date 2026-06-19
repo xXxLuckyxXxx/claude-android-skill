@@ -1,5 +1,12 @@
 # [WIP] Android Development Skill for Claude Code
 
+> ## 📥 AIGames FPS – Prototyp-APK herunterladen
+> **➡️ [`AIGamesFPS.apk`](AIGamesFPS.apk)** (oben in der Dateiliste) – auf Android antippen → installieren (ggf. „Installation aus unbekannten Quellen" erlauben).
+> Querformat: **links** wischen = laufen, **rechts** = umsehen, **Button unten rechts** = schießen.
+> Quellcode + Build-Pipeline: [`AIGamesFPSPrototype/`](AIGamesFPSPrototype/) · fertige Releases unter [**Releases**](../../releases).
+>
+> ---
+
 A production-ready skill that enables Claude Code to build Android applications following Google's official architecture guidance and best practices from the [NowInAndroid](https://github.com/android/nowinandroid) reference app.
 
 ## Overview
