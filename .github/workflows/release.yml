@@ -64,16 +64,21 @@ jobs:
             printf 'storeFile=keystore/aigames-release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
               "$AIGAMES_KEYSTORE_PASSWORD" "$AIGAMES_KEY_ALIAS" "$AIGAMES_KEY_PASSWORD" \
               > keystore/keystore.properties
-            echo "Signing with the keystore from secrets (stable key -> seamless updates)."
+            echo "Signing with the keystore from secrets (recommended for production)."
+          elif [ -f keystore/aigames-release.keystore ]; then
+            echo "Signing with the committed prototype keystore (stable key -> seamless updates)."
           else
-            echo "::warning::AIGAMES_KEYSTORE_BASE64 secret not set — generating a THROWAWAY key. Releases will NOT update over each other. Set the keystore secrets for a stable signing key."
+            echo "::warning::No keystore secret and no committed keystore — generating a THROWAWAY key. Releases will NOT update over each other."
             STORE_PASS=ci-ephemeral KEY_PASS=ci-ephemeral ./scripts/generate-keystore.sh
           fi
 
       - name: Build signed APK
-        env:
-          AIGAMES_VERSION_CODE: ${{ github.run_number }}
-        run: ./native-apk/build-apk.sh
+        run: |
+          # Offset keeps release versionCodes (1001+) above the local test
+          # builds (2..5) so a release always installs as an update over them.
+          export AIGAMES_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))
+          echo "versionCode = $AIGAMES_VERSION_CODE"
+          ./native-apk/build-apk.sh
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
