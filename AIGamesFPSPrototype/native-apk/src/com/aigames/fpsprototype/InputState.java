@@ -3,12 +3,14 @@ package com.aigames.fpsprototype;
 /**
  * Thread-safe bridge between the UI touch thread (producer) and the GL render
  * thread (consumer). Movement is a continuous vector; look is an accumulated
- * delta; fire is a one-shot request. The renderer drains look + fire per frame.
+ * delta; fire is a one-shot request. The renderer also publishes the game-over
+ * flag here so the view can turn any tap into a restart.
  */
 public class InputState {
     private float moveX, moveY;     // continuous, range [-1, 1]
     private float lookDX, lookDY;   // accumulated pixels since last consume
     private boolean fireRequested;
+    private boolean gameOver;
 
     public synchronized void setMove(float x, float y) { moveX = x; moveY = y; }
     public synchronized void addLook(float dx, float dy) { lookDX += dx; lookDY += dy; }
@@ -31,4 +33,8 @@ public class InputState {
         fireRequested = false;
         return f;
     }
+
+    // Published by the renderer; read by the view (tap-anywhere-to-restart).
+    public synchronized void setGameOver(boolean v) { gameOver = v; }
+    public synchronized boolean isGameOver() { return gameOver; }
 }

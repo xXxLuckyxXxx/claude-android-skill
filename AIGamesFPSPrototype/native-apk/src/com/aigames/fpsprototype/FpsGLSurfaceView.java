@@ -34,6 +34,10 @@ public class FpsGLSurfaceView extends GLSurfaceView {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
+                if (input.isGameOver()) {        // tap anywhere to restart
+                    input.requestFire();
+                    break;
+                }
                 int idx = e.getActionIndex();
                 assign(e.getPointerId(idx), e.getX(idx), e.getY(idx));
                 break;

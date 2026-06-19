@@ -12,10 +12,11 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * First-person GLES 2.0 renderer. A 3D pass draws a lit, checkered floor and a
- * box arena (the Unity test-scene layout); a 2D pass draws the HUD (move stick,
- * fire button, crosshair, muzzle flash). Firing does a hitscan ray-AABB test
- * and briefly highlights the box that was hit.
+ * First-person GLES 2.0 renderer + a timed shooting-range game: weaving glowing
+ * targets, a 30-second round with a HUD countdown, score, and a game-over
+ * overlay (tap anywhere to restart). A 3D pass draws the lit arena and targets;
+ * a 2D pass draws the HUD (move stick, fire button, crosshair, muzzle flash,
+ * 7-segment score + timer, and the game-over screen).
  */
 public class FpsRenderer implements GLSurfaceView.Renderer {
 
@@ -25,9 +26,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
     private static final float FLASH_TIME = 0.15f;
+    private static final float RESPAWN_TIME = 1.6f;
+    private static final float TARGET_SCALE = 0.7f;
+    private static final float ROUND_TIME = 30f;
 
     private final InputState input;
     private final float[] lookTmp = new float[2];
+    private final float[] tmpPos = new float[3];
 
     private int width = 1, height = 1;
 
@@ -49,6 +54,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float yaw = 0f, pitch = -0.08f;
     private float recoil = 0f;
     private long lastNanos;
+    private float timeAcc = 0f;
 
     // Combat feedback timers.
     private float muzzleTimer = 0f;
@@ -57,14 +63,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int hitBox = -1;
     private boolean lastShotHit = false;
 
-    // Boxes: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
+    // Game state.
+    private int score = 0;
+    private float roundTime = ROUND_TIME;
+    private boolean gameOver = false;
+
+    // Target home positions (live positions weave around these).
+    private static final float[][] TARGETS = {
+        {-6f, 1.6f, 2f},
+        { 6f, 1.6f, 2f},
+        { 0f, 2.4f, 10f},
+        {-3f, 1.1f, 7f},
+        { 3f, 1.1f, 7f},
+    };
+    private final boolean[] targetAlive = new boolean[TARGETS.length];
+    private final float[] targetRespawn = new float[TARGETS.length];
+
+    // Static scenery (cover): posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
     private static final float[][] BOXES = {
         {-4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.55f, 0.57f, 0.60f},
         { 4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.55f, 0.57f, 0.60f},
         {-2f, 0.75f, 0f, 1.5f, 1.5f, 1.5f, 0.72f, 0.45f, 0.20f},
         { 2.5f, 0.75f, 1f, 1.5f, 1.5f, 1.5f, 0.72f, 0.45f, 0.20f},
         { 0f, 2.0f, 12f, 20f, 4.0f, 1.0f, 0.50f, 0.52f, 0.55f},
-        { 0f, 0.6f, 6f,  0.7f, 1.2f, 0.7f, 0.10f, 0.80f, 1.00f},
     };
 
     public FpsRenderer(InputState input) {
@@ -97,6 +118,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         circle = makeCircle(seg);
         circleVerts = seg + 2;
 
+        restart();
         lastNanos = System.nanoTime();
     }
 
@@ -114,6 +136,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float dt = (now - lastNanos) / 1_000_000_000f;
         lastNanos = now;
         if (dt > 0.1f) dt = 0.1f;
+        timeAcc += dt;
 
         updateCamera(dt);
         tickTimers(dt);
@@ -137,8 +160,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawMesh(cube, 36, model, b[6] * boost, b[7] * boost, b[8] * boost, 0f);
         }
 
+        drawTargets();
+
         // --- 2D HUD pass ---
         drawHud();
+    }
+
+    /** Live (moving) position of target i, written into out[0..2]. */
+    private void targetPos(int i, float[] out) {
+        float[] h = TARGETS[i];
+        out[0] = h[0] + 2.5f * (float) Math.sin(timeAcc * 1.3 + i * 1.7);
+        out[1] = h[1] + 0.4f * (float) Math.sin(timeAcc * 2.0 + i * 2.3);
+        out[2] = h[2];
+    }
+
+    private void drawTargets() {
+        float pulse = 0.7f + 0.3f * (float) Math.sin(timeAcc * 5.0);
+        for (int i = 0; i < TARGETS.length; i++) {
+            if (!targetAlive[i]) continue;
+            targetPos(i, tmpPos);
+            Matrix.setIdentityM(model, 0);
+            Matrix.translateM(model, 0, tmpPos[0], tmpPos[1], tmpPos[2]);
+            Matrix.rotateM(model, 0, timeAcc * 60f, 0f, 1f, 0f);   // gentle spin
+            Matrix.scaleM(model, 0, TARGET_SCALE, TARGET_SCALE, TARGET_SCALE);
+            drawMesh(cube, 36, model, 1.0f * pulse, 0.55f * pulse, 0.12f, 0f);
+        }
     }
 
     private void updateCamera(float dt) {
@@ -172,9 +218,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (hitTimer > 0f) hitTimer -= dt;
         if (flashTimer > 0f) flashTimer -= dt;
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
+
+        for (int i = 0; i < targetAlive.length; i++) {
+            if (!targetAlive[i]) {
+                targetRespawn[i] -= dt;
+                if (targetRespawn[i] <= 0f) targetAlive[i] = true;
+            }
+        }
+
+        if (!gameOver) {
+            roundTime -= dt;
+            if (roundTime <= 0f) {
+                roundTime = 0f;
+                gameOver = true;
+            }
+        }
+        input.setGameOver(gameOver);
+    }
+
+    private void restart() {
+        score = 0;
+        roundTime = ROUND_TIME;
+        gameOver = false;
+        for (int i = 0; i < targetAlive.length; i++) {
+            targetAlive[i] = true;
+            targetRespawn[i] = 0f;
+        }
     }
 
     private void fire() {
+        if (gameOver) {                 // a tap on the game-over screen restarts
+            restart();
+            return;
+        }
+
         muzzleTimer = MUZZLE_TIME;
         flashTimer = FLASH_TIME;
         recoil += 0.025f;
@@ -187,16 +264,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float dz = -cosP * (float) Math.cos(yaw);
 
         float best = Float.MAX_VALUE;
+        int type = 0;   // 1 = target, 2 = box
         int idx = -1;
+
+        float h = TARGET_SCALE * 0.5f;
+        for (int i = 0; i < TARGETS.length; i++) {
+            if (!targetAlive[i]) continue;
+            targetPos(i, tmpPos);
+            float t = rayBox(px, py, pz, dx, dy, dz,
+                    tmpPos[0] - h, tmpPos[1] - h, tmpPos[2] - h,
+                    tmpPos[0] + h, tmpPos[1] + h, tmpPos[2] + h);
+            if (t >= 0f && t < best) { best = t; type = 1; idx = i; }
+        }
         for (int i = 0; i < BOXES.length; i++) {
             float[] b = BOXES[i];
             float t = rayBox(px, py, pz, dx, dy, dz,
                     b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
                     b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
-            if (t >= 0f && t < best) { best = t; idx = i; }
+            if (t >= 0f && t < best) { best = t; type = 2; idx = i; }
         }
-        lastShotHit = idx >= 0;
-        if (lastShotHit) { hitBox = idx; hitTimer = HIT_TIME; }
+
+        if (type == 1) {                       // target kill
+            targetAlive[idx] = false;
+            targetRespawn[idx] = RESPAWN_TIME;
+            score++;
+            lastShotHit = true;
+        } else if (type == 2) {                // hit cover
+            hitBox = idx;
+            hitTimer = HIT_TIME;
+            lastShotHit = false;
+        } else {
+            lastShotHit = false;
+        }
     }
 
     /** Slab ray/AABB intersection; returns the nearest positive t, or -1. */
@@ -242,30 +341,89 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glUseProgram(prog2);
 
-        if (muzzleTimer > 0f) {
-            float a = 0.30f * (muzzleTimer / MUZZLE_TIME);
-            drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, a);   // fullscreen flash
+        if (!gameOver) {
+            if (muzzleTimer > 0f) {
+                float a = 0.30f * (muzzleTimer / MUZZLE_TIME);
+                drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, a);   // fullscreen flash
+            }
+
+            // Move stick: translucent base + knob offset by the current input.
+            float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
+            drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 1f, 1f, 1f, 0.16f);
+            float kx = input.moveX(), ky = input.moveY();
+            float klen = (float) Math.sqrt(kx * kx + ky * ky);
+            if (klen > 1f) { kx /= klen; ky /= klen; }
+            drawCircle(mcx + kx * Hud.MOVE_RADIUS, mcy - ky * Hud.MOVE_RADIUS, 56f, 1f, 1f, 1f, 0.55f);
+
+            // Fire button.
+            drawCircle(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 1f, 0.30f, 0.25f, 0.50f);
+
+            // Crosshair: green flash on a confirmed target kill.
+            float cr = 1f, cg = 1f, cb = 1f;
+            if (flashTimer > 0f && lastShotHit) { cr = 0.30f; cg = 1f; cb = 0.40f; }
+            float ccx = width * 0.5f, ccy = height * 0.5f;
+            drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
+            drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
+
+            // Score (top-center) and round timer (top-left, red when low).
+            drawNumberCentered(score, 80f, 26f, 46f, 7f, 16f, 0.55f, 1f, 1f, 0.95f);
+            int secs = (int) Math.ceil(roundTime);
+            boolean low = secs <= 5;
+            drawNumberLeft(secs, 56f, 64f, 20f, 36f, 6f, 12f,
+                    low ? 1f : 1f, low ? 0.3f : 1f, low ? 0.3f : 1f, 0.95f);
+        } else {
+            // Game over: dim, big final score, restart cue (tap anywhere).
+            drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.62f);
+            drawNumberCentered(score, height * 0.40f, 56f, 96f, 12f, 30f, 1f, 1f, 1f, 1f);
+            drawCircle(width * 0.5f, height * 0.72f, 86f, 0.2f, 0.9f, 0.35f, 0.85f);
+            // simple "play" triangle inside the restart button
+            float bx = width * 0.5f, by = height * 0.72f;
+            drawRectPx(bx, by, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
         }
 
-        // Move stick: translucent base + knob offset by the current input.
-        float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
-        drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 1f, 1f, 1f, 0.16f);
-        float kx = input.moveX(), ky = input.moveY();
-        float klen = (float) Math.sqrt(kx * kx + ky * ky);
-        if (klen > 1f) { kx /= klen; ky /= klen; }
-        drawCircle(mcx + kx * Hud.MOVE_RADIUS, mcy - ky * Hud.MOVE_RADIUS, 56f, 1f, 1f, 1f, 0.55f);
-
-        // Fire button.
-        drawCircle(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 1f, 0.30f, 0.25f, 0.50f);
-
-        // Crosshair: green flash on a confirmed hit.
-        float cr = 1f, cg = 1f, cb = 1f;
-        if (flashTimer > 0f && lastShotHit) { cr = 0.30f; cg = 1f; cb = 0.40f; }
-        float ccx = width * 0.5f, ccy = height * 0.5f;
-        drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
-        drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
-
         GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    // --- 7-segment number drawing --------------------------------------------
+
+    private static final int[] SEG = {
+        0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F  // 0..9
+    };
+
+    private void drawNumberCentered(int n, float cy, float dw, float dh, float t, float gap,
+                                    float r, float g, float b, float a) {
+        if (n < 0) n = 0;
+        String s = Integer.toString(n);
+        float total = s.length() * dw + (s.length() - 1) * gap;
+        float x = width * 0.5f - total * 0.5f + dw * 0.5f;
+        for (int i = 0; i < s.length(); i++) {
+            drawDigit(s.charAt(i) - '0', x, cy, dw, dh, t, r, g, b, a);
+            x += dw + gap;
+        }
+    }
+
+    private void drawNumberLeft(int n, float firstCx, float cy, float dw, float dh, float t, float gap,
+                                float r, float g, float b, float a) {
+        if (n < 0) n = 0;
+        String s = Integer.toString(n);
+        float x = firstCx;
+        for (int i = 0; i < s.length(); i++) {
+            drawDigit(s.charAt(i) - '0', x, cy, dw, dh, t, r, g, b, a);
+            x += dw + gap;
+        }
+    }
+
+    private void drawDigit(int d, float cx, float cy, float dw, float dh, float t,
+                           float r, float g, float b, float a) {
+        if (d < 0 || d > 9) return;
+        int m = SEG[d];
+        if ((m & 0x01) != 0) drawRectPx(cx, cy - dh * 0.5f, dw, t, r, g, b, a);             // a
+        if ((m & 0x02) != 0) drawRectPx(cx + dw * 0.5f, cy - dh * 0.25f, t, dh * 0.5f, r, g, b, a); // b
+        if ((m & 0x04) != 0) drawRectPx(cx + dw * 0.5f, cy + dh * 0.25f, t, dh * 0.5f, r, g, b, a); // c
+        if ((m & 0x08) != 0) drawRectPx(cx, cy + dh * 0.5f, dw, t, r, g, b, a);             // d
+        if ((m & 0x10) != 0) drawRectPx(cx - dw * 0.5f, cy + dh * 0.25f, t, dh * 0.5f, r, g, b, a); // e
+        if ((m & 0x20) != 0) drawRectPx(cx - dw * 0.5f, cy - dh * 0.25f, t, dh * 0.5f, r, g, b, a); // f
+        if ((m & 0x40) != 0) drawRectPx(cx, cy, dw, t, r, g, b, a);                         // g
     }
 
     // --- 2D draw helpers (pixel coordinates -> NDC) ---
