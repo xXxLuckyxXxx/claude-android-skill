@@ -24,7 +24,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     public FpsGLSurfaceView(Context context) {
         super(context);
         setEGLContextClientVersion(2);
-        setEGLConfigChooser(8, 8, 8, 8, 16, 0);
+        setEGLConfigChooser(new MultisampleConfigChooser(4));   // 4x MSAA, safe fallback
         setRenderer(new FpsRenderer(input));
         setRenderMode(RENDERMODE_CONTINUOUSLY);
     }
