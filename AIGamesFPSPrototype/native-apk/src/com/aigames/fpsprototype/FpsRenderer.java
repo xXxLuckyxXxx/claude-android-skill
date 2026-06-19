@@ -12,10 +12,11 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * First-person GLES 2.0 renderer. A 3D pass draws a lit, checkered floor and a
- * box arena (the Unity test-scene layout); a 2D pass draws the HUD (move stick,
- * fire button, crosshair, muzzle flash). Firing does a hitscan ray-AABB test
- * and briefly highlights the box that was hit.
+ * First-person GLES 2.0 renderer + a small shooting-range game loop: shoot the
+ * glowing targets to score; each hit removes the target, bumps the score and
+ * the target respawns after a short delay. A 3D pass draws the lit arena and
+ * targets; a 2D pass draws the HUD (move stick, fire button, crosshair, muzzle
+ * flash and a 7-segment score readout).
  */
 public class FpsRenderer implements GLSurfaceView.Renderer {
 
@@ -25,6 +26,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
     private static final float FLASH_TIME = 0.15f;
+    private static final float RESPAWN_TIME = 1.6f;
+    private static final float TARGET_SCALE = 0.7f;
 
     private final InputState input;
     private final float[] lookTmp = new float[2];
@@ -49,6 +52,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float yaw = 0f, pitch = -0.08f;
     private float recoil = 0f;
     private long lastNanos;
+    private float timeAcc = 0f;
 
     // Combat feedback timers.
     private float muzzleTimer = 0f;
@@ -57,14 +61,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int hitBox = -1;
     private boolean lastShotHit = false;
 
-    // Boxes: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
+    // Score + targets.
+    private int score = 0;
+    private static final float[][] TARGETS = {
+        {-6f, 1.6f, 2f},
+        { 6f, 1.6f, 2f},
+        { 0f, 2.4f, 10f},
+        {-3f, 1.1f, 7f},
+        { 3f, 1.1f, 7f},
+    };
+    private final boolean[] targetAlive = new boolean[TARGETS.length];
+    private final float[] targetRespawn = new float[TARGETS.length];
+
+    // Static scenery (cover): posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
     private static final float[][] BOXES = {
         {-4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.55f, 0.57f, 0.60f},
         { 4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.55f, 0.57f, 0.60f},
         {-2f, 0.75f, 0f, 1.5f, 1.5f, 1.5f, 0.72f, 0.45f, 0.20f},
         { 2.5f, 0.75f, 1f, 1.5f, 1.5f, 1.5f, 0.72f, 0.45f, 0.20f},
         { 0f, 2.0f, 12f, 20f, 4.0f, 1.0f, 0.50f, 0.52f, 0.55f},
-        { 0f, 0.6f, 6f,  0.7f, 1.2f, 0.7f, 0.10f, 0.80f, 1.00f},
     };
 
     public FpsRenderer(InputState input) {
@@ -97,6 +112,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         circle = makeCircle(seg);
         circleVerts = seg + 2;
 
+        for (int i = 0; i < targetAlive.length; i++) {
+            targetAlive[i] = true;
+            targetRespawn[i] = 0f;
+        }
+
         lastNanos = System.nanoTime();
     }
 
@@ -114,6 +134,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float dt = (now - lastNanos) / 1_000_000_000f;
         lastNanos = now;
         if (dt > 0.1f) dt = 0.1f;
+        timeAcc += dt;
 
         updateCamera(dt);
         tickTimers(dt);
@@ -137,8 +158,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawMesh(cube, 36, model, b[6] * boost, b[7] * boost, b[8] * boost, 0f);
         }
 
+        drawTargets();
+
         // --- 2D HUD pass ---
         drawHud();
+    }
+
+    private void drawTargets() {
+        float pulse = 0.7f + 0.3f * (float) Math.sin(timeAcc * 5.0);
+        for (int i = 0; i < TARGETS.length; i++) {
+            if (!targetAlive[i]) continue;
+            float[] p = TARGETS[i];
+            Matrix.setIdentityM(model, 0);
+            Matrix.translateM(model, 0, p[0], p[1], p[2]);
+            Matrix.rotateM(model, 0, timeAcc * 60f, 0f, 1f, 0f);   // gentle spin
+            Matrix.scaleM(model, 0, TARGET_SCALE, TARGET_SCALE, TARGET_SCALE);
+            drawMesh(cube, 36, model, 1.0f * pulse, 0.55f * pulse, 0.12f, 0f);
+        }
     }
 
     private void updateCamera(float dt) {
@@ -172,6 +208,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (hitTimer > 0f) hitTimer -= dt;
         if (flashTimer > 0f) flashTimer -= dt;
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
+
+        for (int i = 0; i < targetAlive.length; i++) {
+            if (!targetAlive[i]) {
+                targetRespawn[i] -= dt;
+                if (targetRespawn[i] <= 0f) targetAlive[i] = true;
+            }
+        }
     }
 
     private void fire() {
@@ -187,16 +230,37 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float dz = -cosP * (float) Math.cos(yaw);
 
         float best = Float.MAX_VALUE;
+        int type = 0;   // 1 = target, 2 = box
         int idx = -1;
+
+        float h = TARGET_SCALE * 0.5f;
+        for (int i = 0; i < TARGETS.length; i++) {
+            if (!targetAlive[i]) continue;
+            float[] p = TARGETS[i];
+            float t = rayBox(px, py, pz, dx, dy, dz,
+                    p[0] - h, p[1] - h, p[2] - h, p[0] + h, p[1] + h, p[2] + h);
+            if (t >= 0f && t < best) { best = t; type = 1; idx = i; }
+        }
         for (int i = 0; i < BOXES.length; i++) {
             float[] b = BOXES[i];
             float t = rayBox(px, py, pz, dx, dy, dz,
                     b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
                     b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
-            if (t >= 0f && t < best) { best = t; idx = i; }
+            if (t >= 0f && t < best) { best = t; type = 2; idx = i; }
         }
-        lastShotHit = idx >= 0;
-        if (lastShotHit) { hitBox = idx; hitTimer = HIT_TIME; }
+
+        if (type == 1) {                       // target kill
+            targetAlive[idx] = false;
+            targetRespawn[idx] = RESPAWN_TIME;
+            score++;
+            lastShotHit = true;
+        } else if (type == 2) {                // hit cover
+            hitBox = idx;
+            hitTimer = HIT_TIME;
+            lastShotHit = false;
+        } else {
+            lastShotHit = false;
+        }
     }
 
     /** Slab ray/AABB intersection; returns the nearest positive t, or -1. */
@@ -258,14 +322,48 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // Fire button.
         drawCircle(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 1f, 0.30f, 0.25f, 0.50f);
 
-        // Crosshair: green flash on a confirmed hit.
+        // Crosshair: green flash on a confirmed target kill.
         float cr = 1f, cg = 1f, cb = 1f;
         if (flashTimer > 0f && lastShotHit) { cr = 0.30f; cg = 1f; cb = 0.40f; }
         float ccx = width * 0.5f, ccy = height * 0.5f;
         drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
         drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
 
+        drawScore(score);
+
         GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    // --- score readout (7-segment) -------------------------------------------
+
+    private static final int[] SEG = {
+        0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F  // 0..9
+    };
+
+    private void drawScore(int n) {
+        if (n < 0) n = 0;
+        String s = Integer.toString(n);
+        float dw = 26f, dh = 46f, t = 7f, gap = 16f;
+        float total = s.length() * dw + (s.length() - 1) * gap;
+        float x = width * 0.5f - total * 0.5f + dw * 0.5f;
+        float y = 80f;
+        for (int i = 0; i < s.length(); i++) {
+            drawDigit(s.charAt(i) - '0', x, y, dw, dh, t);
+            x += dw + gap;
+        }
+    }
+
+    private void drawDigit(int d, float cx, float cy, float dw, float dh, float t) {
+        if (d < 0 || d > 9) return;
+        int m = SEG[d];
+        float r = 0.55f, g = 1f, b = 1f, a = 0.95f;
+        if ((m & 0x01) != 0) drawRectPx(cx, cy - dh * 0.5f, dw, t, r, g, b, a);            // a
+        if ((m & 0x02) != 0) drawRectPx(cx + dw * 0.5f, cy - dh * 0.25f, t, dh * 0.5f, r, g, b, a); // b
+        if ((m & 0x04) != 0) drawRectPx(cx + dw * 0.5f, cy + dh * 0.25f, t, dh * 0.5f, r, g, b, a); // c
+        if ((m & 0x08) != 0) drawRectPx(cx, cy + dh * 0.5f, dw, t, r, g, b, a);            // d
+        if ((m & 0x10) != 0) drawRectPx(cx - dw * 0.5f, cy + dh * 0.25f, t, dh * 0.5f, r, g, b, a); // e
+        if ((m & 0x20) != 0) drawRectPx(cx - dw * 0.5f, cy - dh * 0.25f, t, dh * 0.5f, r, g, b, a); // f
+        if ((m & 0x40) != 0) drawRectPx(cx, cy, dw, t, r, g, b, a);                        // g
     }
 
     // --- 2D draw helpers (pixel coordinates -> NDC) ---
