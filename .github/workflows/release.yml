@@ -1,0 +1,93 @@
+name: Release APK
+
+# Builds the native AIGames FPS APK on the runner and publishes a GitHub
+# Release with the APK attached. Triggers when you push a tag like v1.0.0
+# (or run it manually from the Actions tab — that path uploads a build
+# artifact but does not create a Release).
+#
+# Stable signing for seamless updates:
+#   Set these repo secrets so every release is signed with the SAME key:
+#     AIGAMES_KEYSTORE_BASE64   = base64 -w0 keystore/aigames-release.keystore
+#     AIGAMES_KEYSTORE_PASSWORD
+#     AIGAMES_KEY_ALIAS
+#     AIGAMES_KEY_PASSWORD
+#   Without them the workflow still builds, but with a THROWAWAY key — releases
+#   would NOT install as updates over each other.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: AIGamesFPSPrototype
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aapt apksigner zipalign
+
+      - name: Fetch compile tools (android.jar + dexer)
+        run: |
+          mkdir -p native-apk/.tools
+          curl -fL -o native-apk/.tools/android.jar \
+            https://repo1.maven.org/maven2/com/google/android/android/4.1.1.4/android-4.1.1.4.jar
+          curl -fL -o native-apk/.tools/dalvik-dx.jar \
+            https://repo1.maven.org/maven2/com/jakewharton/android/repackaged/dalvik-dx/16.0.1/dalvik-dx-16.0.1.jar
+
+      - name: Restore or create signing keystore
+        env:
+          KS_B64: ${{ secrets.AIGAMES_KEYSTORE_BASE64 }}
+          AIGAMES_KEYSTORE_PASSWORD: ${{ secrets.AIGAMES_KEYSTORE_PASSWORD }}
+          AIGAMES_KEY_ALIAS: ${{ secrets.AIGAMES_KEY_ALIAS }}
+          AIGAMES_KEY_PASSWORD: ${{ secrets.AIGAMES_KEY_PASSWORD }}
+        run: |
+          mkdir -p keystore
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > keystore/aigames-release.keystore
+            printf 'storeFile=keystore/aigames-release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$AIGAMES_KEYSTORE_PASSWORD" "$AIGAMES_KEY_ALIAS" "$AIGAMES_KEY_PASSWORD" \
+              > keystore/keystore.properties
+            echo "Signing with the keystore from secrets (stable key -> seamless updates)."
+          else
+            echo "::warning::AIGAMES_KEYSTORE_BASE64 secret not set — generating a THROWAWAY key. Releases will NOT update over each other. Set the keystore secrets for a stable signing key."
+            STORE_PASS=ci-ephemeral KEY_PASS=ci-ephemeral ./scripts/generate-keystore.sh
+          fi
+
+      - name: Build signed APK
+        env:
+          AIGAMES_VERSION_CODE: ${{ github.run_number }}
+        run: ./native-apk/build-apk.sh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigames-fps-apk
+          path: AIGamesFPSPrototype/Builds/Android/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls Builds/Android/*.apk | head -1)
+          gh release create "$GITHUB_REF_NAME" "$APK" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Native AIGames FPS prototype APK (com.aigames.fpsprototype), versionCode ${{ github.run_number }}. Built on the runner by native-apk/build-apk.sh."
