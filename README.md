@@ -1,11 +1,22 @@
-# [WIP] Android Development Skill for Claude Code
+<h1 align="center">📱 AIGames FPS — Android-Spiel</h1>
 
-> ## 📥 AIGames FPS – Prototyp-APK herunterladen
-> **➡️ [`AIGamesFPS.apk`](AIGamesFPS.apk)** (oben in der Dateiliste) – auf Android antippen → installieren (ggf. „Installation aus unbekannten Quellen" erlauben).
-> Querformat: **links** wischen = laufen, **rechts** = umsehen, **Button unten rechts** = schießen.
-> Quellcode + Build-Pipeline: [`AIGamesFPSPrototype/`](AIGamesFPSPrototype/) · fertige Releases unter [**Releases**](../../releases).
->
-> ---
+<p align="center">
+  <a href="https://raw.githubusercontent.com/xXxLuckyxXxx/claude-android-skill/main/AIGamesFPS.apk">
+    <img src="https://img.shields.io/badge/⬇️%20APK%20HERUNTERLADEN-2ea44f?style=for-the-badge&logo=android&logoColor=white" alt="APK herunterladen" height="56">
+  </a>
+</p>
+
+<p align="center">
+  <b>1.</b> Auf den grünen Button tippen &nbsp;·&nbsp; <b>2.</b> Heruntergeladene Datei öffnen &nbsp;·&nbsp; <b>3.</b> „Installieren" (ggf. „unbekannte Quellen" erlauben)
+</p>
+
+<p align="center"><sub>Lädt es nicht durch? Den Link in <b>Chrome</b> öffnen (nicht im In-App-Browser). &nbsp;|&nbsp; Steuerung: links = laufen, rechts = umsehen, Button unten rechts = schießen.</sub></p>
+
+---
+
+<!-- ↑ Spiel-Download. ↓ Ursprünglicher Skill-Inhalt. -->
+
+# [WIP] Android Development Skill for Claude Code
 
 A production-ready skill that enables Claude Code to build Android applications following Google's official architecture guidance and best practices from the [NowInAndroid](https://github.com/android/nowinandroid) reference app.
 
