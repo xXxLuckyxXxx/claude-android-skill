@@ -1,0 +1,92 @@
+// =============================================================================
+//  AIGames FPS Prototype — custom Android launcher Gradle template
+// -----------------------------------------------------------------------------
+//  PURPOSE
+//    Force BOTH the `debug` and `release` build types to be signed with the SAME
+//    key, so any build can be installed as an update over any other (together
+//    with the fixed applicationId and the auto-incremented versionCode this is
+//    what enables seamless APK updates).
+//
+//  HOW SIGNING IS FED IN
+//    The `**SIGN**` / `**SIGNCONFIG**` tokens are replaced by Unity using the
+//    keystore configured in PlayerSettings (BuildScript.cs sets that from
+//    keystore/keystore.properties or the AIGAMES_* env vars). We then also point
+//    the `debug` build type at that same `signingConfigs.release`.
+//
+//  ACTIVATION (optional)
+//    This template is only used when you tick
+//      Project Settings > Player > Publishing Settings > Custom Launcher Gradle Template
+//    By default the project signs via PlayerSettings only (see BuildScript.cs),
+//    which already signs every Unity-built APK with the custom keystore. Enable
+//    this template if you export to Android Studio and want the SAME key applied
+//    to Gradle's `debug` build type too.
+//
+//  NOTE
+//    Generated to match Unity 6000.0.x tokens. If you upgrade the Editor,
+//    regenerate the default template from Publishing Settings and re-apply the
+//    one-line `signingConfig signingConfigs.release` addition in `debug`.
+// =============================================================================
+
+apply plugin: 'com.android.application'
+
+dependencies {
+    implementation project(':unityLibrary')
+}
+
+android {
+    namespace "com.unity3d.player"
+    ndkPath "**NDKPATH**"
+    ndkVersion "**NDKVERSION**"
+
+    compileSdk **APIVERSION**
+    buildToolsVersion = '**BUILDTOOLS**'
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        minSdk **MINSDKVERSION**
+        targetSdk **TARGETSDKVERSION**
+        applicationId '**APPLICATIONID**'
+        ndk {
+            abiFilters **ABIFILTERS**
+        }
+        versionCode **VERSIONCODE**
+        versionName '**VERSIONNAME**'
+        consumerProguardFiles '**USER_PROGUARD**'
+    }
+
+    // Unity injects the keystore configured in PlayerSettings here:
+    **SIGN**
+
+    aaptOptions {
+        noCompress = **BUILTIN_NOCOMPRESS** + unityStreamingAssets.tokenize(', ')
+        ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+
+    lintOptions {
+        abortOnError false
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled **MINIFY_DEBUG**
+            proguardFiles getDefaultProguardFile('proguard-android.txt')
+            jniDebuggable true
+            // AIGames: sign debug builds with the SAME release key (seamless updates).
+            signingConfig signingConfigs.release
+        }
+        release {
+            minifyEnabled **MINIFY_RELEASE**
+            proguardFiles getDefaultProguardFile('proguard-android.txt')
+            **SIGNCONFIG**
+        }
+    }
+    **PACKAGING_OPTIONS**
+    **PLAYGI_DIRECTIVE**
+}
+**IL_CPP_BUILD_SETUP**
+**SOURCE_BUILD_SETUP**
+**EXTERNAL_SOURCES**

@@ -1,0 +1,67 @@
+# =============================================================================
+#  GitHub Actions — Android APK build (GameCI)  [EXAMPLE / inactive]
+# -----------------------------------------------------------------------------
+#  To activate: move this file to  .github/workflows/android-build.yml  and add
+#  these repository secrets:
+#    UNITY_LICENSE            – Unity license file contents (see game.ci docs)
+#    AIGAMES_KEYSTORE_BASE64  – `base64 -w0 keystore/aigames-release.keystore`
+#    AIGAMES_KEYSTORE_PASSWORD
+#    AIGAMES_KEY_ALIAS
+#    AIGAMES_KEY_PASSWORD
+#
+#  The keystore is restored from the secret at build time and exposed to Unity
+#  via the AIGAMES_* env vars that BuildScript.cs / KeystoreConfig.cs read — so
+#  the SAME signing key is used everywhere and seamless updates keep working.
+# =============================================================================
+name: Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['AIGamesFPSPrototype/**']
+
+jobs:
+  build-android:
+    name: Build Signed APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Restore signing keystore
+        working-directory: AIGamesFPSPrototype
+        run: |
+          mkdir -p keystore
+          echo "${{ secrets.AIGAMES_KEYSTORE_BASE64 }}" | base64 -d > keystore/aigames-release.keystore
+
+      - name: Cache Library
+        uses: actions/cache@v4
+        with:
+          path: AIGamesFPSPrototype/Library
+          key: Library-Android-${{ hashFiles('AIGamesFPSPrototype/Packages/manifest.json') }}
+          restore-keys: Library-Android-
+
+      - name: Build (GameCI)
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          # One monotonic, persistent counter shared by both builders so every
+          # run produces a strictly higher versionCode (seamless updates).
+          AIGAMES_VERSION_CODE: ${{ github.run_number }}
+          AIGAMES_KEYSTORE_PATH: keystore/aigames-release.keystore
+          AIGAMES_KEYSTORE_PASSWORD: ${{ secrets.AIGAMES_KEYSTORE_PASSWORD }}
+          AIGAMES_KEY_ALIAS: ${{ secrets.AIGAMES_KEY_ALIAS }}
+          AIGAMES_KEY_PASSWORD: ${{ secrets.AIGAMES_KEY_PASSWORD }}
+        with:
+          projectPath: AIGamesFPSPrototype
+          targetPlatform: Android
+          buildMethod: AIGames.EditorTools.BuildScript.PerformAndroidBuild
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigames-fps-apk
+          path: AIGamesFPSPrototype/Builds/Android/*.apk
+          if-no-files-found: error

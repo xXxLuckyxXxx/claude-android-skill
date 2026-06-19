@@ -1,0 +1,107 @@
+name: Release APK
+
+# Builds the native AIGames FPS APK on the runner and publishes a GitHub
+# Release with the APK attached. Triggers either by pushing a tag like v1.0.0,
+# or by creating a release for a new tag in the UI, or via "Run workflow"
+# (Actions tab) with a tag input. The release step is idempotent: it attaches
+# the APK to an existing release or creates a new one.
+#
+# Stable signing for seamless updates:
+#   Set these repo secrets so every release is signed with the SAME key:
+#     AIGAMES_KEYSTORE_BASE64   = base64 -w0 keystore/aigames-release.keystore
+#     AIGAMES_KEYSTORE_PASSWORD
+#     AIGAMES_KEY_ALIAS
+#     AIGAMES_KEY_PASSWORD
+#   Without them the workflow still builds, but with a THROWAWAY key — releases
+#   would NOT install as updates over each other.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: AIGamesFPSPrototype
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aapt apksigner zipalign
+
+      - name: Fetch compile tools (android.jar + dexer)
+        run: |
+          mkdir -p native-apk/.tools
+          curl -fL -o native-apk/.tools/android.jar \
+            https://repo1.maven.org/maven2/com/google/android/android/4.1.1.4/android-4.1.1.4.jar
+          curl -fL -o native-apk/.tools/dalvik-dx.jar \
+            https://repo1.maven.org/maven2/com/jakewharton/android/repackaged/dalvik-dx/16.0.1/dalvik-dx-16.0.1.jar
+
+      - name: Restore or create signing keystore
+        env:
+          KS_B64: ${{ secrets.AIGAMES_KEYSTORE_BASE64 }}
+          AIGAMES_KEYSTORE_PASSWORD: ${{ secrets.AIGAMES_KEYSTORE_PASSWORD }}
+          AIGAMES_KEY_ALIAS: ${{ secrets.AIGAMES_KEY_ALIAS }}
+          AIGAMES_KEY_PASSWORD: ${{ secrets.AIGAMES_KEY_PASSWORD }}
+        run: |
+          mkdir -p keystore
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > keystore/aigames-release.keystore
+            printf 'storeFile=keystore/aigames-release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$AIGAMES_KEYSTORE_PASSWORD" "$AIGAMES_KEY_ALIAS" "$AIGAMES_KEY_PASSWORD" \
+              > keystore/keystore.properties
+            echo "Signing with the keystore from secrets (recommended for production)."
+          elif [ -f keystore/aigames-release.keystore ]; then
+            echo "Signing with the committed prototype keystore (stable key -> seamless updates)."
+          else
+            echo "::warning::No keystore secret and no committed keystore — generating a THROWAWAY key. Releases will NOT update over each other."
+            STORE_PASS=ci-ephemeral KEY_PASS=ci-ephemeral ./scripts/generate-keystore.sh
+          fi
+
+      - name: Build signed APK
+        run: |
+          # Offset keeps release versionCodes (1001+) above the local test
+          # builds (2..5) so a release always installs as an update over them.
+          export AIGAMES_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))
+          echo "versionCode = $AIGAMES_VERSION_CODE"
+          ./native-apk/build-apk.sh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aigames-fps-apk
+          path: AIGamesFPSPrototype/Builds/Android/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          APK=$(ls Builds/Android/*.apk | head -1)
+          NOTES="Native AIGames FPS prototype APK (com.aigames.fpsprototype), versionCode $((1000 + GITHUB_RUN_NUMBER)). Built on the runner by native-apk/build-apk.sh."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber          # attach to existing release
+          else
+            gh release create "$TAG" "$APK" --title "$TAG" --notes "$NOTES"
+          fi

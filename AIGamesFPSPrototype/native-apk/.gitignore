@@ -1,0 +1,3 @@
+# Downloaded build tools (fetched by README instructions) and build output.
+.tools/
+build/

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AIGames FPS Prototype — native companion build.
+  versionCode / versionName are injected at build time by build-apk.sh
+  (auto-incremented) so every APK installs as an update over the previous one.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.aigames.fpsprototype">
+
+    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+
+    <application
+        android:label="AIGames FPS"
+        android:allowBackup="false">
+        <activity
+            android:name="com.aigames.fpsprototype.MainActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|navigation">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
