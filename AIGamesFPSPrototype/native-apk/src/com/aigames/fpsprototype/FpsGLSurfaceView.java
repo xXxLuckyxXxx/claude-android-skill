@@ -21,11 +21,11 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private int firePointerId = -1;
     private float lookLastX, lookLastY;
 
-    public FpsGLSurfaceView(Context context) {
+    public FpsGLSurfaceView(Context context, int build) {
         super(context);
         setEGLContextClientVersion(2);
-        setEGLConfigChooser(8, 8, 8, 8, 16, 0);
-        setRenderer(new FpsRenderer(input));
+        setEGLConfigChooser(new MultisampleConfigChooser(4));   // 4x MSAA, safe fallback
+        setRenderer(new FpsRenderer(input, build));
         setRenderMode(RENDERMODE_CONTINUOUSLY);
     }
 

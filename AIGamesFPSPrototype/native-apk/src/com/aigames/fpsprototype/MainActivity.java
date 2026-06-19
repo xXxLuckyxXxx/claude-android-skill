@@ -19,7 +19,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        glView = new FpsGLSurfaceView(this);
+
+        int build = 0;
+        try {
+            build = getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Exception ignored) { }
+
+        glView = new FpsGLSurfaceView(this, build);
         setContentView(glView);
         hideSystemUI();
     }
