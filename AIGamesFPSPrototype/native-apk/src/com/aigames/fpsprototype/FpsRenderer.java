@@ -45,7 +45,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
     private int progSky, aPSky, uSkyTop, uSkyBot;
     private int progVig, aPVig;
+    private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
+
+    // Light travel direction (downward), used for projected blob shadows.
+    private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
 
     private int floorTex, metalTex;
 
@@ -121,6 +125,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         progVig = buildProgram(VERT_VIG_SRC, FRAG_VIG_SRC);
         aPVig = GLES20.glGetAttribLocation(progVig, "aP");
 
+        progBlob = buildProgram(VERT_BLOB_SRC, FRAG_BLOB_SRC);
+        aPBlob = GLES20.glGetAttribLocation(progBlob, "aP");
+        uBlobMVP = GLES20.glGetUniformLocation(progBlob, "uMVP");
+        uBlobA = GLES20.glGetUniformLocation(progBlob, "uA");
+
         prog2 = buildProgram(VERT2_SRC, FRAG2_SRC);
         aP2 = GLES20.glGetAttribLocation(prog2, "aP");
         uScale2 = GLES20.glGetUniformLocation(prog2, "uScale");
@@ -193,6 +202,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setIdentityM(model, 0);
         drawWorld(floor, 6, 0f, 1f, 1f, 1f);
 
+        // projected blob / contact shadows on the floor
+        drawShadows();
+
+        GLES20.glUseProgram(prog3);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         for (int i = 0; i < BOXES.length; i++) {
             float[] b = BOXES[i];
@@ -211,6 +224,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.scaleM(model, 0, TARGET_SCALE, TARGET_SCALE, TARGET_SCALE);
             drawWorld(sphere, sphereVerts, 2f, 1.0f, 0.5f, 0.12f);
         }
+
+        // additive glow (bloom-style) around the live targets
+        drawGlow();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         drawGun();
@@ -278,14 +294,82 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         if (muzzleTimer > 0f) {
             float k = muzzleTimer / MUZZLE_TIME;
+            // bright opaque core
             Matrix.setIdentityM(partM, 0);
             Matrix.translateM(partM, 0, 0f, 0.02f, -0.56f);
-            float s = 0.06f + 0.08f * k;
+            float s = 0.05f + 0.05f * k;
             Matrix.scaleM(partM, 0, s, s, s);
             Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
             Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-            submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.2f * k, 1.1f * k);
+            submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.3f * k, 1.3f * k);
+            // additive flash halo
+            GLES20.glEnable(GLES20.GL_BLEND);
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
+            GLES20.glDepthMask(false);
+            Matrix.setIdentityM(partM, 0);
+            Matrix.translateM(partM, 0, 0f, 0.02f, -0.56f);
+            float gs = 0.16f + 0.14f * k;
+            Matrix.scaleM(partM, 0, gs, gs, gs);
+            Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+            Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+            submit(sphere, sphereVerts, mvp, tmpA, 4f, 0.9f * k, 0.6f * k, 0.25f * k);
+            GLES20.glDepthMask(true);
+            GLES20.glDisable(GLES20.GL_BLEND);
         }
+    }
+
+    private void drawShadows() {
+        GLES20.glUseProgram(progBlob);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glDepthMask(false);
+        circle.position(0);
+        GLES20.glEnableVertexAttribArray(aPBlob);
+        GLES20.glVertexAttribPointer(aPBlob, 2, GLES20.GL_FLOAT, false, 8, circle);
+        for (int i = 0; i < BOXES.length; i++) {
+            float[] b = BOXES[i];
+            blob(b[0], b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
+        }
+        for (int i = 0; i < TARGETS.length; i++) {
+            if (!targetAlive[i]) continue;
+            targetPos(i, tmpPos);
+            blob(tmpPos[0], tmpPos[1], tmpPos[2], TARGET_SCALE * 0.62f);
+        }
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    private void blob(float ox, float oy, float oz, float baseR) {
+        float s = oy / (-LDY);                          // distance to floor along light
+        float fx = ox + LDX * s, fz = oz + LDZ * s;
+        float r = baseR * (1f + s * 0.06f);
+        float alpha = 0.5f / (1f + s * 0.22f);
+        Matrix.setIdentityM(model, 0);
+        Matrix.translateM(model, 0, fx, 0.02f, fz);
+        Matrix.scaleM(model, 0, r, 1f, r);
+        Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        GLES20.glUniformMatrix4fv(uBlobMVP, 1, false, mvp, 0);
+        GLES20.glUniform1f(uBlobA, alpha);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, circleVerts);
+    }
+
+    private void drawGlow() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
+        GLES20.glDepthMask(false);
+        float k = 1.7f;
+        for (int i = 0; i < TARGETS.length; i++) {
+            if (!targetAlive[i]) continue;
+            targetPos(i, tmpPos);
+            Matrix.setIdentityM(model, 0);
+            Matrix.translateM(model, 0, tmpPos[0], tmpPos[1], tmpPos[2]);
+            Matrix.scaleM(model, 0, TARGET_SCALE * k, TARGET_SCALE * k, TARGET_SCALE * k);
+            drawWorld(sphere, sphereVerts, 5f, 0.9f, 0.42f, 0.12f);
+        }
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
     }
 
     private void gunPart(float tx, float ty, float tz, float sx, float sy, float sz,
@@ -755,8 +839,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    col=uColor*(vec3(0.18,0.20,0.26)+df*vec3(1.1))+sp*vec3(0.8)+rim*vec3(0.15);" +
         "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
-        "  } else {" +
+        "  } else if(uMode<4.5){" +
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
+        "  } else {" +                          // additive glow halo
+        "    vec3 V=normalize(uCamPos-vWorld); float f=max(dot(N,V),0.0);" +
+        "    gl_FragColor=vec4(uColor*pow(f,2.0),1.0); return;" +
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
@@ -778,6 +865,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final String FRAG_VIG_SRC =
         "precision mediump float; varying vec2 vP;" +
         "void main(){ float d=length(vP); float a=smoothstep(0.65,1.45,d)*0.6; gl_FragColor=vec4(0.0,0.0,0.0,a); }";
+
+    private static final String VERT_BLOB_SRC =
+        "attribute vec2 aP; uniform mat4 uMVP; varying float vR;" +
+        "void main(){ vR=length(aP); gl_Position=uMVP*vec4(aP.x,0.0,aP.y,1.0); }";
+
+    private static final String FRAG_BLOB_SRC =
+        "precision mediump float; varying float vR; uniform float uA;" +
+        "void main(){ gl_FragColor=vec4(0.0,0.0,0.0,(1.0-vR)*uA); }";
 
     private static final String VERT2_SRC =
         "attribute vec2 aP; uniform vec2 uScale; uniform vec2 uOff;" +
