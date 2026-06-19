@@ -17,11 +17,11 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * Textured first-person GLES 2.0 renderer + timed shooting game. Adds real
- * (procedurally generated) textures for the floor and cover, Blinn-Phong
- * lighting with a fake specular map, gradient sky, distance fog, gamma
- * correction, glowing sphere targets, and a low-poly weapon viewmodel. The
- * current build number is shown in the HUD so app updates are verifiable.
+ * Textured first-person GLES 2.0 renderer + timed shooting game with a more
+ * cinematic look: detailed procedural textures, 3-point lighting with rim
+ * light, ACES filmic tonemapping, a vignette, gradient sky, distance fog,
+ * glowing sphere targets, and a multi-part weapon viewmodel (barrel, stock,
+ * magazine, scope) with recoil + muzzle flash. Build number shown in the HUD.
  */
 public class FpsRenderer implements GLSurfaceView.Renderer {
 
@@ -44,6 +44,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
     private int progSky, aPSky, uSkyTop, uSkyBot;
+    private int progVig, aPVig;
     private int prog2, aP2, uScale2, uOff2, uCol2;
 
     private int floorTex, metalTex;
@@ -117,6 +118,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uSkyTop = GLES20.glGetUniformLocation(progSky, "uTop");
         uSkyBot = GLES20.glGetUniformLocation(progSky, "uBot");
 
+        progVig = buildProgram(VERT_VIG_SRC, FRAG_VIG_SRC);
+        aPVig = GLES20.glGetAttribLocation(progVig, "aP");
+
         prog2 = buildProgram(VERT2_SRC, FRAG2_SRC);
         aP2 = GLES20.glGetAttribLocation(prog2, "aP");
         uScale2 = GLES20.glGetUniformLocation(prog2, "uScale");
@@ -168,8 +172,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDepthMask(false);
         GLES20.glUseProgram(progSky);
-        GLES20.glUniform3f(uSkyTop, 0.06f, 0.08f, 0.18f);
-        GLES20.glUniform3f(uSkyBot, 0.50f, 0.56f, 0.66f);
+        GLES20.glUniform3f(uSkyTop, 0.05f, 0.07f, 0.16f);
+        GLES20.glUniform3f(uSkyBot, 0.52f, 0.58f, 0.68f);
         quad.position(0);
         GLES20.glEnableVertexAttribArray(aPSky);
         GLES20.glVertexAttribPointer(aPSky, 2, GLES20.GL_FLOAT, false, 8, quad);
@@ -249,25 +253,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void drawGun() {
         Matrix.setIdentityM(gunBase, 0);
-        Matrix.translateM(gunBase, 0, 0.16f, -0.17f, -0.50f - recoil * 0.30f);
-        Matrix.rotateM(gunBase, 0, -3.5f + recoil * 9f, 1f, 0f, 0f);
+        Matrix.translateM(gunBase, 0, 0.15f, -0.16f, -0.52f - recoil * 0.30f);
+        Matrix.rotateM(gunBase, 0, -3.0f + recoil * 9f, 1f, 0f, 0f);
         Matrix.rotateM(gunBase, 0, -4f, 0f, 1f, 0f);
 
-        gunPart(0f, 0.00f, 0.02f, 0.085f, 0.10f, 0.34f, 0.16f, 0.17f, 0.20f);
-        gunPart(0f, 0.02f, -0.30f, 0.045f, 0.045f, 0.30f, 0.09f, 0.09f, 0.11f);
-        gunPart(0f, -0.13f, 0.10f, 0.065f, 0.16f, 0.085f, 0.12f, 0.10f, 0.09f);
-        gunPart(0f, -0.12f, -0.02f, 0.055f, 0.15f, 0.075f, 0.18f, 0.18f, 0.22f);
-        gunPart(0f, 0.085f, -0.06f, 0.018f, 0.045f, 0.02f, 0.07f, 0.07f, 0.08f);
+        // body / receiver
+        gunPart(0f, 0.00f, 0.04f, 0.090f, 0.11f, 0.42f, 0.13f, 0.14f, 0.17f);
+        // stock (rear)
+        gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.12f, 0.12f, 0.15f);
+        // barrel
+        gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
+        // muzzle ring
+        gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.09f, 0.09f, 0.11f);
+        // scope body
+        gunPart(0f, 0.105f, -0.04f, 0.040f, 0.050f, 0.18f, 0.10f, 0.10f, 0.12f);
+        // scope lens (glass tint)
+        gunPart(0f, 0.105f, -0.14f, 0.052f, 0.062f, 0.03f, 0.06f, 0.20f, 0.26f);
+        // magazine
+        gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.16f, 0.16f, 0.20f);
+        // grip
+        gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.11f, 0.10f, 0.10f);
+        // trigger guard
+        gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
 
         if (muzzleTimer > 0f) {
             float k = muzzleTimer / MUZZLE_TIME;
             Matrix.setIdentityM(partM, 0);
-            Matrix.translateM(partM, 0, 0f, 0.02f, -0.47f);
-            float s = 0.05f + 0.07f * k;
+            Matrix.translateM(partM, 0, 0f, 0.02f, -0.56f);
+            float s = 0.06f + 0.08f * k;
             Matrix.scaleM(partM, 0, s, s, s);
             Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
             Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-            submit(cube, 36, mvp, tmpA, 4f, 2.6f * k, 2.1f * k, 1.1f * k);
+            submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.2f * k, 1.1f * k);
         }
     }
 
@@ -391,8 +408,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
-        GLES20.glUseProgram(prog2);
 
+        // Cinematic vignette over the scene (before HUD widgets).
+        GLES20.glUseProgram(progVig);
+        quad.position(0);
+        GLES20.glEnableVertexAttribArray(aPVig);
+        GLES20.glVertexAttribPointer(aPVig, 2, GLES20.GL_FLOAT, false, 8, quad);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+
+        GLES20.glUseProgram(prog2);
         if (!gameOver) {
             if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.18f * (muzzleTimer / MUZZLE_TIME));
             float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
@@ -420,7 +444,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawRectPx(width * 0.5f, height * 0.72f, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
         }
 
-        // Build number (top-right) — confirms which APK is installed.
         drawNumberLeft(buildNumber, width - 116f, 52f, 18f, 30f, 5f, 11f, 1f, 0.8f, 0.2f, 0.95f);
 
         GLES20.glDisable(GLES20.GL_BLEND);
@@ -488,7 +511,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aP2, 2, GLES20.GL_FLOAT, false, 8, buf);
     }
 
-    // --- textures (procedural) ---
+    // --- textures (procedural, detailed) ---
 
     private static int uploadTexture(Bitmap bmp) {
         int[] id = new int[1];
@@ -505,44 +528,89 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static Bitmap makeFloorBitmap() {
-        Bitmap b = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888);
+        int N = 512;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFF0E1014);
+        c.drawColor(0xFF0C0E12);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        int s = 128;
+        Random rnd = new Random(11);
+
+        // four metal plates with bevels
+        int s = N / 2, gap = 14;
         for (int i = 0; i < 2; i++) {
             for (int j = 0; j < 2; j++) {
-                float L = i * s + 8, T = j * s + 8, R = (i + 1) * s - 8, B = (j + 1) * s - 8;
-                p.setStyle(Paint.Style.FILL); p.setColor(0xFF1B212B); c.drawRect(L, T, R, B, p);
-                p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(3f); p.setColor(0xFF2C3644); c.drawRect(L, T, R, B, p);
+                float L = i * s + gap, T = j * s + gap, R = (i + 1) * s - gap, B = (j + 1) * s - gap;
+                int base = 0xFF161B23 + rnd.nextInt(0x0A) * 0x010101;
+                p.setStyle(Paint.Style.FILL); p.setColor(base); c.drawRect(L, T, R, B, p);
+                p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(2f);
+                p.setColor(0xFF323C4A); c.drawRect(L + 3, T + 3, R - 3, B - 3, p);   // inner bevel
+                p.setColor(0xFF0A0C10); c.drawRect(L, T, R, B, p);                    // outer shade
             }
         }
+        // glowing seam cross
         p.setStyle(Paint.Style.FILL);
-        p.setColor(0xFF12536A); c.drawRect(0, 123, 256, 133, p); c.drawRect(123, 0, 133, 256, p);
-        p.setColor(0xFF26A6C8); c.drawRect(0, 127, 256, 129, p); c.drawRect(127, 0, 129, 256, p);
-        Random rnd = new Random(7);
-        for (int k = 0; k < 700; k++) {
-            int gray = rnd.nextInt(60);
-            p.setColor((0x30 << 24) | (gray << 16) | (gray << 8) | gray);
-            c.drawRect(rnd.nextInt(256), rnd.nextInt(256), rnd.nextInt(256) + 1, rnd.nextInt(256) + 1, p);
+        p.setColor(0xFF0F4E63); c.drawRect(0, s - 7, N, s + 7, p); c.drawRect(s - 7, 0, s + 7, N, p);
+        p.setColor(0xFF31B6D8); c.drawRect(0, s - 2, N, s + 2, p); c.drawRect(s - 2, 0, s + 2, N, p);
+        // bolts at plate corners
+        p.setColor(0xFF3A4554);
+        int[] bx = {gap + 14, s - gap - 14, s + gap + 14, N - gap - 14};
+        for (int xi = 0; xi < 4; xi++) for (int yi = 0; yi < 4; yi++) c.drawCircle(bx[xi], bx[yi], 4f, p);
+        // scratches
+        p.setStyle(Paint.Style.STROKE);
+        for (int k = 0; k < 80; k++) {
+            int a = 0x10 + rnd.nextInt(0x30);
+            p.setStrokeWidth(1f + rnd.nextFloat());
+            p.setColor((a << 24) | 0x00C8D2E0);
+            float x0 = rnd.nextInt(N), y0 = rnd.nextInt(N), ln = 8 + rnd.nextInt(60), ang = rnd.nextFloat() * 6.28f;
+            c.drawLine(x0, y0, x0 + ln * (float) Math.cos(ang), y0 + ln * (float) Math.sin(ang), p);
+        }
+        // grime speckles
+        p.setStyle(Paint.Style.FILL);
+        for (int k = 0; k < 2600; k++) {
+            int g = rnd.nextInt(80);
+            p.setColor((0x26 << 24) | (g << 16) | (g << 8) | g);
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1 + rnd.nextInt(2), p);
         }
         return b;
     }
 
     private static Bitmap makeMetalBitmap() {
-        Bitmap b = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888);
+        int N = 512;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         Paint p = new Paint();
-        Random rnd = new Random(3);
-        for (int x = 0; x < 256; x++) {
-            int gr = 0x2A + rnd.nextInt(0x1A);
+        Random rnd = new Random(5);
+        // brushed vertical base
+        for (int x = 0; x < N; x++) {
+            int gr = 0x2C + rnd.nextInt(0x1C);
             p.setColor(0xFF000000 | (gr << 16) | (gr << 8) | (gr + 6));
-            c.drawLine(x, 0, x, 256, p);
+            c.drawLine(x, 0, x, N, p);
         }
-        p.setColor(0xFF1A1E24); c.drawRect(0, 38, 256, 50, p); c.drawRect(0, 206, 256, 218, p);
-        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(7f); p.setColor(0xFF14171C); c.drawRect(5, 5, 251, 251, p);
-        p.setStyle(Paint.Style.FILL); p.setColor(0xFF3C4554);
-        c.drawCircle(22, 22, 6, p); c.drawCircle(234, 22, 6, p); c.drawCircle(22, 234, 6, p); c.drawCircle(234, 234, 6, p);
+        // horizontal panel bands
+        p.setColor(0xFF181C22); c.drawRect(0, 70, N, 96, p); c.drawRect(0, N - 96, N, N - 70, p);
+        // warning stripe accent
+        p.setColor(0xFFB7892A);
+        for (int x = -N; x < N; x += 36) { p.setStrokeWidth(0f); }
+        p.setStyle(Paint.Style.FILL);
+        for (int x = -N; x < N; x += 40) {
+            android.graphics.Path path = new android.graphics.Path();
+            path.moveTo(x, 116); path.lineTo(x + 18, 116); path.lineTo(x + 18 - 14, 140); path.lineTo(x - 14, 140); path.close();
+            p.setColor((x / 40) % 2 == 0 ? 0xFFB7892A : 0xFF14171C); c.drawPath(path, p);
+        }
+        // border frame + rivets
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(8f); p.setColor(0xFF101319); c.drawRect(6, 6, N - 6, N - 6, p);
+        p.setStyle(Paint.Style.FILL); p.setColor(0xFF424C5C);
+        int m = 26;
+        c.drawCircle(m, m, 7f, p); c.drawCircle(N - m, m, 7f, p); c.drawCircle(m, N - m, 7f, p); c.drawCircle(N - m, N - m, 7f, p);
+        // scratches
+        p.setStyle(Paint.Style.STROKE);
+        for (int k = 0; k < 60; k++) {
+            int a = 0x14 + rnd.nextInt(0x2A);
+            p.setStrokeWidth(1f); p.setColor((a << 24) | 0x00D8DEE8);
+            float x0 = rnd.nextInt(N), y0 = rnd.nextInt(N), ln = 10 + rnd.nextInt(50);
+            c.drawLine(x0, y0, x0 + ln, y0 + (rnd.nextInt(7) - 3), p);
+        }
         return b;
     }
 
@@ -664,29 +732,35 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
+        "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
         "  if(uMode<0.5){" +
         "    vec3 tex=texture2D(uTex,vUV).rgb;" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
-        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),36.0);" +
+        "    float df=max(dot(N,L),0.0);" +
+        "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
+        "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
+        "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         "    vec3 base=tex*uColor;" +
-        "    col=base*(vec3(0.22,0.24,0.30)+df*vec3(1.05,1.0,0.92))+sp*vec3(0.6)*tex.r;" +
+        "    col=base*(vec3(0.16,0.18,0.24)+df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
+        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30);" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
-        "    float pulse=0.78+0.22*sin(uTime*5.0);" +
-        "    col=uColor*pulse+uColor*fr*1.4+fr*vec3(0.30);" +
+        "    float pulse=0.80+0.20*sin(uTime*5.0);" +
+        "    col=uColor*pulse+uColor*fr*1.8+fr*vec3(0.35);" +
         "  } else if(uMode<3.5){" +
         "    vec3 L=normalize(vec3(-0.3,0.55,0.75)); vec3 V=vec3(0.0,0.0,1.0);" +
-        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),32.0);" +
-        "    col=uColor*(vec3(0.22,0.24,0.30)+df*vec3(1.0))+sp*vec3(0.6);" +
-        "    gl_FragColor=vec4(pow(col,vec3(0.4545)),1.0); return;" +
+        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),40.0);" +
+        "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
+        "    col=uColor*(vec3(0.18,0.20,0.26)+df*vec3(1.1))+sp*vec3(0.8)+rim*vec3(0.15);" +
+        "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
         "  } else {" +
-        "    gl_FragColor=vec4(pow(uColor,vec3(0.4545)),1.0); return;" +
+        "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
         "  }" +
-        "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.8);" +
+        "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
-        "  gl_FragColor=vec4(pow(col,vec3(0.4545)),1.0);" +
+        "  gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0);" +
         "}";
 
     private static final String VERT_SKY_SRC =
@@ -695,8 +769,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final String FRAG_SKY_SRC =
         "precision mediump float; varying float vy; uniform vec3 uTop; uniform vec3 uBot;" +
         "void main(){ float t=clamp(vy*0.5+0.5,0.0,1.0); vec3 c=mix(uBot,uTop,t*t);" +
-        "  float h=1.0-smoothstep(0.0,0.18,abs(vy)); c+=vec3(0.18,0.13,0.08)*h;" +
+        "  float h=1.0-smoothstep(0.0,0.18,abs(vy)); c+=vec3(0.20,0.14,0.09)*h;" +
         "  gl_FragColor=vec4(pow(c,vec3(0.4545)),1.0); }";
+
+    private static final String VERT_VIG_SRC =
+        "attribute vec2 aP; varying vec2 vP; void main(){ vP=aP; gl_Position=vec4(aP,0.0,1.0); }";
+
+    private static final String FRAG_VIG_SRC =
+        "precision mediump float; varying vec2 vP;" +
+        "void main(){ float d=length(vP); float a=smoothstep(0.65,1.45,d)*0.6; gl_FragColor=vec4(0.0,0.0,0.0,a); }";
 
     private static final String VERT2_SRC =
         "attribute vec2 aP; uniform vec2 uScale; uniform vec2 uOff;" +
