@@ -1,28 +1,33 @@
 package com.aigames.fpsprototype;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
+import android.opengl.GLUtils;
 import android.opengl.Matrix;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.util.Random;
 
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * First-person GLES 2.0 renderer with a timed shooting-range game and a richer
- * look: gradient sky, Blinn-Phong lighting with specular, distance fog and
- * gamma correction, a procedural sci-fi grid floor, glowing fresnel sphere
- * targets, and a low-poly first-person weapon viewmodel with recoil + a muzzle
- * flash. MSAA is provided by MultisampleConfigChooser.
+ * Textured first-person GLES 2.0 renderer + timed shooting game. Adds real
+ * (procedurally generated) textures for the floor and cover, Blinn-Phong
+ * lighting with a fake specular map, gradient sky, distance fog, gamma
+ * correction, glowing sphere targets, and a low-poly weapon viewmodel. The
+ * current build number is shown in the HUD so app updates are verifiable.
  */
 public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final float MOVE_SPEED = 4.5f;
     private static final float LOOK_SENS = 0.0045f;
-    private static final int STRIDE = 24;             // 6 floats * 4 bytes
+    private static final int STRIDE = 32;             // 8 floats: pos3, normal3, uv2
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
     private static final float FLASH_TIME = 0.15f;
@@ -31,17 +36,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float ROUND_TIME = 30f;
 
     private final InputState input;
+    private final int buildNumber;
     private final float[] lookTmp = new float[2];
     private final float[] tmpPos = new float[3];
 
     private int width = 1, height = 1;
 
-    // 3D uber program (lit / floor / emissive / viewmodel / unlit).
-    private int prog3, aPos, aNormal, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime;
-    // Sky program.
+    private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
     private int progSky, aPSky, uSkyTop, uSkyBot;
-    // 2D HUD program.
     private int prog2, aP2, uScale2, uOff2, uCol2;
+
+    private int floorTex, metalTex;
 
     private FloatBuffer cube, floor, sphere, quad, circle;
     private int sphereVerts, circleVerts;
@@ -54,48 +59,39 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] gunBase = new float[16];
     private final float[] partM = new float[16];
 
-    // Camera.
     private float px = 0f, py = 1.6f, pz = 9f;
     private float yaw = 0f, pitch = -0.08f;
     private float recoil = 0f;
     private long lastNanos;
     private float timeAcc = 0f;
 
-    // Feedback timers.
-    private float muzzleTimer = 0f;
-    private float hitTimer = 0f;
-    private float flashTimer = 0f;
+    private float muzzleTimer = 0f, hitTimer = 0f, flashTimer = 0f;
     private int hitBox = -1;
     private boolean lastShotHit = false;
 
-    // Game state.
     private int score = 0;
     private float roundTime = ROUND_TIME;
     private boolean gameOver = false;
 
     private static final float[][] TARGETS = {
-        {-6f, 1.6f, 2f},
-        { 6f, 1.6f, 2f},
-        { 0f, 2.4f, 10f},
-        {-3f, 1.1f, 7f},
-        { 3f, 1.1f, 7f},
+        {-6f, 1.6f, 2f}, {6f, 1.6f, 2f}, {0f, 2.4f, 10f}, {-3f, 1.1f, 7f}, {3f, 1.1f, 7f},
     };
     private final boolean[] targetAlive = new boolean[TARGETS.length];
     private final float[] targetRespawn = new float[TARGETS.length];
 
-    // Static cover: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
     private static final float[][] BOXES = {
-        {-4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.50f, 0.53f, 0.58f},
-        { 4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.50f, 0.53f, 0.58f},
-        {-2f, 0.75f, 0f, 1.5f, 1.5f, 1.5f, 0.62f, 0.40f, 0.20f},
-        { 2.5f, 0.75f, 1f, 1.5f, 1.5f, 1.5f, 0.62f, 0.40f, 0.20f},
-        { 0f, 2.0f, 12f, 20f, 4.0f, 1.0f, 0.42f, 0.45f, 0.50f},
+        {-4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f},
+        { 4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f},
+        {-2f, 0.75f, 0f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f},
+        { 2.5f, 0.75f, 1f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f},
+        { 0f, 2.0f, 12f, 20f, 4.0f, 1.0f, 0.78f, 0.82f, 0.90f},
     };
 
     private static final float[] FOG = {0.46f, 0.52f, 0.62f};
 
-    public FpsRenderer(InputState input) {
+    public FpsRenderer(InputState input, int buildNumber) {
         this.input = input;
+        this.buildNumber = buildNumber;
     }
 
     @Override
@@ -105,6 +101,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         prog3 = buildProgram(VERT3_SRC, FRAG3_SRC);
         aPos = GLES20.glGetAttribLocation(prog3, "aPos");
         aNormal = GLES20.glGetAttribLocation(prog3, "aNormal");
+        aUV = GLES20.glGetAttribLocation(prog3, "aUV");
         uMVP = GLES20.glGetUniformLocation(prog3, "uMVP");
         uModel = GLES20.glGetUniformLocation(prog3, "uModel");
         uColor = GLES20.glGetUniformLocation(prog3, "uColor");
@@ -113,6 +110,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uCamPos = GLES20.glGetUniformLocation(prog3, "uCamPos");
         uFogColor = GLES20.glGetUniformLocation(prog3, "uFogColor");
         uTime = GLES20.glGetUniformLocation(prog3, "uTime");
+        uTex = GLES20.glGetUniformLocation(prog3, "uTex");
 
         progSky = buildProgram(VERT_SKY_SRC, FRAG_SKY_SRC);
         aPSky = GLES20.glGetAttribLocation(progSky, "aP");
@@ -125,15 +123,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uOff2 = GLES20.glGetUniformLocation(prog2, "uOff");
         uCol2 = GLES20.glGetUniformLocation(prog2, "uCol");
 
-        cube = makeBuffer(CUBE_DATA);
-        floor = makeBuffer(FLOOR_DATA);
-        quad = makeBuffer(QUAD_DATA);
+        GLES20.glUseProgram(prog3);
+        GLES20.glUniform1i(uTex, 0);
+
+        cube = makeBuffer(makeCube());
+        floor = makeBuffer(makeFloor(40f, 40f));
         float[] sph = makeSphere(14, 20);
         sphere = makeBuffer(sph);
-        sphereVerts = sph.length / 6;
+        sphereVerts = sph.length / 8;
+        quad = makeBuffer(QUAD_DATA);
         int seg = 28;
         circle = makeCircle(seg);
         circleVerts = seg + 2;
+
+        floorTex = uploadTexture(makeFloorBitmap());
+        metalTex = uploadTexture(makeMetalBitmap());
 
         restart();
         lastNanos = System.nanoTime();
@@ -160,7 +164,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
-        // --- Sky (no depth) ---
+        // Sky
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDepthMask(false);
         GLES20.glUseProgram(progSky);
@@ -172,23 +176,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
         GLES20.glDepthMask(true);
 
-        // --- 3D scene ---
+        // Scene
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(prog3);
         GLES20.glUniform3f(uLightDir, -0.4f, 1.0f, -0.3f);
         GLES20.glUniform3f(uCamPos, px, py, pz);
         GLES20.glUniform3f(uFogColor, FOG[0], FOG[1], FOG[2]);
         GLES20.glUniform1f(uTime, timeAcc);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, floorTex);
         Matrix.setIdentityM(model, 0);
-        drawWorld(floor, 6, 1f, 0f, 0f, 0f);
+        drawWorld(floor, 6, 0f, 1f, 1f, 1f);
 
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         for (int i = 0; i < BOXES.length; i++) {
             float[] b = BOXES[i];
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
-            float boost = (i == hitBox && hitTimer > 0f) ? 1.7f : 1f;
+            float boost = (i == hitBox && hitTimer > 0f) ? 1.6f : 1f;
             drawWorld(cube, 36, 0f, b[6] * boost, b[7] * boost, b[8] * boost);
         }
 
@@ -201,11 +208,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(sphere, sphereVerts, 2f, 1.0f, 0.5f, 0.12f);
         }
 
-        // --- Weapon viewmodel (drawn on top: clear depth, render in view space) ---
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         drawGun();
 
-        // --- HUD ---
         drawHud();
     }
 
@@ -216,7 +221,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         out[2] = h[2];
     }
 
-    /** proj * view * model, then submit. */
     private void drawWorld(FloatBuffer buf, int count, float mode, float r, float g, float b) {
         Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
@@ -236,22 +240,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         buf.position(3);
         GLES20.glEnableVertexAttribArray(aNormal);
         GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, STRIDE, buf);
+        buf.position(6);
+        GLES20.glEnableVertexAttribArray(aUV);
+        GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, STRIDE, buf);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, count);
     }
 
     private void drawGun() {
-        // Base transform: position the gun in front of the camera (view space).
         Matrix.setIdentityM(gunBase, 0);
         Matrix.translateM(gunBase, 0, 0.16f, -0.17f, -0.50f - recoil * 0.30f);
-        Matrix.rotateM(gunBase, 0, -3.5f + recoil * 9f, 1f, 0f, 0f);   // recoil kick up
+        Matrix.rotateM(gunBase, 0, -3.5f + recoil * 9f, 1f, 0f, 0f);
         Matrix.rotateM(gunBase, 0, -4f, 0f, 1f, 0f);
 
-        gunPart(0f, 0.00f, 0.02f, 0.085f, 0.10f, 0.34f, 0.17f, 0.18f, 0.21f);  // receiver
-        gunPart(0f, 0.02f, -0.30f, 0.045f, 0.045f, 0.30f, 0.10f, 0.10f, 0.12f); // barrel
-        gunPart(0.0f, -0.13f, 0.10f, 0.065f, 0.16f, 0.085f, 0.13f, 0.11f, 0.10f); // grip
-        gunPart(0.0f, -0.12f, -0.02f, 0.055f, 0.15f, 0.075f, 0.19f, 0.19f, 0.23f); // magazine
-        gunPart(0f, 0.085f, -0.06f, 0.018f, 0.045f, 0.02f, 0.08f, 0.08f, 0.09f);   // front sight
+        gunPart(0f, 0.00f, 0.02f, 0.085f, 0.10f, 0.34f, 0.16f, 0.17f, 0.20f);
+        gunPart(0f, 0.02f, -0.30f, 0.045f, 0.045f, 0.30f, 0.09f, 0.09f, 0.11f);
+        gunPart(0f, -0.13f, 0.10f, 0.065f, 0.16f, 0.085f, 0.12f, 0.10f, 0.09f);
+        gunPart(0f, -0.12f, -0.02f, 0.055f, 0.15f, 0.075f, 0.18f, 0.18f, 0.22f);
+        gunPart(0f, 0.085f, -0.06f, 0.018f, 0.045f, 0.02f, 0.07f, 0.07f, 0.08f);
 
         if (muzzleTimer > 0f) {
             float k = muzzleTimer / MUZZLE_TIME;
@@ -261,7 +267,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.scaleM(partM, 0, s, s, s);
             Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
             Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-            submit(cube, 36, mvp, tmpA, 4f, 2.6f * k, 2.1f * k, 1.1f * k);  // bright flash
+            submit(cube, 36, mvp, tmpA, 4f, 2.6f * k, 2.1f * k, 1.1f * k);
         }
     }
 
@@ -270,8 +276,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setIdentityM(partM, 0);
         Matrix.translateM(partM, 0, tx, ty, tz);
         Matrix.scaleM(partM, 0, sx, sy, sz);
-        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);     // model = gunBase * part
-        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);          // view = identity
+        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
         submit(cube, 36, mvp, tmpA, 3f, r, g, b);
     }
 
@@ -285,8 +291,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         if (input.consumeFire()) fire();
 
-        float mx = input.moveX();
-        float my = input.moveY();
+        float mx = input.moveX(), my = input.moveY();
         float fwdX = (float) Math.sin(yaw), fwdZ = -(float) Math.cos(yaw);
         float rgtX = (float) Math.cos(yaw), rgtZ = (float) Math.sin(yaw);
         px += (rgtX * mx + fwdX * my) * MOVE_SPEED * dt;
@@ -313,7 +318,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (targetRespawn[i] <= 0f) targetAlive[i] = true;
             }
         }
-
         if (!gameOver) {
             roundTime -= dt;
             if (roundTime <= 0f) { roundTime = 0f; gameOver = true; }
@@ -325,15 +329,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         score = 0;
         roundTime = ROUND_TIME;
         gameOver = false;
-        for (int i = 0; i < targetAlive.length; i++) {
-            targetAlive[i] = true;
-            targetRespawn[i] = 0f;
-        }
+        for (int i = 0; i < targetAlive.length; i++) { targetAlive[i] = true; targetRespawn[i] = 0f; }
     }
 
     private void fire() {
         if (gameOver) { restart(); return; }
-
         muzzleTimer = MUZZLE_TIME;
         flashTimer = FLASH_TIME;
         recoil += 0.025f;
@@ -346,7 +346,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         float best = Float.MAX_VALUE;
         int type = 0, idx = -1;
-
         float h = TARGET_SCALE * 0.5f;
         for (int i = 0; i < TARGETS.length; i++) {
             if (!targetAlive[i]) continue;
@@ -365,37 +364,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         if (type == 1) {
-            targetAlive[idx] = false;
-            targetRespawn[idx] = RESPAWN_TIME;
-            score++;
-            lastShotHit = true;
+            targetAlive[idx] = false; targetRespawn[idx] = RESPAWN_TIME; score++; lastShotHit = true;
         } else if (type == 2) {
-            hitBox = idx;
-            hitTimer = HIT_TIME;
-            lastShotHit = false;
+            hitBox = idx; hitTimer = HIT_TIME; lastShotHit = false;
         } else {
             lastShotHit = false;
         }
     }
 
     private static float rayBox(float ox, float oy, float oz, float dx, float dy, float dz,
-                                float minx, float miny, float minz,
-                                float maxx, float maxy, float maxz) {
+                                float minx, float miny, float minz, float maxx, float maxy, float maxz) {
         float tmin = -Float.MAX_VALUE, tmax = Float.MAX_VALUE;
         if (Math.abs(dx) < 1e-6f) { if (ox < minx || ox > maxx) return -1f; }
-        else { float a = (minx - ox) / dx, b = (maxx - ox) / dx; if (a > b) { float s = a; a = b; b = s; }
-               if (a > tmin) tmin = a; if (b < tmax) tmax = b; }
+        else { float a = (minx - ox) / dx, b = (maxx - ox) / dx; if (a > b) { float s = a; a = b; b = s; } if (a > tmin) tmin = a; if (b < tmax) tmax = b; }
         if (Math.abs(dy) < 1e-6f) { if (oy < miny || oy > maxy) return -1f; }
-        else { float a = (miny - oy) / dy, b = (maxy - oy) / dy; if (a > b) { float s = a; a = b; b = s; }
-               if (a > tmin) tmin = a; if (b < tmax) tmax = b; }
+        else { float a = (miny - oy) / dy, b = (maxy - oy) / dy; if (a > b) { float s = a; a = b; b = s; } if (a > tmin) tmin = a; if (b < tmax) tmax = b; }
         if (Math.abs(dz) < 1e-6f) { if (oz < minz || oz > maxz) return -1f; }
-        else { float a = (minz - oz) / dz, b = (maxz - oz) / dz; if (a > b) { float s = a; a = b; b = s; }
-               if (a > tmin) tmin = a; if (b < tmax) tmax = b; }
+        else { float a = (minz - oz) / dz, b = (maxz - oz) / dz; if (a > b) { float s = a; a = b; b = s; } if (a > tmin) tmin = a; if (b < tmax) tmax = b; }
         if (tmax < Math.max(tmin, 0f)) return -1f;
         return tmin >= 0f ? tmin : tmax;
     }
 
-    // --- HUD (2D) ---
+    // --- HUD ---
 
     private void drawHud() {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
@@ -404,10 +394,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUseProgram(prog2);
 
         if (!gameOver) {
-            if (muzzleTimer > 0f) {
-                float a = 0.18f * (muzzleTimer / MUZZLE_TIME);
-                drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, a);
-            }
+            if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.18f * (muzzleTimer / MUZZLE_TIME));
             float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
             drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 1f, 1f, 1f, 0.16f);
             float kx = input.moveX(), ky = input.moveY();
@@ -432,6 +419,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawCircle(width * 0.5f, height * 0.72f, 86f, 0.2f, 0.9f, 0.35f, 0.85f);
             drawRectPx(width * 0.5f, height * 0.72f, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
         }
+
+        // Build number (top-right) — confirms which APK is installed.
+        drawNumberLeft(buildNumber, width - 116f, 52f, 18f, 30f, 5f, 11f, 1f, 0.8f, 0.2f, 0.95f);
 
         GLES20.glDisable(GLES20.GL_BLEND);
     }
@@ -476,8 +466,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, circleVerts);
     }
 
-    private void drawRectPx(float cxPx, float cyPx, float wPx, float hPx,
-                            float r, float g, float b, float a) {
+    private void drawRectPx(float cxPx, float cyPx, float wPx, float hPx, float r, float g, float b, float a) {
         GLES20.glUniform2f(uScale2, (wPx * 0.5f) / width * 2f, (hPx * 0.5f) / height * 2f);
         GLES20.glUniform2f(uOff2, cxPx / width * 2f - 1f, 1f - cyPx / height * 2f);
         GLES20.glUniform4f(uCol2, r, g, b, a);
@@ -485,8 +474,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
     }
 
-    private void drawQuadNDC(float offX, float offY, float sx, float sy,
-                             float r, float g, float b, float a) {
+    private void drawQuadNDC(float offX, float offY, float sx, float sy, float r, float g, float b, float a) {
         GLES20.glUniform2f(uScale2, sx, sy);
         GLES20.glUniform2f(uOff2, offX, offY);
         GLES20.glUniform4f(uCol2, r, g, b, a);
@@ -500,11 +488,137 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aP2, 2, GLES20.GL_FLOAT, false, 8, buf);
     }
 
-    // --- buffers ---
+    // --- textures (procedural) ---
+
+    private static int uploadTexture(Bitmap bmp) {
+        int[] id = new int[1];
+        GLES20.glGenTextures(1, id, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id[0]);
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_REPEAT);
+        bmp.recycle();
+        return id[0];
+    }
+
+    private static Bitmap makeFloorBitmap() {
+        Bitmap b = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFF0E1014);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        int s = 128;
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 2; j++) {
+                float L = i * s + 8, T = j * s + 8, R = (i + 1) * s - 8, B = (j + 1) * s - 8;
+                p.setStyle(Paint.Style.FILL); p.setColor(0xFF1B212B); c.drawRect(L, T, R, B, p);
+                p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(3f); p.setColor(0xFF2C3644); c.drawRect(L, T, R, B, p);
+            }
+        }
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0xFF12536A); c.drawRect(0, 123, 256, 133, p); c.drawRect(123, 0, 133, 256, p);
+        p.setColor(0xFF26A6C8); c.drawRect(0, 127, 256, 129, p); c.drawRect(127, 0, 129, 256, p);
+        Random rnd = new Random(7);
+        for (int k = 0; k < 700; k++) {
+            int gray = rnd.nextInt(60);
+            p.setColor((0x30 << 24) | (gray << 16) | (gray << 8) | gray);
+            c.drawRect(rnd.nextInt(256), rnd.nextInt(256), rnd.nextInt(256) + 1, rnd.nextInt(256) + 1, p);
+        }
+        return b;
+    }
+
+    private static Bitmap makeMetalBitmap() {
+        Bitmap b = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        Paint p = new Paint();
+        Random rnd = new Random(3);
+        for (int x = 0; x < 256; x++) {
+            int gr = 0x2A + rnd.nextInt(0x1A);
+            p.setColor(0xFF000000 | (gr << 16) | (gr << 8) | (gr + 6));
+            c.drawLine(x, 0, x, 256, p);
+        }
+        p.setColor(0xFF1A1E24); c.drawRect(0, 38, 256, 50, p); c.drawRect(0, 206, 256, 218, p);
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(7f); p.setColor(0xFF14171C); c.drawRect(5, 5, 251, 251, p);
+        p.setStyle(Paint.Style.FILL); p.setColor(0xFF3C4554);
+        c.drawCircle(22, 22, 6, p); c.drawCircle(234, 22, 6, p); c.drawCircle(22, 234, 6, p); c.drawCircle(234, 234, 6, p);
+        return b;
+    }
+
+    // --- geometry (pos3, normal3, uv2) ---
+
+    private static int put(float[] d, int o, float x, float y, float z, float nx, float ny, float nz, float u, float v) {
+        d[o++] = x; d[o++] = y; d[o++] = z; d[o++] = nx; d[o++] = ny; d[o++] = nz; d[o++] = u; d[o++] = v;
+        return o;
+    }
+
+    private static int faceQuad(float[] d, int o,
+                                float ax, float ay, float az, float bx, float by, float bz,
+                                float cx, float cy, float cz, float ex, float ey, float ez,
+                                float nx, float ny, float nz) {
+        o = put(d, o, ax, ay, az, nx, ny, nz, 0f, 0f);
+        o = put(d, o, bx, by, bz, nx, ny, nz, 1f, 0f);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, 1f, 1f);
+        o = put(d, o, ax, ay, az, nx, ny, nz, 0f, 0f);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, 1f, 1f);
+        o = put(d, o, ex, ey, ez, nx, ny, nz, 0f, 1f);
+        return o;
+    }
+
+    private static float[] makeCube() {
+        float h = 0.5f;
+        float[] d = new float[36 * 8];
+        int o = 0;
+        o = faceQuad(d, o,  h, -h, h,  h, -h, -h,  h, h, -h,  h, h, h,  1, 0, 0);
+        o = faceQuad(d, o, -h, -h, -h, -h, -h, h, -h, h, h, -h, h, -h, -1, 0, 0);
+        o = faceQuad(d, o, -h, h, h,  h, h, h,  h, h, -h, -h, h, -h,  0, 1, 0);
+        o = faceQuad(d, o, -h, -h, -h,  h, -h, -h,  h, -h, h, -h, -h, h,  0, -1, 0);
+        o = faceQuad(d, o, -h, -h, h,  h, -h, h,  h, h, h, -h, h, h,  0, 0, 1);
+        o = faceQuad(d, o,  h, -h, -h, -h, -h, -h, -h, h, -h,  h, h, -h,  0, 0, -1);
+        return d;
+    }
+
+    private static float[] makeFloor(float half, float tiles) {
+        float[] d = new float[6 * 8];
+        int o = 0;
+        o = put(d, o, -half, 0, -half, 0, 1, 0, 0f, 0f);
+        o = put(d, o, half, 0, -half, 0, 1, 0, tiles, 0f);
+        o = put(d, o, half, 0, half, 0, 1, 0, tiles, tiles);
+        o = put(d, o, -half, 0, -half, 0, 1, 0, 0f, 0f);
+        o = put(d, o, half, 0, half, 0, 1, 0, tiles, tiles);
+        o = put(d, o, -half, 0, half, 0, 1, 0, 0f, tiles);
+        return d;
+    }
+
+    private static float[] makeSphere(int stacks, int slices) {
+        float[] d = new float[stacks * slices * 6 * 8];
+        int o = 0;
+        for (int i = 0; i < stacks; i++) {
+            float v0 = (float) i / stacks, v1 = (float) (i + 1) / stacks;
+            float phi0 = (float) (Math.PI * v0), phi1 = (float) (Math.PI * v1);
+            for (int j = 0; j < slices; j++) {
+                float u0 = (float) j / slices, u1 = (float) (j + 1) / slices;
+                float th0 = (float) (2.0 * Math.PI * u0), th1 = (float) (2.0 * Math.PI * u1);
+                o = sphVtx(d, o, phi0, th0, u0, v0);
+                o = sphVtx(d, o, phi1, th0, u0, v1);
+                o = sphVtx(d, o, phi1, th1, u1, v1);
+                o = sphVtx(d, o, phi0, th0, u0, v0);
+                o = sphVtx(d, o, phi1, th1, u1, v1);
+                o = sphVtx(d, o, phi0, th1, u1, v0);
+            }
+        }
+        return d;
+    }
+
+    private static int sphVtx(float[] d, int o, float phi, float theta, float u, float v) {
+        float sp = (float) Math.sin(phi);
+        float nx = sp * (float) Math.cos(theta), ny = (float) Math.cos(phi), nz = sp * (float) Math.sin(theta);
+        return put(d, o, nx * 0.5f, ny * 0.5f, nz * 0.5f, nx, ny, nz, u, v);
+    }
 
     private static FloatBuffer makeBuffer(float[] data) {
-        FloatBuffer fb = ByteBuffer.allocateDirect(data.length * 4)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        FloatBuffer fb = ByteBuffer.allocateDirect(data.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         fb.put(data).position(0);
         return fb;
     }
@@ -518,41 +632,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             d[3 + 2 * k] = (float) Math.sin(ang);
         }
         return makeBuffer(d);
-    }
-
-    /** UV sphere, radius 0.5, interleaved pos(3)+normal(3) triangle list. */
-    private static float[] makeSphere(int stacks, int slices) {
-        float[] d = new float[stacks * slices * 6 * 6];
-        int o = 0;
-        float[] p00 = new float[3], p01 = new float[3], p10 = new float[3], p11 = new float[3];
-        for (int i = 0; i < stacks; i++) {
-            float phi0 = (float) (Math.PI * i / stacks);
-            float phi1 = (float) (Math.PI * (i + 1) / stacks);
-            for (int j = 0; j < slices; j++) {
-                float th0 = (float) (2.0 * Math.PI * j / slices);
-                float th1 = (float) (2.0 * Math.PI * (j + 1) / slices);
-                unitSph(phi0, th0, p00);
-                unitSph(phi0, th1, p01);
-                unitSph(phi1, th0, p10);
-                unitSph(phi1, th1, p11);
-                o = vtx(d, o, p00); o = vtx(d, o, p10); o = vtx(d, o, p11);
-                o = vtx(d, o, p00); o = vtx(d, o, p11); o = vtx(d, o, p01);
-            }
-        }
-        return d;
-    }
-
-    private static void unitSph(float phi, float theta, float[] out) {
-        float sp = (float) Math.sin(phi);
-        out[0] = sp * (float) Math.cos(theta);
-        out[1] = (float) Math.cos(phi);
-        out[2] = sp * (float) Math.sin(theta);
-    }
-
-    private static int vtx(float[] d, int o, float[] n) {
-        d[o++] = n[0] * 0.5f; d[o++] = n[1] * 0.5f; d[o++] = n[2] * 0.5f;   // pos
-        d[o++] = n[0]; d[o++] = n[1]; d[o++] = n[2];                         // normal
-        return o;
     }
 
     private static int buildProgram(String vs, String fs) {
@@ -572,79 +651,37 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return s;
     }
 
-    private static final float[] QUAD_DATA = {
-        -1f, -1f,  1f, -1f,  1f, 1f,
-        -1f, -1f,  1f,  1f, -1f, 1f,
-    };
-
-    private static final float[] FLOOR_DATA = floorQuad(40f);
-
-    private static float[] floorQuad(float s) {
-        return new float[] {
-            -s, 0f, -s, 0f, 1f, 0f,   s, 0f, -s, 0f, 1f, 0f,   s, 0f, s, 0f, 1f, 0f,
-            -s, 0f, -s, 0f, 1f, 0f,   s, 0f, s, 0f, 1f, 0f,   -s, 0f, s, 0f, 1f, 0f,
-        };
-    }
-
-    private static final float[] CUBE_DATA = unitCube();
-
-    private static float[] unitCube() {
-        float h = 0.5f;
-        return new float[] {
-             h, -h, -h, 1, 0, 0,   h, h, -h, 1, 0, 0,   h, h, h, 1, 0, 0,
-             h, -h, -h, 1, 0, 0,   h, h, h, 1, 0, 0,    h, -h, h, 1, 0, 0,
-            -h, -h, -h, -1, 0, 0, -h, h, h, -1, 0, 0,  -h, h, -h, -1, 0, 0,
-            -h, -h, -h, -1, 0, 0, -h, -h, h, -1, 0, 0, -h, h, h, -1, 0, 0,
-            -h, h, -h, 0, 1, 0,    h, h, h, 0, 1, 0,    h, h, -h, 0, 1, 0,
-            -h, h, -h, 0, 1, 0,   -h, h, h, 0, 1, 0,    h, h, h, 0, 1, 0,
-            -h, -h, -h, 0, -1, 0,  h, -h, -h, 0, -1, 0, h, -h, h, 0, -1, 0,
-            -h, -h, -h, 0, -1, 0,  h, -h, h, 0, -1, 0, -h, -h, h, 0, -1, 0,
-            -h, -h, h, 0, 0, 1,    h, -h, h, 0, 0, 1,   h, h, h, 0, 0, 1,
-            -h, -h, h, 0, 0, 1,    h, h, h, 0, 0, 1,   -h, h, h, 0, 0, 1,
-            -h, -h, -h, 0, 0, -1,  h, h, -h, 0, 0, -1,  h, -h, -h, 0, 0, -1,
-            -h, -h, -h, 0, 0, -1, -h, h, -h, 0, 0, -1,  h, h, -h, 0, 0, -1,
-        };
-    }
-
-    // --- shaders ---
+    private static final float[] QUAD_DATA = {-1f, -1f, 1f, -1f, 1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f};
 
     private static final String VERT3_SRC =
         "uniform mat4 uMVP; uniform mat4 uModel;" +
-        "attribute vec4 aPos; attribute vec3 aNormal;" +
-        "varying vec3 vNormal; varying vec3 vWorld;" +
-        "void main(){ vWorld=(uModel*aPos).xyz; vNormal=aNormal; gl_Position=uMVP*aPos; }";
+        "attribute vec4 aPos; attribute vec3 aNormal; attribute vec2 aUV;" +
+        "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
+        "void main(){ vWorld=(uModel*aPos).xyz; vNormal=aNormal; vUV=aUV; gl_Position=uMVP*aPos; }";
 
     private static final String FRAG3_SRC =
         "precision mediump float;" +
-        "varying vec3 vNormal; varying vec3 vWorld;" +
+        "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
-        "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime;" +
+        "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
-        "  if(uMode<0.5){" +                       // lit solid
+        "  if(uMode<0.5){" +
+        "    vec3 tex=texture2D(uTex,vUV).rgb;" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
-        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V);" +
-        "    float sp=pow(max(dot(N,H),0.0),40.0);" +
-        "    vec3 sm=abs(fract(vWorld)-0.5); float seam=min(min(sm.x,sm.y),sm.z);" +
-        "    float panel=mix(0.72,1.0,smoothstep(0.0,0.07,seam));" +
-        "    col=uColor*(vec3(0.20,0.22,0.28)+df*vec3(1.0,0.96,0.88))*panel+sp*vec3(0.55);" +
-        "  } else if(uMode<1.5){" +                // floor
-        "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
-        "    float df=max(dot(N,L),0.0); vec2 gg=abs(fract(vWorld.xz)-0.5);" +
-        "    float dl=min(gg.x,gg.y); float line=1.0-smoothstep(0.0,0.045,dl);" +
-        "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),60.0);" +
-        "    col=vec3(0.05,0.06,0.09)*(0.4+0.6*df)+vec3(0.10,0.62,0.92)*line*0.7+sp*0.25;" +
-        "  } else if(uMode<2.5){" +                // emissive target
+        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),36.0);" +
+        "    vec3 base=tex*uColor;" +
+        "    col=base*(vec3(0.22,0.24,0.30)+df*vec3(1.05,1.0,0.92))+sp*vec3(0.6)*tex.r;" +
+        "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.78+0.22*sin(uTime*5.0);" +
         "    col=uColor*pulse+uColor*fr*1.4+fr*vec3(0.30);" +
-        "  } else if(uMode<3.5){" +                // viewmodel (view-space light)
+        "  } else if(uMode<3.5){" +
         "    vec3 L=normalize(vec3(-0.3,0.55,0.75)); vec3 V=vec3(0.0,0.0,1.0);" +
-        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V);" +
-        "    float sp=pow(max(dot(N,H),0.0),32.0);" +
+        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),32.0);" +
         "    col=uColor*(vec3(0.22,0.24,0.30)+df*vec3(1.0))+sp*vec3(0.6);" +
         "    gl_FragColor=vec4(pow(col,vec3(0.4545)),1.0); return;" +
-        "  } else {" +                             // unlit flat (muzzle)
+        "  } else {" +
         "    gl_FragColor=vec4(pow(uColor,vec3(0.4545)),1.0); return;" +
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.8);" +
@@ -653,24 +690,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "}";
 
     private static final String VERT_SKY_SRC =
-        "attribute vec2 aP; varying float vy;" +
-        "void main(){ vy=aP.y; gl_Position=vec4(aP,0.999,1.0); }";
+        "attribute vec2 aP; varying float vy; void main(){ vy=aP.y; gl_Position=vec4(aP,0.999,1.0); }";
 
     private static final String FRAG_SKY_SRC =
         "precision mediump float; varying float vy; uniform vec3 uTop; uniform vec3 uBot;" +
-        "void main(){" +
-        "  float t=clamp(vy*0.5+0.5,0.0,1.0);" +
-        "  vec3 c=mix(uBot,uTop,t*t);" +
-        "  float h=1.0-smoothstep(0.0,0.18,abs(vy));" +
-        "  c+=vec3(0.18,0.13,0.08)*h;" +
-        "  gl_FragColor=vec4(pow(c,vec3(0.4545)),1.0);" +
-        "}";
+        "void main(){ float t=clamp(vy*0.5+0.5,0.0,1.0); vec3 c=mix(uBot,uTop,t*t);" +
+        "  float h=1.0-smoothstep(0.0,0.18,abs(vy)); c+=vec3(0.18,0.13,0.08)*h;" +
+        "  gl_FragColor=vec4(pow(c,vec3(0.4545)),1.0); }";
 
     private static final String VERT2_SRC =
         "attribute vec2 aP; uniform vec2 uScale; uniform vec2 uOff;" +
         "void main(){ gl_Position=vec4(aP*uScale+uOff,0.0,1.0); }";
 
     private static final String FRAG2_SRC =
-        "precision mediump float; uniform vec4 uCol;" +
-        "void main(){ gl_FragColor=uCol; }";
+        "precision mediump float; uniform vec4 uCol; void main(){ gl_FragColor=uCol; }";
 }
