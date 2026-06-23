@@ -486,13 +486,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return -0.62f;
     }
 
-    /** Rear notch (two posts) + a glowing front bead; aligned at screen centre when aiming. */
+    /** Rear notch (two slim posts) + a thin front blade with a small glowing bead. Kept fine so
+     *  the front sight does not cover the target — you aim with the little bead at screen centre. */
     private void drawSights(float rearZ, float frontZ) {
-        gunPart(-0.030f, 0.118f, rearZ, 0.012f, 0.050f, 0.030f, 0.05f, 0.05f, 0.06f);
-        gunPart( 0.030f, 0.118f, rearZ, 0.012f, 0.050f, 0.030f, 0.05f, 0.05f, 0.06f);
-        gunPart(0f, 0.100f, frontZ, 0.012f, 0.055f, 0.022f, 0.06f, 0.06f, 0.07f);
-        gunBeadPart(0f, 0.120f, frontZ, 0.020f,
-                weaponR(curWeapon) * 1.1f, weaponG(curWeapon) * 1.1f, weaponB(curWeapon) * 1.1f);
+        gunPart(-0.036f, 0.112f, rearZ, 0.009f, 0.040f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post L
+        gunPart( 0.036f, 0.112f, rearZ, 0.009f, 0.040f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post R
+        gunPart(0f, 0.102f, frontZ, 0.005f, 0.044f, 0.011f, 0.06f, 0.06f, 0.07f);      // thin front blade
+        gunBeadPart(0f, 0.120f, frontZ, 0.0085f,                                        // small bead = aim point
+                weaponR(curWeapon) * 1.2f, weaponG(curWeapon) * 1.2f, weaponB(curWeapon) * 1.2f);
     }
 
     private void gunBeadPart(float tx, float ty, float tz, float s, float r, float g, float b) {
@@ -1183,10 +1184,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return t * t * (3f - 2f * t);
     }
 
-    /** Rolling-hills height field: flat in the central play area, hillier toward the edges. */
+    /** Rolling-hills height field: flat over the city core, hillier outskirts toward the edges. */
     private static float terrainH(float x, float z) {
         float r = (float) Math.sqrt(x * x + z * z);
-        float amp = smoothstep(11f, 27f, r);
+        float amp = smoothstep(15f, 34f, r);
         float h = 1.6f * (float) Math.sin(x * 0.16f) * (float) Math.cos(z * 0.14f)
                 + 0.9f * (float) Math.sin(x * 0.06f + 1.3f)
                 + 0.8f * (float) Math.cos(z * 0.075f + 2.1f)
@@ -1222,29 +1223,60 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return put(d, o, x, terrainH(x, z), z, nx * inv, ny * inv, nz * inv, x * 0.25f, z * 0.25f);
     }
 
+    // Facade colour palette: concrete, brick, steel-blue, sandstone, dark concrete.
+    private static final float[][] PALETTE = {
+        {0.62f, 0.60f, 0.56f}, {0.66f, 0.45f, 0.38f}, {0.50f, 0.55f, 0.62f},
+        {0.72f, 0.68f, 0.58f}, {0.46f, 0.50f, 0.52f},
+    };
+
+    /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
     private static float[][] buildWorldBoxes() {
         List<float[]> L = new ArrayList<float[]>();
-        // cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
+        // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
         L.add(new float[]{-2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{-3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
         L.add(new float[]{ 3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
-        // buildings (walls with a doorway + a roof); doors face the play area
-        addBuilding(L, -8f, 1f, 5f, 6f, 3.2f, 2, 0.60f, 0.58f, 0.55f);
-        addBuilding(L,  8f, 0f, 5f, 6f, 3.0f, 3, 0.58f, 0.56f, 0.53f);
-        addBuilding(L,  0f, -8f, 7f, 5f, 3.4f, 0, 0.56f, 0.57f, 0.60f);
+        // city blocks on a grid; keep them in the flat core and clear of the plaza / spawn lane
+        Random rc = new Random(101);
+        float[] gs = {-12f, -6f, 0f, 6f, 12f};
+        for (int ix = 0; ix < gs.length; ix++) {
+            for (int iz = 0; iz < gs.length; iz++) {
+                float cx = gs[ix], cz = gs[iz];
+                if (cx * cx + cz * cz > 12.5f * 12.5f) continue;   // stay on the flat core
+                if (cx == 0f && cz >= 0f) continue;                // open plaza + spawn corridor
+                float w = 3.6f + rc.nextFloat() * 1.2f;
+                float d = 3.6f + rc.nextFloat() * 1.2f;
+                boolean tower = cx * cx + cz * cz > 100f;          // outer ring -> high-rise
+                float h = tower ? 5.5f + rc.nextFloat() * 2.2f : 3.0f + rc.nextFloat() * 1.5f;
+                int doorSide = (Math.abs(cx) >= Math.abs(cz)) ? (cx < 0 ? 2 : 3) : (cz < 0 ? 0 : 1);
+                float[] p = PALETTE[rc.nextInt(PALETTE.length)];
+                addBuilding(L, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
+            }
+        }
         return L.toArray(new float[0][]);
     }
 
-    /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x) and a flat roof. */
+    /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
+     *  roof style: 0 = flat, 1 = parapet wall, 2 = rooftop unit + antenna. */
     private static void addBuilding(List<float[]> L, float cx, float cz, float w, float d, float h,
-                                    int doorSide, float r, float g, float b) {
+                                    int doorSide, int roofStyle, float r, float g, float b) {
         float t = 0.3f, doorW = 1.9f, doorH = 2.3f;
         addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b);   // +z
         addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b);   // -z
         addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b);  // +x
         addWall(L, cx - w * 0.5f, cz, t, d, h, doorSide == 3, doorW, doorH, false, r, g, b);  // -x
         L.add(new float[]{cx, h + 0.15f, cz, w + t, 0.3f, d + t, r * 0.9f, g * 0.9f, b * 0.95f}); // roof
+        if (roofStyle == 1) {                              // parapet wall around the roof edge
+            float py = h + 0.30f + 0.25f, ph = 0.5f;
+            L.add(new float[]{cx, py, cz + d * 0.5f, w, ph, t, r * 0.85f, g * 0.85f, b * 0.9f});
+            L.add(new float[]{cx, py, cz - d * 0.5f, w, ph, t, r * 0.85f, g * 0.85f, b * 0.9f});
+            L.add(new float[]{cx + w * 0.5f, py, cz, t, ph, d, r * 0.85f, g * 0.85f, b * 0.9f});
+            L.add(new float[]{cx - w * 0.5f, py, cz, t, ph, d, r * 0.85f, g * 0.85f, b * 0.9f});
+        } else if (roofStyle == 2) {                       // rooftop HVAC block + antenna
+            L.add(new float[]{cx + w * 0.16f, h + 0.65f, cz, w * 0.42f, 0.7f, d * 0.42f, r * 0.8f, g * 0.8f, b * 0.85f});
+            L.add(new float[]{cx - w * 0.26f, h + 0.95f, cz - d * 0.2f, 0.08f, 1.3f, 0.08f, 0.30f, 0.30f, 0.34f});
+        }
     }
 
     private static void addWall(List<float[]> L, float cx, float cz, float sx, float sz, float h,
