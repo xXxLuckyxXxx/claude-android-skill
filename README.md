@@ -1,16 +1,16 @@
 <h1 align="center">📱 AIGames FPS — Android-Spiel</h1>
 
 <p align="center">
-  <a href="https://github.com/xXxLuckyxXxx/claude-android-skill/releases/latest/download/AIGamesFPS.apk">
+  <a href="https://github.com/xXxLuckyxXxx/claude-android-skill/releases/download/latest/AIGamesFPS.apk">
     <img src="https://img.shields.io/badge/⬇️%20APK%20HERUNTERLADEN-2ea44f?style=for-the-badge&logo=android&logoColor=white" alt="APK herunterladen" height="56">
   </a>
 </p>
 
 <p align="center">
-  <b>1.</b> Auf den grünen Button tippen &nbsp;·&nbsp; <b>2.</b> Heruntergeladene Datei öffnen &nbsp;·&nbsp; <b>3.</b> „Installieren" (ggf. „unbekannte Quellen" erlauben)
+  <b>1.</b> Grünen Button tippen &nbsp;·&nbsp; <b>2.</b> Falls Chrome unten <b>„Datei könnte schädlich sein"</b> zeigt → <b>„Trotzdem behalten"</b> tippen (der Download ist dann fertig) &nbsp;·&nbsp; <b>3.</b> Datei öffnen → <b>„Installieren"</b> (ggf. „unbekannte Quellen" erlauben)
 </p>
 
-<p align="center"><sub>Der Button lädt die APK jetzt <b>einmal sauber</b> über eine GitHub-Release (als Datei-Anhang) — kein mehrfaches Laden mehr. Splittet dein Download-Manager sie trotzdem in Teile, ist das harmlos: am Ende entsteht <b>eine</b> APK. Lädt es gar nicht durch? Link in <b>Chrome</b> öffnen (nicht im In-App-Browser).</sub></p>
+<p align="center"><sub><b>Bleibt der Balken am Ende „hängen"?</b> Die Datei (37&nbsp;KB) ist bereits vollständig geladen — Android hält APKs nur hinter der Sicherheitsabfrage zurück. Benachrichtigung herunterziehen und <b>„Trotzdem behalten/Öffnen"</b> tippen. Im <b>In-App-Browser</b> fehlt dieser Knopf manchmal → dann den Link in <b>Chrome</b> öffnen.</sub></p>
 
 <p align="center"><sub>Direkt-Fallback: <a href="https://raw.githubusercontent.com/xXxLuckyxXxx/claude-android-skill/main/AIGamesFPS.apk">raw-Link zur APK</a> &nbsp;·&nbsp; Steuerung: links = laufen, rechts = umsehen, Button unten rechts = schießen.</sub></p>
 
