@@ -3,21 +3,22 @@ name: Publish APK download
 # Publishes the committed, already-signed AIGamesFPS.apk as the repo's "latest"
 # Release asset. Release downloads are served with
 #   Content-Disposition: attachment; filename=AIGamesFPS.apk
-# which mobile browsers (and in-app browsers) treat as a single clean download —
-# unlike a raw.githubusercontent.com link, which is served as a bare
-# application/octet-stream with no Content-Disposition and tends to be
-# re-triggered / split into many parallel requests on phones.
+# which mobile browsers treat as a single clean download — unlike a
+# raw.githubusercontent.com link.
 #
-# The APK is NOT rebuilt here — we attach the file that is already in the repo,
-# so the signing key (and therefore seamless-update behaviour) is unchanged.
-# Runs automatically whenever the committed APK changes on main, and can also be
-# run manually from the Actions tab.
+# The APK is NOT rebuilt here — we attach the file already in the repo, so the
+# signing key (and seamless-update behaviour) is unchanged. The release is
+# recreated each run so its date and title always reflect the newest build.
+# Runs whenever the committed APK (or this workflow) changes on main, and can
+# also be run manually from the Actions tab.
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['AIGamesFPS.apk']
+    paths:
+      - 'AIGamesFPS.apk'
+      - '.github/workflows/publish-apk.yml'
 
 permissions:
   contents: write
@@ -28,15 +29,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Publish committed APK as the 'latest' release
+      - name: Publish committed APK as a fresh 'latest' release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           test -f AIGamesFPS.apk || { echo "AIGamesFPS.apk missing at repo root"; exit 1; }
-          NOTES="AIGames FPS prototype (com.aigames.fpsprototype). Direct single-click download, served as an attachment. Same signing key as the in-repo builds, so it installs as a seamless update over a previous version. On Android, if a download misbehaves, open this page in Chrome rather than an in-app browser."
-          if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest AIGamesFPS.apk --clobber
-          else
-            gh release create latest AIGamesFPS.apk --latest \
-              --title "AIGames FPS (latest build)" --notes "$NOTES"
-          fi
+          VC=$(grep '^versionCode=' AIGamesFPSPrototype/native-apk/version.properties | cut -d= -f2 | tr -d '[:space:]')
+          DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+          TITLE="AIGames FPS — build $VC"
+          NOTES="versionCode $VC · aktualisiert $DATE. Direkter Einmal-Download (als Datei-Anhang). Gleicher Signierschluessel -> nahtloses Update ueber eine aeltere Version. Android-Tipp: falls der Download 'haengt', unten 'Trotzdem behalten' tippen; im In-App-Browser ggf. den Link in Chrome oeffnen."
+          # Recreate so the release date + title always reflect the newest build.
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest AIGamesFPS.apk --latest --title "$TITLE" --notes "$NOTES"
