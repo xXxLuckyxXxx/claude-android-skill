@@ -20,6 +20,8 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private int lookPointerId = -1;
     private int firePointerId = -1;
     private int switchPointerId = -1;
+    private int aimPointerId = -1;
+    private int jumpPointerId = -1;
     private float lookLastX, lookLastY;
 
     public FpsGLSurfaceView(Context context, int build) {
@@ -70,6 +72,8 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 lookPointerId = -1;
                 firePointerId = -1;
                 switchPointerId = -1;
+                aimPointerId = -1;
+                jumpPointerId = -1;
                 input.setMove(0f, 0f);
                 input.setFireHeld(false);
                 break;
@@ -89,6 +93,10 @@ public class FpsGLSurfaceView extends GLSurfaceView {
             input.setFireHeld(false);
         } else if (pid == switchPointerId) {
             switchPointerId = -1;
+        } else if (pid == aimPointerId) {
+            aimPointerId = -1;
+        } else if (pid == jumpPointerId) {
+            jumpPointerId = -1;
         }
     }
 
@@ -109,6 +117,22 @@ public class FpsGLSurfaceView extends GLSurfaceView {
         if (switchPointerId == -1 && sdx * sdx + sdy * sdy <= Hud.SWITCH_RADIUS * Hud.SWITCH_RADIUS) {
             switchPointerId = pid;
             input.requestSwitch();
+            return;
+        }
+
+        // Aim toggle (right edge): one tap aims down the sights, another lowers them.
+        float adx = x - Hud.aimCx(w), ady = y - Hud.aimCy(h);
+        if (aimPointerId == -1 && adx * adx + ady * ady <= Hud.AIM_RADIUS * Hud.AIM_RADIUS) {
+            aimPointerId = pid;
+            input.requestAimToggle();
+            return;
+        }
+
+        // Jump button (right edge, below aim).
+        float jdx = x - Hud.jumpCx(w), jdy = y - Hud.jumpCy(h);
+        if (jumpPointerId == -1 && jdx * jdx + jdy * jdy <= Hud.JUMP_RADIUS * Hud.JUMP_RADIUS) {
+            jumpPointerId = pid;
+            input.requestJump();
             return;
         }
 
