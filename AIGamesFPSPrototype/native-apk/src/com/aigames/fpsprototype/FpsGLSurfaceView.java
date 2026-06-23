@@ -19,6 +19,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private int movePointerId = -1;
     private int lookPointerId = -1;
     private int firePointerId = -1;
+    private int switchPointerId = -1;
     private float lookLastX, lookLastY;
 
     public FpsGLSurfaceView(Context context, int build) {
@@ -68,7 +69,9 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 movePointerId = -1;
                 lookPointerId = -1;
                 firePointerId = -1;
+                switchPointerId = -1;
                 input.setMove(0f, 0f);
+                input.setFireHeld(false);
                 break;
             }
         }
@@ -83,6 +86,9 @@ public class FpsGLSurfaceView extends GLSurfaceView {
             lookPointerId = -1;
         } else if (pid == firePointerId) {
             firePointerId = -1;
+            input.setFireHeld(false);
+        } else if (pid == switchPointerId) {
+            switchPointerId = -1;
         }
     }
 
@@ -93,7 +99,16 @@ public class FpsGLSurfaceView extends GLSurfaceView {
         float fdx = x - Hud.fireCx(w), fdy = y - Hud.fireCy(h);
         if (firePointerId == -1 && fdx * fdx + fdy * fdy <= Hud.FIRE_RADIUS * Hud.FIRE_RADIUS) {
             firePointerId = pid;
+            input.setFireHeld(true);
             input.requestFire();
+            return;
+        }
+
+        // Weapon-switch button (up-left of fire): one tap cycles to the next weapon.
+        float sdx = x - Hud.switchCx(w), sdy = y - Hud.switchCy(h);
+        if (switchPointerId == -1 && sdx * sdx + sdy * sdy <= Hud.SWITCH_RADIUS * Hud.SWITCH_RADIUS) {
+            switchPointerId = pid;
+            input.requestSwitch();
             return;
         }
 
