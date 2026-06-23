@@ -416,17 +416,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** A cheerful face on the head's front (local +z always faces the player): two eyes + a smile. */
+    /** A cheerful, high-contrast face on the head's front (local +z always faces the player).
+     *  Features are drawn UNLIT (mode 4) so lighting/fog can't wash them out. */
     private void enemyFace() {
-        float fz = 0.176f;                                 // just in front of the head surface
-        float er = 0.06f, eg = 0.05f, eb = 0.05f;          // dark features
-        enemyPart(-0.082f, 1.55f, fz, 0.050f, 0.050f, 0.03f, er, eg, eb);   // eye L
-        enemyPart( 0.082f, 1.55f, fz, 0.050f, 0.050f, 0.03f, er, eg, eb);   // eye R
-        enemyPart( 0.000f, 1.405f, fz, 0.060f, 0.045f, 0.03f, er, eg, eb);  // smile: low centre
-        enemyPart(-0.062f, 1.420f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);  // smile: rising
-        enemyPart( 0.062f, 1.420f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);
-        enemyPart(-0.104f, 1.455f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);  // smile: corners up
-        enemyPart( 0.104f, 1.455f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);
+        float fz = 0.176f;
+        // bright eyes with black pupils
+        enemyFacePart(-0.086f, 1.55f, fz, 0.085f, 0.085f, 0.02f, 0.97f, 0.97f, 0.93f);   // eye white L
+        enemyFacePart( 0.086f, 1.55f, fz, 0.085f, 0.085f, 0.02f, 0.97f, 0.97f, 0.93f);   // eye white R
+        enemyFacePart(-0.086f, 1.545f, fz + 0.013f, 0.040f, 0.050f, 0.02f, 0f, 0f, 0f);  // pupil L
+        enemyFacePart( 0.086f, 1.545f, fz + 0.013f, 0.040f, 0.050f, 0.02f, 0f, 0f, 0f);  // pupil R
+        // bold black smile (corners up)
+        enemyFacePart( 0.000f, 1.395f, fz, 0.085f, 0.055f, 0.02f, 0f, 0f, 0f);           // low centre
+        enemyFacePart(-0.078f, 1.415f, fz, 0.060f, 0.055f, 0.02f, 0f, 0f, 0f);           // rising
+        enemyFacePart( 0.078f, 1.415f, fz, 0.060f, 0.055f, 0.02f, 0f, 0f, 0f);
+        enemyFacePart(-0.124f, 1.460f, fz, 0.055f, 0.055f, 0.02f, 0f, 0f, 0f);           // corners up
+        enemyFacePart( 0.124f, 1.460f, fz, 0.055f, 0.055f, 0.02f, 0f, 0f, 0f);
+    }
+
+    /** Like enemyPart but UNLIT (mode 4) for crisp, high-contrast facial features. */
+    private void enemyFacePart(float lx, float ly, float lz, float sx, float sy, float sz,
+                               float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, lx, ly, lz);
+        Matrix.scaleM(partM, 0, sx, sy, sz);
+        Matrix.multiplyMM(model, 0, gunBase, 0, partM, 0);
+        drawWorld(cube, 36, 4f, r, g, b);
     }
 
     private void enemyPart(float lx, float ly, float lz, float sx, float sy, float sz,
