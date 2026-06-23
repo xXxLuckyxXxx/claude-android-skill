@@ -32,6 +32,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final float MOVE_SPEED = 4.5f;
     private static final float LOOK_SENS = 0.0045f;
+    private static final float EYE_H = 1.6f;          // eye height above the feet
+    private static final float GRAVITY = 13.0f;
+    private static final float JUMP_V = 4.7f;          // a plain hop lifts the feet ~0.85 m
+    private static final float MANTLE_MAX = 1.85f;     // tallest ledge you can climb onto
+    private static final float SPRINT_MULT = 1.7f;
     private static final int STRIDE = 32;             // 8 floats: pos3, normal3, uv2
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
@@ -100,6 +105,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float recoil = 0f;
     private long lastNanos;
     private float timeAcc = 0f;
+    private float aim = 0f;          // 0 = hip fire, 1 = aiming down the iron sights
+    private boolean aimOn = false;   // toggle target
+    private float aspect = 1f;
+
+    // Vertical movement + sprint.
+    private float feetY = 0f;        // height of the player's feet (0 = floor)
+    private float vy = 0f;           // vertical velocity
+    private boolean grounded = true;
+    private boolean sprinting = false;
+    private float sprintAnim = 0f;   // eased 0..1 for the sprint weapon pose
+    private float bobPhase = 0f;     // head-bob / footstep phase
 
     private float muzzleTimer = 0f, hitTimer = 0f, flashTimer = 0f, hurtFlash = 0f;
     private float hitMarkerTimer = 0f;
@@ -215,7 +231,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         width = w;
         height = Math.max(1, h);
         GLES20.glViewport(0, 0, w, h);
-        Matrix.perspectiveM(proj, 0, 68f, (float) w / height, 0.05f, 300f);
+        aspect = (float) w / height;
+        Matrix.perspectiveM(proj, 0, 68f, aspect, 0.05f, 300f);
     }
 
     @Override
@@ -229,6 +246,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         updateCamera(dt);
         updateEnemies(dt);
         tickTimers(dt);
+
+        float fov = 68f - 26f * aim + 6f * sprintAnim;   // zoom in on ADS, widen on sprint
+        Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
@@ -302,7 +322,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enZ[i] += dz / d * step;
                 enPhase[i] += step * 9f;                 // advance walk cycle with distance
                 colTmp[0] = enX[i]; colTmp[1] = enZ[i];
-                collide(0.4f, false, colTmp);            // slide around cover
+                collide(0.4f, 0f, false, colTmp);        // enemies stay on the ground, slide around cover
                 enX[i] = colTmp[0]; enZ[i] = colTmp[1];
             }
         }
@@ -332,6 +352,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void triggerGameOver() {
         if (gameOver) return;
         gameOver = true;
+        aimOn = false;
         sfx.over();
         if (score > highScore) {
             highScore = score;
@@ -410,11 +431,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // --- weapon viewmodels ---
 
     private void drawGun() {
+        float a = aim, s = sprintAnim;
         Matrix.setIdentityM(gunBase, 0);
-        float dip = switchAnim * 0.22f;                       // lower while swapping
-        Matrix.translateM(gunBase, 0, 0.15f, -0.16f - dip, -0.52f - recoil * 0.30f);
-        Matrix.rotateM(gunBase, 0, -3.0f + recoil * 9f + switchAnim * 22f, 1f, 0f, 0f);
-        Matrix.rotateM(gunBase, 0, -4f, 0f, 1f, 0f);
+        // hip -> ADS: slide to centre, raise so the sights sit on the screen centre.
+        float tx = mix(0.15f, 0.0f, a) + 0.05f * s;            // sprint pulls it inward
+        float ty = mix(-0.16f, -0.12f, a) - switchAnim * 0.22f - 0.12f * s;  // ...and down
+        float tz = mix(-0.52f, -0.30f, a) - recoil * 0.30f * (1f - 0.5f * a) + 0.16f * s;
+        Matrix.translateM(gunBase, 0, tx, ty, tz);
+        Matrix.rotateM(gunBase, 0, -3.0f * (1f - a) + recoil * 9f * (1f - 0.5f * a) + switchAnim * 22f + 20f * s, 1f, 0f, 0f);
+        Matrix.rotateM(gunBase, 0, -4f * (1f - a) + 24f * s, 0f, 1f, 0f);
+        Matrix.rotateM(gunBase, 0, 26f * s, 0f, 0f, 1f);       // cant across the body when sprinting
 
         float mz;
         if (curWeapon == 0) mz = drawPistol();
@@ -429,7 +455,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, 0.01f, -0.20f, 0.050f, 0.055f, 0.10f, 0.10f, 0.10f, 0.12f); // barrel tip
         gunPart(0f, -0.13f, 0.10f, 0.070f, 0.170f, 0.085f, 0.10f, 0.09f, 0.08f); // grip
         gunPart(0f, -0.05f, 0.04f, 0.055f, 0.050f, 0.05f, 0.08f, 0.08f, 0.10f);  // trigger guard
-        gunPart(0f, 0.075f, 0.10f, 0.045f, 0.030f, 0.04f, 0.06f, 0.20f, 0.26f);  // rear sight
+        drawSights(0.02f, -0.22f);
         return -0.30f;
     }
 
@@ -439,10 +465,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
         gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.09f, 0.09f, 0.11f);
         gunPart(0f, 0.105f, -0.04f, 0.040f, 0.050f, 0.18f, 0.10f, 0.10f, 0.12f);
-        gunPart(0f, 0.105f, -0.14f, 0.052f, 0.062f, 0.03f, 0.06f, 0.20f, 0.26f);
         gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.18f, 0.18f, 0.22f);
         gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);
         gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
+        drawSights(0.10f, -0.50f);
         return -0.56f;
     }
 
@@ -453,8 +479,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, 0.00f, -0.18f, 0.078f, 0.060f, 0.18f, 0.10f, 0.08f, 0.06f);  // pump/forend
         gunPart(0f, -0.02f, 0.30f, 0.070f, 0.120f, 0.18f, 0.18f, 0.12f, 0.09f);  // stock (wood)
         gunPart(0f, -0.12f, 0.16f, 0.060f, 0.130f, 0.085f, 0.12f, 0.09f, 0.07f); // grip
+        drawSights(0.10f, -0.50f);
         return -0.62f;
     }
+
+    /** Rear notch (two posts) + a glowing front bead; aligned at screen centre when aiming. */
+    private void drawSights(float rearZ, float frontZ) {
+        gunPart(-0.030f, 0.118f, rearZ, 0.012f, 0.050f, 0.030f, 0.05f, 0.05f, 0.06f);
+        gunPart( 0.030f, 0.118f, rearZ, 0.012f, 0.050f, 0.030f, 0.05f, 0.05f, 0.06f);
+        gunPart(0f, 0.100f, frontZ, 0.012f, 0.055f, 0.022f, 0.06f, 0.06f, 0.07f);
+        gunBeadPart(0f, 0.120f, frontZ, 0.020f,
+                weaponR(curWeapon) * 1.1f, weaponG(curWeapon) * 1.1f, weaponB(curWeapon) * 1.1f);
+    }
+
+    private void gunBeadPart(float tx, float ty, float tz, float s, float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, tx, ty, tz);
+        Matrix.scaleM(partM, 0, s, s, s);
+        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        submit(cube, 36, mvp, tmpA, 4f, r, g, b);     // mode 4 = emissive bead
+    }
+
+    private static float mix(float a, float b, float t) { return a + (b - a) * t; }
 
     private void drawMuzzle(float mz, float scaleMul) {
         float k = muzzleTimer / MUZZLE_TIME;
@@ -490,45 +537,107 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void updateCamera(float dt) {
+        if (input.consumeAimToggle()) aimOn = !aimOn;
+        if (input.consumeSwitch()) cycleWeapon();
+
+        float sens = LOOK_SENS * (1f - 0.45f * aim);     // steadier aim down sights
         input.consumeLook(lookTmp);
-        yaw += lookTmp[0] * LOOK_SENS;
-        pitch -= lookTmp[1] * LOOK_SENS;
+        yaw += lookTmp[0] * sens;
+        pitch -= lookTmp[1] * sens;
         float limit = 1.48f;
         pitch = clamp(pitch, -limit, limit);
 
-        if (input.consumeSwitch()) cycleWeapon();
         boolean fired = false;
         if (input.consumeFire()) { fire(); fired = true; }
         if (!fired && !gameOver && W_AUTO[curWeapon] && input.isFireHeld()) fire();
 
+        // --- horizontal movement; sprint when the stick is pushed fully forward ---
         float mx = input.moveX(), my = input.moveY();
+        float mlen = (float) Math.sqrt(mx * mx + my * my);
+        sprinting = !gameOver && grounded && mlen > 0.9f && my > 0.5f && aim < 0.2f;
+        float speed = MOVE_SPEED * (sprinting ? SPRINT_MULT : 1f);
         float fwdX = (float) Math.sin(yaw), fwdZ = -(float) Math.cos(yaw);
         float rgtX = (float) Math.cos(yaw), rgtZ = (float) Math.sin(yaw);
-        px += (rgtX * mx + fwdX * my) * MOVE_SPEED * dt;
-        pz += (rgtZ * mx + fwdZ * my) * MOVE_SPEED * dt;
+        px += (rgtX * mx + fwdX * my) * speed * dt;
+        pz += (rgtZ * mx + fwdZ * my) * speed * dt;
         colTmp[0] = px; colTmp[1] = pz;
-        collide(0.32f, true, colTmp);                 // can't walk through cover / out of arena
+        collide(0.32f, feetY, true, colTmp);             // walls block, ledges below the feet don't
         px = colTmp[0]; pz = colTmp[1];
 
+        // --- vertical movement: jump / climb / gravity ---
+        if (input.consumeJump() && !gameOver) doJump();
+        vy -= GRAVITY * dt;
+        feetY += vy * dt;
+        float support = groundSupport();
+        if (feetY <= support) { feetY = support; vy = 0f; grounded = true; }
+        else grounded = false;
+        py = feetY + EYE_H;
+
+        // --- head bob / sway while moving (stronger when sprinting) ---
+        float moving = clamp(mlen, 0f, 1f) * (grounded ? 1f : 0.3f);
+        bobPhase += speed * moving * dt * 2.3f;
+        float bobY = (float) Math.sin(bobPhase * 2f) * (0.012f + 0.055f * sprintAnim) * moving;
+        float swayYaw = (float) Math.sin(bobPhase) * (0.004f + 0.013f * sprintAnim) * moving;
+        float swayPitch = (float) Math.sin(bobPhase * 2f) * (0.002f + 0.009f * sprintAnim) * moving;
+
+        // --- build the view (recoil + screen shake + head movement) ---
         float jx = 0f, jy = 0f;
         if (shake > 0f) {
             jx = (rng.nextFloat() * 2f - 1f) * shake * 0.012f;
             jy = (rng.nextFloat() * 2f - 1f) * shake * 0.012f;
         }
-        float effPitch = clamp(pitch + recoil + jy, -limit, limit);
-        float vYaw = yaw + jx;
+        float effPitch = clamp(pitch + recoil + jy + swayPitch, -limit, limit);
+        float vYaw = yaw + jx + swayYaw;
+        float eyeY = py + bobY;
         float cosP = (float) Math.cos(effPitch);
         float ldx = cosP * (float) Math.sin(vYaw);
         float ldy = (float) Math.sin(effPitch);
         float ldz = -cosP * (float) Math.cos(vYaw);
-        Matrix.setLookAtM(view, 0, px, py, pz, px + ldx, py + ldy, pz + ldz, 0f, 1f, 0f);
+        Matrix.setLookAtM(view, 0, px, eyeY, pz, px + ldx, eyeY + ldy, pz + ldz, 0f, 1f, 0f);
     }
 
-    /** Circle (radius r) vs the static boxes on XZ, with optional arena clamp. */
-    private void collide(float r, boolean clampArena, float[] io) {
+    /** Jump if grounded; if a low ledge is right in front, size the boost to climb it. */
+    private void doJump() {
+        if (grounded) { vy = JUMP_V; grounded = false; }
+        float best = -1f;
+        for (int i = 0; i < BOXES.length; i++) {
+            float[] b = BOXES[i];
+            float boxTop = b[1] + b[4] * 0.5f;
+            float rise = boxTop - feetY;
+            if (rise <= 0.30f || rise > MANTLE_MAX) continue;
+            float ddx = Math.max(Math.max(b[0] - b[3] * 0.5f - px, px - (b[0] + b[3] * 0.5f)), 0f);
+            float ddz = Math.max(Math.max(b[2] - b[5] * 0.5f - pz, pz - (b[2] + b[5] * 0.5f)), 0f);
+            float d = (float) Math.sqrt(ddx * ddx + ddz * ddz);
+            if (d < 0.75f && boxTop > best) best = boxTop;
+        }
+        if (best >= 0f) {
+            float need = (float) Math.sqrt(2f * GRAVITY * (best - feetY + 0.30f));
+            if (need > vy) vy = need;
+            grounded = false;
+        }
+    }
+
+    /** Highest box top the player is standing over (0 = floor). */
+    private float groundSupport() {
+        float support = 0f;
+        for (int i = 0; i < BOXES.length; i++) {
+            float[] b = BOXES[i];
+            float boxTop = b[1] + b[4] * 0.5f;
+            if (boxTop > feetY + 0.05f) continue;        // can't rest on something above the feet
+            float hx = b[3] * 0.5f + 0.30f, hz = b[5] * 0.5f + 0.30f;   // small ledge margin
+            if (px > b[0] - hx && px < b[0] + hx && pz > b[2] - hz && pz < b[2] + hz) {
+                if (boxTop > support) support = boxTop;
+            }
+        }
+        return support;
+    }
+
+    /** Circle (radius r, feet at footY) vs the static boxes on XZ, with optional arena clamp. */
+    private void collide(float r, float footY, boolean clampArena, float[] io) {
         float x = io[0], z = io[1];
         for (int i = 0; i < BOXES.length; i++) {
             float[] b = BOXES[i];
+            if (b[1] + b[4] * 0.5f <= footY + 0.05f) continue;   // standing on/above it: walkable
             float minx = b[0] - b[3] * 0.5f - r, maxx = b[0] + b[3] * 0.5f + r;
             float minz = b[2] - b[5] * 0.5f - r, maxz = b[2] + b[5] * 0.5f + r;
             if (x > minx && x < maxx && z > minz && z < maxz) {
@@ -559,6 +668,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
         if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
         if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) finishReload(); }
+        aim += ((aimOn ? 1f : 0f) - aim) * Math.min(1f, dt * 12f);
+        if (aim < 0.001f) aim = 0f; else if (aim > 0.999f) aim = 1f;
+        sprintAnim += ((sprinting ? 1f : 0f) - sprintAnim) * Math.min(1f, dt * 9f);
+        if (sprintAnim < 0.001f) sprintAnim = 0f; else if (sprintAnim > 0.999f) sprintAnim = 1f;
         input.setGameOver(gameOver);
     }
 
@@ -568,6 +681,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int w = 0; w < W_COUNT; w++) { wMag[w] = W_MAG[w]; wReserve[w] = W_RES_START[w]; }
         reloadTimer = 0f; fireCd = 0f; shake = 0f; switchAnim = 0f; recoil = 0f;
         playerHP = MAX_HP; hurtFlash = 0f;
+        px = 0f; pz = 9f; yaw = 0f; pitch = -0.08f;
+        feetY = 0f; vy = 0f; grounded = true; py = EYE_H;
+        aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
         gameOver = false;
         for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
         spawnTimer = 0.8f;
@@ -578,6 +694,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void fire() {
         if (gameOver) { restart(); return; }
+        if (sprinting) return;             // gun is lowered while sprinting
         if (reloadTimer > 0f) return;
         if (fireCd > 0f) return;
         if (wMag[curWeapon] <= 0) { beginReload(); return; }
@@ -592,7 +709,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         playWeaponSound();
 
         int pellets = W_PELLETS[curWeapon];
-        float spread = W_SPREAD[curWeapon];
+        float spread = W_SPREAD[curWeapon] * (1f - 0.75f * aim);   // ADS tightens the spread
         boolean anyHit = false, anyHead = false;
 
         for (int p = 0; p < pellets; p++) {
@@ -779,14 +896,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawCircle(swx, swy, Hud.SWITCH_RADIUS, weaponR(curWeapon), weaponG(curWeapon), weaponB(curWeapon), 0.45f);
             drawNumberAt(curWeapon + 1, swx, swy, 22f, 34f, 6f, 12f, 1f, 1f, 1f, 0.95f);
 
+            // aim (iron sights) toggle — brighter while aiming
+            float aimx = Hud.aimCx(width), aimy = Hud.aimCy(height);
+            drawCircle(aimx, aimy, Hud.AIM_RADIUS, 0.55f + 0.45f * aim, 0.9f, 0.6f + 0.4f * aim, 0.26f + 0.34f * aim);
+            drawCircle(aimx, aimy, 22f, 1f, 1f, 1f, 0.10f + 0.55f * aim);
+            drawRectPx(aimx, aimy, 6f, 6f, 1f, 1f, 1f, 0.4f + 0.55f * aim);
+
+            // jump button (up pyramid), brighter mid-air
+            float jpx = Hud.jumpCx(width), jpy = Hud.jumpCy(height);
+            float ja = grounded ? 0.30f : 0.6f;
+            drawCircle(jpx, jpy, Hud.JUMP_RADIUS, 0.5f, 0.75f, 1f, ja);
+            drawRectPx(jpx, jpy - 9f, 9f, 5f, 1f, 1f, 1f, 0.85f);
+            drawRectPx(jpx, jpy - 2f, 17f, 5f, 1f, 1f, 1f, 0.85f);
+            drawRectPx(jpx, jpy + 5f, 25f, 5f, 1f, 1f, 1f, 0.85f);
+
             // crosshair (colors when the last shot landed: gold head, green body)
             float cr = 1f, cg = 1f, cb = 1f;
             if (flashTimer > 0f && lastShotHit) {
                 if (lastShotHead) { cr = 1f; cg = 0.85f; cb = 0.20f; }
                 else { cr = 0.30f; cg = 1f; cb = 0.40f; }
             }
-            drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
-            drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
+            float xa = 0.9f * (1f - aim) * (1f - 0.7f * sprintAnim);   // fade when aiming / sprinting
+            drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, xa);
+            drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, xa);
 
             // expanding hit marker (gold = headshot, white = body)
             if (hitMarkerTimer > 0f) {
