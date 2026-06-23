@@ -14,6 +14,8 @@ public class InputState {
     private boolean switchRequested;     // one-shot weapon switch
     private boolean aimToggleRequested;  // one-shot aim-down-sights toggle
     private boolean jumpRequested;       // one-shot jump
+    private boolean interactRequested;   // one-shot door interact
+    private boolean doorInRange;         // published by the renderer: a door is within reach
     private boolean gameOver;
 
     public synchronized void setMove(float x, float y) { moveX = x; moveY = y; }
@@ -22,8 +24,11 @@ public class InputState {
     public synchronized void requestSwitch() { switchRequested = true; }
     public synchronized void requestAimToggle() { aimToggleRequested = true; }
     public synchronized void requestJump() { jumpRequested = true; }
+    public synchronized void requestInteract() { interactRequested = true; }
     public synchronized void setFireHeld(boolean v) { fireHeld = v; }
     public synchronized boolean isFireHeld() { return fireHeld; }
+    public synchronized void setDoorInRange(boolean v) { doorInRange = v; }
+    public synchronized boolean isDoorInRange() { return doorInRange; }
 
     public synchronized float moveX() { return moveX; }
     public synchronized float moveY() { return moveY; }
@@ -62,6 +67,13 @@ public class InputState {
         boolean j = jumpRequested;
         jumpRequested = false;
         return j;
+    }
+
+    /** Returns true exactly once per door-interact request. */
+    public synchronized boolean consumeInteract() {
+        boolean i = interactRequested;
+        interactRequested = false;
+        return i;
     }
 
     // Published by the renderer; read by the view (tap-anywhere-to-restart).

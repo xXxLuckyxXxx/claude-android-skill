@@ -169,7 +169,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // World geometry — cover crates/pillars first, then building wall/roof boxes.
     // Each: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b  (posY is the centre).
     private static final int COVER_BOXES = 4;        // first N cast a ground-shadow blob
-    private final float[][] boxes = buildWorldBoxes();
+    private final float[][] boxes;
+
+    // Interactive doors. doorData[i] = cx, cy, cz, hw, hh, ht, axis(0=spansX,1=spansZ), hingeSign, r,g,b.
+    private static final float INTERACT_DIST = 2.6f;
+    private final float[][] doorData;
+    private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
+    private int nearDoor = -1;
 
     private static final float[] FOG = {0.46f, 0.52f, 0.62f};
 
@@ -179,6 +185,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.prefs = ctx.getSharedPreferences("aigames_fps", Context.MODE_PRIVATE);
         this.highScore = prefs.getInt("highscore", 0);
         this.sfx = new Sfx(ctx);
+
+        ArrayList<float[]> bl = new ArrayList<float[]>();
+        ArrayList<float[]> dl = new ArrayList<float[]>();
+        buildWorldInto(bl, dl);
+        this.boxes = bl.toArray(new float[0][]);
+        this.doorData = dl.toArray(new float[0][]);
+        this.doorOpen = new float[doorData.length];
+        this.doorTarget = new float[doorData.length];
     }
 
     @Override
@@ -263,6 +277,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (dt > 0.1f) dt = 0.1f;
         timeAcc += dt;
 
+        updateDoors(dt);
         updateCamera(dt);
         updateEnemies(dt);
         tickTimers(dt);
@@ -313,6 +328,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(cube, 36, 0f, b[6] * boost, b[7] * boost, b[8] * boost);
         }
 
+        drawDoors();
         drawEnemies();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
@@ -500,6 +516,55 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, STRIDE, buf);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, count);
+    }
+
+    // --- interactive doors ---
+
+    private void updateDoors(float dt) {
+        int near = -1;
+        float best = INTERACT_DIST * INTERACT_DIST;
+        if (!gameOver) {
+            for (int i = 0; i < doorData.length; i++) {
+                float dx = px - doorData[i][0], dz = pz - doorData[i][2];
+                float d2 = dx * dx + dz * dz;
+                if (d2 < best) { best = d2; near = i; }
+            }
+        }
+        nearDoor = near;
+        input.setDoorInRange(near >= 0);
+        boolean tap = input.consumeInteract();
+        if (tap && near >= 0) {
+            doorTarget[near] = (doorTarget[near] > 0.5f) ? 0f : 1f;   // toggle open / close
+            sfx.reload();                                            // mechanical clack
+        }
+        for (int i = 0; i < doorData.length; i++) {
+            doorOpen[i] += (doorTarget[i] - doorOpen[i]) * Math.min(1f, dt * 6f);
+            if (doorOpen[i] < 0.001f) doorOpen[i] = 0f;
+            else if (doorOpen[i] > 0.999f) doorOpen[i] = 1f;
+        }
+    }
+
+    private void drawDoors() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        for (int i = 0; i < doorData.length; i++) {
+            float[] dd = doorData[i];
+            float ang = doorOpen[i] * 85f;                  // swing open up to ~85°
+            Matrix.setIdentityM(model, 0);
+            if (dd[6] == 0f) {                              // wall spans X, hinge on the +X edge
+                Matrix.translateM(model, 0, dd[0] + dd[3], dd[1], dd[2]);
+                Matrix.rotateM(model, 0, ang, 0f, 1f, 0f);
+                Matrix.translateM(model, 0, -dd[3], 0f, 0f);
+                Matrix.scaleM(model, 0, dd[3] * 2f, dd[4] * 2f, dd[5] * 2f);
+            } else {                                        // wall spans Z, hinge on the +Z edge
+                Matrix.translateM(model, 0, dd[0], dd[1], dd[2] + dd[3]);
+                Matrix.rotateM(model, 0, ang, 0f, 1f, 0f);
+                Matrix.translateM(model, 0, 0f, 0f, -dd[3]);
+                Matrix.scaleM(model, 0, dd[5] * 2f, dd[4] * 2f, dd[3] * 2f);
+            }
+            float em = (i == nearDoor) ? 1.3f : 1f;         // highlight the door you can use
+            drawWorld(cube, 36, 0f, dd[8] * em, dd[9] * em, dd[10] * em);
+        }
     }
 
     // --- weapon viewmodels ---
@@ -732,6 +797,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 else z = maxz;
             }
         }
+        for (int i = 0; i < doorData.length; i++) {       // closed doors block; open ones don't
+            if (doorOpen[i] > 0.5f) continue;
+            float[] dd = doorData[i];
+            float hx = dd[6] == 0f ? dd[3] : dd[5];
+            float hz = dd[6] == 0f ? dd[5] : dd[3];
+            float minx = dd[0] - hx - r, maxx = dd[0] + hx + r, minz = dd[2] - hz - r, maxz = dd[2] + hz + r;
+            if (x > minx && x < maxx && z > minz && z < maxz) {
+                float pL = x - minx, pR = maxx - x, pD = z - minz, pU = maxz - z;
+                float m = Math.min(Math.min(pL, pR), Math.min(pD, pU));
+                if (m == pL) x = minx;
+                else if (m == pR) x = maxx;
+                else if (m == pD) z = minz;
+                else z = maxz;
+            }
+        }
         if (clampArena) {
             x = clamp(x, -ARENA_LIMIT, ARENA_LIMIT);
             z = clamp(z, -ARENA_LIMIT, ARENA_LIMIT);
@@ -768,6 +848,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         feetY = 0f; vy = 0f; grounded = true; py = EYE_H;
         aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
         gameOver = false;
+        for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
+        nearDoor = -1;
         for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
         spawnTimer = 0.8f;
         spawnEnemy(); spawnEnemy(); spawnEnemy();
@@ -992,6 +1074,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawRectPx(jpx, jpy - 9f, 9f, 5f, 1f, 1f, 1f, 0.85f);
             drawRectPx(jpx, jpy - 2f, 17f, 5f, 1f, 1f, 1f, 0.85f);
             drawRectPx(jpx, jpy + 5f, 25f, 5f, 1f, 1f, 1f, 0.85f);
+
+            // door prompt — appears only when you're in range of a door; tap it to open/close
+            if (nearDoor >= 0) {
+                float ix = Hud.interactCx(width), iy = Hud.interactCy(height);
+                boolean open = doorOpen[nearDoor] > 0.5f;
+                drawCircle(ix, iy, Hud.INTERACT_RADIUS, open ? 1f : 0.25f, open ? 0.55f : 0.95f, open ? 0.25f : 0.45f, 0.42f);
+                drawRectPx(ix, iy, 44f, 62f, 0.93f, 0.93f, 0.80f, 0.92f);   // door frame
+                drawRectPx(ix, iy, 32f, 52f, 0.46f, 0.30f, 0.17f, 0.96f);   // door leaf
+                drawRectPx(ix + 9f, iy, 6f, 7f, 0.96f, 0.90f, 0.45f, 1f);   // knob
+            }
 
             // crosshair (colors when the last shot landed: gold head, green body)
             float cr = 1f, cg = 1f, cb = 1f;
@@ -1366,8 +1458,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    private static float[][] buildWorldBoxes() {
-        List<float[]> L = new ArrayList<float[]>();
+    private static void buildWorldInto(List<float[]> L, List<float[]> doors) {
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
         L.add(new float[]{-2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
@@ -1387,15 +1478,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float h = tower ? 5.5f + rc.nextFloat() * 2.5f : 3.0f + rc.nextFloat() * 1.6f;
                 int doorSide = (Math.abs(cx) >= Math.abs(cz)) ? (cx < 0 ? 2 : 3) : (cz < 0 ? 0 : 1);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
-                addBuilding(L, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
+                addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
             }
         }
-        return L.toArray(new float[0][]);
     }
 
     /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
-     *  roof style: 0 = flat, 1 = parapet wall, 2 = rooftop unit + antenna. */
-    private static void addBuilding(List<float[]> L, float cx, float cz, float w, float d, float h,
+     *  roof style: 0 = flat, 1 = parapet wall, 2 = rooftop unit + antenna. Records an openable door. */
+    private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b) {
         float t = 0.3f, doorW = 1.9f, doorH = 2.3f;
         addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b);   // +z
@@ -1403,6 +1493,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b);  // +x
         addWall(L, cx - w * 0.5f, cz, t, d, h, doorSide == 3, doorW, doorH, false, r, g, b);  // -x
         L.add(new float[]{cx, h + 0.15f, cz, w + t, 0.3f, d + t, r * 0.9f, g * 0.9f, b * 0.95f}); // roof
+        float dcx, dcz; int axis;                          // openable door leaf in the gap
+        if (doorSide == 0)      { dcx = cx; dcz = cz + d * 0.5f; axis = 0; }
+        else if (doorSide == 1) { dcx = cx; dcz = cz - d * 0.5f; axis = 0; }
+        else if (doorSide == 2) { dcx = cx + w * 0.5f; dcz = cz; axis = 1; }
+        else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
+        doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
+                0.46f, 0.30f, 0.17f});
         if (roofStyle == 1) {                              // parapet wall around the roof edge
             float py = h + 0.30f + 0.25f, ph = 0.5f;
             L.add(new float[]{cx, py, cz + d * 0.5f, w, ph, t, r * 0.85f, g * 0.85f, b * 0.9f});

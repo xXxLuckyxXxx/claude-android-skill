@@ -22,6 +22,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private int switchPointerId = -1;
     private int aimPointerId = -1;
     private int jumpPointerId = -1;
+    private int interactPointerId = -1;
     private float lookLastX, lookLastY;
 
     public FpsGLSurfaceView(Context context, int build) {
@@ -74,6 +75,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 switchPointerId = -1;
                 aimPointerId = -1;
                 jumpPointerId = -1;
+                interactPointerId = -1;
                 input.setMove(0f, 0f);
                 input.setFireHeld(false);
                 break;
@@ -97,6 +99,8 @@ public class FpsGLSurfaceView extends GLSurfaceView {
             aimPointerId = -1;
         } else if (pid == jumpPointerId) {
             jumpPointerId = -1;
+        } else if (pid == interactPointerId) {
+            interactPointerId = -1;
         }
     }
 
@@ -134,6 +138,17 @@ public class FpsGLSurfaceView extends GLSurfaceView {
             jumpPointerId = pid;
             input.requestJump();
             return;
+        }
+
+        // Door prompt (bottom-centre): only a button while a door is in range, else it stays
+        // a normal move/look area so there's no dead zone.
+        if (input.isDoorInRange()) {
+            float idx = x - Hud.interactCx(w), idy = y - Hud.interactCy(h);
+            if (interactPointerId == -1 && idx * idx + idy * idy <= Hud.INTERACT_RADIUS * Hud.INTERACT_RADIUS) {
+                interactPointerId = pid;
+                input.requestInteract();
+                return;
+            }
         }
 
         boolean leftHalf = x < w * 0.5f;
