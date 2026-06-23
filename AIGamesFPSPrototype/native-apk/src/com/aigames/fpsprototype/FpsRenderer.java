@@ -38,7 +38,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float GRAVITY = 13.0f;
     private static final float JUMP_V = 4.7f;          // a plain hop lifts the feet ~0.85 m
     private static final float MANTLE_MAX = 1.85f;     // tallest ledge you can climb onto
-    private static final float SPRINT_MULT = 1.7f;
+    private static final float SPRINT_MULT = 1.45f;
     private static final int STRIDE = 32;             // 8 floats: pos3, normal3, uv2
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
@@ -147,8 +147,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] enHP = new float[MAX_ENEMIES];
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
+    private final int[] enOutfit = new int[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
     private float spawnTimer = 0f;
+
+    // Clothing schemes: shirt RGB (torso + arms) + pants RGB (legs). Bright/saturated so
+    // enemies stand out from the grey buildings and green ground.
+    private static final float[][] OUTFITS = {
+        {0.88f, 0.16f, 0.15f,  0.15f, 0.17f, 0.30f},   // red shirt / navy
+        {0.13f, 0.45f, 0.90f,  0.20f, 0.20f, 0.23f},   // blue / charcoal
+        {0.18f, 0.68f, 0.28f,  0.34f, 0.23f, 0.12f},   // green / brown
+        {0.97f, 0.56f, 0.10f,  0.12f, 0.12f, 0.14f},   // orange / black
+        {0.64f, 0.22f, 0.82f,  0.18f, 0.18f, 0.26f},   // purple / dark
+        {0.05f, 0.72f, 0.74f,  0.16f, 0.20f, 0.32f},   // teal / navy
+        {0.93f, 0.32f, 0.62f,  0.26f, 0.26f, 0.30f},   // pink / grey
+        {0.90f, 0.88f, 0.84f,  0.20f, 0.28f, 0.52f},   // white tee / jeans
+    };
 
     private final float[] colTmp = new float[2];
 
@@ -354,6 +368,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHP[i] = ENEMY_FULL_HP;
                 enPhase[i] = rng.nextFloat() * 6.2832f;
                 enHurt[i] = 0f;
+                enOutfit[i] = rng.nextInt(OUTFITS.length);
                 enAlive[i] = true;
                 return;
             }
@@ -389,6 +404,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
             if (b[1] + b[4] * 0.5f < 0.5f) continue;      // ignore anything you'd just step over
+            if (b[1] - b[4] * 0.5f >= 1.8f) continue;     // overhead (door lintel / roof): enemy walks under
             if (x > b[0] - b[3] * 0.5f - r && x < b[0] + b[3] * 0.5f + r
              && z > b[2] - b[5] * 0.5f - r && z < b[2] + b[5] * 0.5f + r) return false;
         }
@@ -403,16 +419,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float sw = (float) Math.sin(enPhase[i]);          // limb swing
             float bob = Math.abs(sw) * 0.045f;                // gait bob
             float k = enHurt[i] > 0f ? 1.8f : 1f;             // hit flash
+            float[] o = OUTFITS[enOutfit[i]];
+            float shR = o[0] * k, shG = o[1] * k, shB = o[2] * k;   // shirt (torso + arms)
+            float paR = o[3] * k, paG = o[4] * k, paB = o[5] * k;   // pants (legs)
             Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
             Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
-            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f * k, 0.13f * k, 0.13f * k);   // torso
-            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.97f * k, 0.83f * k, 0.30f * k);   // yellow head
-            enemyFace();                                                                       // dopey ._. face
-            enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg L
-            enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg R
-            enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm L
-            enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm R
+            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, shR, shG, shB);                       // torso (shirt)
+            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.97f * k, 0.83f * k, 0.30f * k);     // yellow head
+            enemyFace();                                                                        // dopey ._. face
+            enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, paR, paG, paB); // leg L
+            enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, paR, paG, paB); // leg R
+            enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, shR, shG, shB); // arm L
+            enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, shR, shG, shB); // arm R
         }
     }
 
@@ -701,6 +720,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
             if (b[1] + b[4] * 0.5f <= footY + 0.05f) continue;   // standing on/above it: walkable
+            if (b[1] - b[4] * 0.5f >= footY + 1.8f) continue;    // overhead (door lintel / roof): pass under
             float minx = b[0] - b[3] * 0.5f - r, maxx = b[0] + b[3] * 0.5f + r;
             float minz = b[2] - b[5] * 0.5f - r, maxz = b[2] + b[5] * 0.5f + r;
             if (x > minx && x < maxx && z > minz && z < maxz) {
