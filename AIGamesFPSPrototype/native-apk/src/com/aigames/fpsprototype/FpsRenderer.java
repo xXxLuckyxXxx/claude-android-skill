@@ -408,11 +408,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
             enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f * k, 0.13f * k, 0.13f * k);   // torso
             enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.86f * k, 0.62f * k, 0.50f * k);   // head
+            enemyFace();                                                                       // :) eyes + smile
             enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg L
             enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg R
             enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm L
             enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm R
         }
+    }
+
+    /** A cheerful face on the head's front (local +z always faces the player): two eyes + a smile. */
+    private void enemyFace() {
+        float fz = 0.176f;                                 // just in front of the head surface
+        float er = 0.06f, eg = 0.05f, eb = 0.05f;          // dark features
+        enemyPart(-0.082f, 1.55f, fz, 0.050f, 0.050f, 0.03f, er, eg, eb);   // eye L
+        enemyPart( 0.082f, 1.55f, fz, 0.050f, 0.050f, 0.03f, er, eg, eb);   // eye R
+        enemyPart( 0.000f, 1.405f, fz, 0.060f, 0.045f, 0.03f, er, eg, eb);  // smile: low centre
+        enemyPart(-0.062f, 1.420f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);  // smile: rising
+        enemyPart( 0.062f, 1.420f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);
+        enemyPart(-0.104f, 1.455f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);  // smile: corners up
+        enemyPart( 0.104f, 1.455f, fz, 0.050f, 0.045f, 0.03f, er, eg, eb);
     }
 
     private void enemyPart(float lx, float ly, float lz, float sx, float sy, float sz,
