@@ -89,10 +89,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
 
-    private int floorTex, metalTex, terrainTex, cityTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround;
-    private int sphereVerts, circleVerts, terrainVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts;
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -257,6 +257,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         cityGround = makeBuffer(makeFlatQuad(21f, 0.02f));
         cityTex = uploadTexture(makeCityBitmap());
 
+        vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
+        vegTex = uploadPalette(makeVegPalette());
+
         restart();
         lastNanos = System.nanoTime();
     }
@@ -315,6 +318,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
         drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
+
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
+        Matrix.setIdentityM(model, 0);
+        drawWorld(vegetation, vegVerts, 0f, 1f, 1f, 1f);
 
         drawShadows();
 
@@ -1439,6 +1446,166 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     };
 
     /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
+    // --- vegetation (one baked mesh, coloured via a tiny palette texture) ---
+
+    private static float cell(int i) { return (i + 0.5f) / 16f; }   // palette column centre
+
+    /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
+     *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
+    private float[] makeVegetation() {
+        float[] d = new float[360000];
+        int o = 0;
+        Random r = new Random(404);
+        float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
+        int[] flowerCells = {4, 5, 6, 7, 8, 9, 10};
+
+        for (int n = 0, tries = 0; n < 360 && tries < 5000; tries++) {     // grass tufts
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 0.2f) || onRoadXZ(x, z)) continue;
+            float by = terrainH(x, z);
+            int blades = 4 + r.nextInt(4);
+            for (int b = 0; b < blades; b++) {
+                float bx = x + (r.nextFloat() - 0.5f) * 0.18f, bz = z + (r.nextFloat() - 0.5f) * 0.18f;
+                float ug = r.nextInt(3) == 0 ? ug0 : (r.nextBoolean() ? ug1 : ug2);
+                o = vBlade(d, o, bx, by, bz, r.nextFloat() * 6.2832f,
+                        0.16f + r.nextFloat() * 0.22f, 0.02f + r.nextFloat() * 0.02f, 0.04f + r.nextFloat() * 0.10f, ug);
+            }
+            n++;
+        }
+        for (int n = 0, tries = 0; n < 140 && tries < 4000; tries++) {     // flowers
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 0.25f) || onRoadXZ(x, z)) continue;
+            float by = terrainH(x, z);
+            float stemH = 0.22f + r.nextFloat() * 0.20f, topY = by + stemH;
+            o = vBlade(d, o, x - 0.05f, by, z, r.nextFloat() * 6.2832f, 0.14f, 0.02f, 0.05f, ug1);   // tufts at base
+            o = vBlade(d, o, x + 0.05f, by, z, r.nextFloat() * 6.2832f, 0.16f, 0.02f, 0.05f, ug2);
+            o = vBox(d, o, x, by + stemH * 0.5f, z, 0.018f, stemH, 0.018f, uStem);                  // stem
+            float petU = cell(flowerCells[r.nextInt(flowerCells.length)]);
+            int petals = 5 + r.nextInt(2);
+            float pa0 = r.nextFloat() * 6.2832f, plen = 0.07f + r.nextFloat() * 0.04f, pw = 0.05f + r.nextFloat() * 0.02f;
+            for (int p = 0; p < petals; p++)
+                o = vPetal(d, o, x, topY, z, pa0 + p * (6.2832f / petals), plen, 0.02f, pw, petU);
+            o = vBox(d, o, x, topY + 0.012f, z, 0.045f, 0.03f, 0.045f, uCtr);                        // centre
+            n++;
+        }
+        for (int n = 0, tries = 0; n < 22 && tries < 2000; tries++) {      // bushes
+            float a = r.nextFloat() * 6.2832f, rad = 4f + r.nextFloat() * 24f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 0.4f) || onRoadXZ(x, z)) continue;
+            float by = terrainH(x, z), br = 0.22f + r.nextFloat() * 0.18f;
+            int lobes = 5 + r.nextInt(4);
+            for (int l = 0; l < lobes; l++) {
+                float lx = x + (r.nextFloat() - 0.5f) * br * 1.6f, lz = z + (r.nextFloat() - 0.5f) * br * 1.6f;
+                float s = 0.16f + r.nextFloat() * 0.14f;
+                o = vBox(d, o, lx, by + 0.12f + r.nextFloat() * 0.18f, lz, s, s, s, uBush);
+            }
+            n++;
+        }
+        vegVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    private boolean inBuildingXZ(float x, float z, float m) {
+        for (int i = 0; i < boxes.length; i++) {
+            float[] b = boxes[i];
+            if (x > b[0] - b[3] * 0.5f - m && x < b[0] + b[3] * 0.5f + m
+             && z > b[2] - b[5] * 0.5f - m && z < b[2] + b[5] * 0.5f + m) return true;
+        }
+        return false;
+    }
+
+    private static boolean onRoadXZ(float x, float z) {
+        float[] roads = {-20f, -12f, -4f, 4f, 12f, 20f};
+        for (int i = 0; i < roads.length; i++)
+            if (Math.abs(x - roads[i]) < 1.9f || Math.abs(z - roads[i]) < 1.9f) return true;
+        return false;
+    }
+
+    /** A tapered, slightly bent grass/leaf blade (2 triangles). */
+    private static int vBlade(float[] d, int o, float cx, float by, float cz, float ang,
+                              float h, float w, float bend, float u) {
+        float dx = (float) Math.cos(ang), dz = (float) Math.sin(ang);
+        float px = -dz, pz = dx, hw = w * 0.5f, tw = w * 0.12f;
+        float blx = cx - px * hw, blz = cz - pz * hw, brx = cx + px * hw, brz = cz + pz * hw;
+        float tx = cx + dx * bend, tz = cz + dz * bend, ty = by + h;
+        float tlx = tx - px * tw, tlz = tz - pz * tw, trx = tx + px * tw, trz = tz + pz * tw;
+        o = put(d, o, blx, by, blz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, brx, by, brz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, blx, by, blz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, tlx, ty, tlz, 0f, 1f, 0f, u, 0.5f);
+        return o;
+    }
+
+    /** A flower petal: a small quad fanning outward and up from the flower head. */
+    private static int vPetal(float[] d, int o, float cx, float cy, float cz, float ang,
+                              float len, float rise, float wid, float u) {
+        float dx = (float) Math.cos(ang), dz = (float) Math.sin(ang);
+        float px = -dz, pz = dx, hw = wid * 0.5f;
+        float blx = cx - px * hw, blz = cz - pz * hw, brx = cx + px * hw, brz = cz + pz * hw;
+        float tx = cx + dx * len, tz = cz + dz * len, ty = cy + rise;
+        float tlx = tx - px * hw * 0.4f, tlz = tz - pz * hw * 0.4f, trx = tx + px * hw * 0.4f, trz = tz + pz * hw * 0.4f;
+        o = put(d, o, blx, cy, blz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, brx, cy, brz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, blx, cy, blz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, tlx, ty, tlz, 0f, 1f, 0f, u, 0.5f);
+        return o;
+    }
+
+    private static int vBox(float[] d, int o, float cx, float cy, float cz, float sx, float sy, float sz, float u) {
+        float hx = sx * 0.5f, hy = sy * 0.5f, hz = sz * 0.5f;
+        o = vQuad(d, o, cx - hx, cy + hy, cz - hz, cx + hx, cy + hy, cz - hz, cx + hx, cy + hy, cz + hz, cx - hx, cy + hy, cz + hz, 0f, 1f, 0f, u);
+        o = vQuad(d, o, cx - hx, cy - hy, cz + hz, cx + hx, cy - hy, cz + hz, cx + hx, cy - hy, cz - hz, cx - hx, cy - hy, cz - hz, 0f, -1f, 0f, u);
+        o = vQuad(d, o, cx + hx, cy - hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy + hy, cz - hz, cx + hx, cy - hy, cz - hz, 1f, 0f, 0f, u);
+        o = vQuad(d, o, cx - hx, cy - hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy + hy, cz + hz, cx - hx, cy - hy, cz + hz, -1f, 0f, 0f, u);
+        o = vQuad(d, o, cx - hx, cy - hy, cz + hz, cx - hx, cy + hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy - hy, cz + hz, 0f, 0f, 1f, u);
+        o = vQuad(d, o, cx + hx, cy - hy, cz - hz, cx + hx, cy + hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy - hy, cz - hz, 0f, 0f, -1f, u);
+        return o;
+    }
+
+    private static int vQuad(float[] d, int o, float ax, float ay, float az, float bx, float by, float bz,
+                             float cx, float cy, float cz, float ex, float ey, float ez, float nx, float ny, float nz, float u) {
+        o = put(d, o, ax, ay, az, nx, ny, nz, u, 0.5f);
+        o = put(d, o, bx, by, bz, nx, ny, nz, u, 0.5f);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, u, 0.5f);
+        o = put(d, o, ax, ay, az, nx, ny, nz, u, 0.5f);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, u, 0.5f);
+        o = put(d, o, ex, ey, ez, nx, ny, nz, u, 0.5f);
+        return o;
+    }
+
+    private static Bitmap makeVegPalette() {
+        int W = 16, H = 4;
+        Bitmap b = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
+        int[] c = {
+            0xFF2E6B1F, 0xFF3F8A24, 0xFF5CA836, 0xFF356B1C,   // grass dark/mid/light, stem
+            0xFFE03A3A, 0xFFF7D43A, 0xFFF4F0E6, 0xFFF06FB0,   // red, yellow, white, pink
+            0xFF9B4FE0, 0xFF4F7BF0, 0xFFF58A20, 0xFFF2C53A,   // purple, blue, orange, centre
+            0xFF2C5E1C, 0xFF4A9A2C, 0xFF6BB840, 0xFF3A7A22,   // bush + extra greens
+        };
+        for (int x = 0; x < W; x++)
+            for (int y = 0; y < H; y++) b.setPixel(x, y, c[x]);
+        return b;
+    }
+
+    private static int uploadPalette(Bitmap bmp) {
+        int[] id = new int[1];
+        GLES20.glGenTextures(1, id, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id[0]);
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        bmp.recycle();
+        return id[0];
+    }
+
     private static float[] makeFlatQuad(float half, float y) {
         float[] d = new float[6 * 8];
         int o = 0;
