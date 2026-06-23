@@ -82,8 +82,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int highScore = 0;
     private static final float COMBO_WINDOW = 2.2f;
     private final SharedPreferences prefs;
+    private final Sfx sfx;
     private float roundTime = ROUND_TIME;
     private boolean gameOver = false;
+    private boolean lastShotHead = false;
+    private float targetMoveTime = 0f;        // advances faster as difficulty ramps
+
+    // Ammo / reloading.
+    private static final int MAG_SIZE = 12;
+    private static final float RELOAD_TIME = 1.3f;
+    private int ammo = MAG_SIZE;
+    private float reloadTimer = 0f;
 
     private static final float[][] TARGETS = {
         {-6f, 1.6f, 2f}, {6f, 1.6f, 2f}, {0f, 2.4f, 10f}, {-3f, 1.1f, 7f}, {3f, 1.1f, 7f},
@@ -106,6 +115,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.buildNumber = buildNumber;
         this.prefs = ctx.getSharedPreferences("aigames_fps", Context.MODE_PRIVATE);
         this.highScore = prefs.getInt("highscore", 0);
+        this.sfx = new Sfx(ctx);
+    }
+
+    /** Difficulty ramps from 1.0 at round start to ~2.6 at the end. */
+    private float difficulty() {
+        float e = (ROUND_TIME - roundTime) / ROUND_TIME;
+        if (e < 0f) e = 0f; else if (e > 1f) e = 1f;
+        return 1f + e * 1.6f;
     }
 
     @Override
@@ -245,8 +262,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void targetPos(int i, float[] out) {
         float[] h = TARGETS[i];
-        out[0] = h[0] + 2.5f * (float) Math.sin(timeAcc * 1.3 + i * 1.7);
-        out[1] = h[1] + 0.4f * (float) Math.sin(timeAcc * 2.0 + i * 2.3);
+        out[0] = h[0] + 2.5f * (float) Math.sin(targetMoveTime * 1.3 + i * 1.7);
+        out[1] = h[1] + 0.4f * (float) Math.sin(targetMoveTime * 2.0 + i * 2.3);
         out[2] = h[2];
     }
 
@@ -392,6 +409,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void updateCamera(float dt) {
+        targetMoveTime += dt * difficulty();
         input.consumeLook(lookTmp);
         yaw += lookTmp[0] * LOOK_SENS;
         pitch -= lookTmp[1] * LOOK_SENS;
@@ -422,6 +440,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (flashTimer > 0f) flashTimer -= dt;
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
         if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
+        if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) ammo = MAG_SIZE; }
 
         for (int i = 0; i < targetAlive.length; i++) {
             if (!targetAlive[i]) {
@@ -434,6 +453,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (roundTime <= 0f) {
                 roundTime = 0f;
                 gameOver = true;
+                sfx.over();
                 if (score > highScore) {                 // persist new best
                     highScore = score;
                     prefs.edit().putInt("highscore", highScore).apply();
@@ -447,6 +467,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         score = 0;
         combo = 1;
         comboTimer = 0f;
+        ammo = MAG_SIZE;
+        reloadTimer = 0f;
         roundTime = ROUND_TIME;
         gameOver = false;
         for (int i = 0; i < targetAlive.length; i++) { targetAlive[i] = true; targetRespawn[i] = 0f; }
@@ -454,10 +476,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void fire() {
         if (gameOver) { restart(); return; }
+        if (reloadTimer > 0f) return;                       // mid-reload: can't fire
+        if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); return; }
+        ammo--;
+
         muzzleTimer = MUZZLE_TIME;
         flashTimer = FLASH_TIME;
         recoil += 0.025f;
         if (recoil > 0.18f) recoil = 0.18f;
+        sfx.shoot();
 
         float cosP = (float) Math.cos(pitch);
         float dx = cosP * (float) Math.sin(yaw);
@@ -484,16 +511,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         if (type == 1) {
-            targetAlive[idx] = false; targetRespawn[idx] = RESPAWN_TIME;
-            combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;   // chain hits -> higher multiplier
+            targetPos(idx, tmpPos);                                   // hit target centre
+            float hitY = py + dy * best;
+            boolean head = hitY > tmpPos[1] + (TARGET_SCALE * 0.5f) * 0.30f;
+            targetAlive[idx] = false;
+            targetRespawn[idx] = RESPAWN_TIME / difficulty();         // faster respawn later
+            combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
             comboTimer = COMBO_WINDOW;
-            score += combo;
+            score += combo * (head ? 2 : 1);                          // headshot = double
             lastShotHit = true;
+            lastShotHead = head;
+            if (head) sfx.head(); else sfx.hit();
         } else if (type == 2) {
-            hitBox = idx; hitTimer = HIT_TIME; lastShotHit = false;
+            hitBox = idx; hitTimer = HIT_TIME; lastShotHit = false; lastShotHead = false;
         } else {
-            lastShotHit = false;
+            lastShotHit = false; lastShotHead = false;
         }
+
+        if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); }    // auto-reload when emptied
     }
 
     private static float rayBox(float ox, float oy, float oz, float dx, float dy, float dz,
@@ -535,7 +570,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawCircle(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 1f, 0.30f, 0.25f, 0.50f);
 
             float cr = 1f, cg = 1f, cb = 1f;
-            if (flashTimer > 0f && lastShotHit) { cr = 0.30f; cg = 1f; cb = 0.40f; }
+            if (flashTimer > 0f && lastShotHit) {
+                if (lastShotHead) { cr = 1f; cg = 0.85f; cb = 0.20f; }   // headshot = gold
+                else { cr = 0.30f; cg = 1f; cb = 0.40f; }                // body hit = green
+            }
             float ccx = width * 0.5f, ccy = height * 0.5f;
             drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
             drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
@@ -552,6 +590,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float mg = combo >= 5 ? 0.42f : (combo >= 3 ? 0.75f : 1f);
                 float mb = combo >= 3 ? 0.2f : 0.5f;
                 drawNumberCentered(combo, 162f, 20f, 34f, 6f, 12f, 1f, mg, mb, 0.95f);
+            }
+
+            // ammo count / reload bar above the fire button
+            float ax = Hud.fireCx(width), ay = Hud.fireCy(height) - Hud.FIRE_RADIUS - 44f;
+            if (reloadTimer > 0f) {
+                float rp = 1f - reloadTimer / RELOAD_TIME;
+                drawRectPx(ax, ay, 130f, 12f, 0.25f, 0.25f, 0.28f, 0.6f);
+                drawRectPx(ax - 65f + 65f * rp, ay, 130f * rp, 12f, 1f, 0.8f, 0.2f, 0.9f);
+            } else {
+                boolean lowAmmo = ammo <= 3;
+                drawNumberAt(ammo, ax, ay, 22f, 34f, 6f, 12f,
+                        lowAmmo ? 1f : 0.85f, lowAmmo ? 0.3f : 0.95f, lowAmmo ? 0.3f : 1f, 0.95f);
             }
         } else {
             drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.62f);
@@ -575,6 +625,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         String s = Integer.toString(n);
         float total = s.length() * dw + (s.length() - 1) * gap;
         float x = width * 0.5f - total * 0.5f + dw * 0.5f;
+        for (int i = 0; i < s.length(); i++) { drawDigit(s.charAt(i) - '0', x, cy, dw, dh, t, r, g, b, a); x += dw + gap; }
+    }
+
+    private void drawNumberAt(int n, float cx, float cy, float dw, float dh, float t, float gap,
+                              float r, float g, float b, float a) {
+        if (n < 0) n = 0;
+        String s = Integer.toString(n);
+        float total = s.length() * dw + (s.length() - 1) * gap;
+        float x = cx - total * 0.5f + dw * 0.5f;
         for (int i = 0; i < s.length(); i++) { drawDigit(s.charAt(i) - '0', x, cy, dw, dh, t, r, g, b, a); x += dw + gap; }
     }
 
