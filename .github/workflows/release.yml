@@ -70,11 +70,9 @@ jobs:
             printf 'storeFile=keystore/aigames-release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
               "$AIGAMES_KEYSTORE_PASSWORD" "$AIGAMES_KEY_ALIAS" "$AIGAMES_KEY_PASSWORD" \
               > keystore/keystore.properties
-            echo "Signing with the keystore from secrets (recommended for production)."
-          elif [ -f keystore/aigames-release.keystore ]; then
-            echo "Signing with the committed prototype keystore (stable key -> seamless updates)."
+            echo "Signing with the keystore from secrets (stable key -> seamless updates)."
           else
-            echo "::warning::No keystore secret and no committed keystore — generating a THROWAWAY key. Releases will NOT update over each other."
+            echo "::warning::No AIGAMES_KEYSTORE_* secrets set — generating a THROWAWAY key. Releases will NOT update over each other. Set the secrets for a stable signing key."
             STORE_PASS=ci-ephemeral KEY_PASS=ci-ephemeral ./scripts/generate-keystore.sh
           fi
 

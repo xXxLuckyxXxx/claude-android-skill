@@ -2,20 +2,18 @@
 
 This folder holds the Android signing material for **com.aigames.fpsprototype**.
 
-> ⚠️ **Prototype exception:** for zero-setup CI releases, the **throwaway**
-> prototype keystore *is* force-committed here (password `aigames-proto`). This
-> is acceptable ONLY because it is a disposable prototype key for an
-> undistributed app. **Before any real distribution:** generate a fresh key,
-> keep it out of git, and provide it to CI via the `AIGAMES_KEYSTORE_*` secrets
-> (the release workflow prefers secrets over the committed key). Treat anything
-> signed with the committed key as public.
+> 🚨 **The prototype keystore that was briefly committed here has been removed.**
+> While it was committed the repo was public, and it still exists in git
+> **history**, so treat that key as **compromised**: generate a fresh one and
+> **never commit it**. Builds get the key from the `AIGAMES_KEYSTORE_*` CI
+> secrets, or from a locally generated, git-ignored keystore (see below).
 
 ## What lives here
 
 | File | Tracked by git? | Purpose |
 |------|-----------------|---------|
-| `aigames-release.keystore` | ⚠️ committed (prototype only) | The (throwaway) private signing key |
-| `keystore.properties`      | ⚠️ committed (prototype only) | Path + passwords consumed by the build |
+| `aigames-release.keystore` | ❌ **never** | The actual private signing key |
+| `keystore.properties`      | ❌ **never** | Path + passwords consumed by the build |
 | `keystore.properties.example` | ✅ | Template / documentation |
 | `README.md` (this file)    | ✅ | Explains the rules |
 
