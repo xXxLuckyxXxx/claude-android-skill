@@ -17,30 +17,38 @@ class Sfx {
     private static final int SR = 22050;
 
     private SoundPool pool;
-    private int sShoot, sHit, sHead, sOver, sReload, sHurt;
+    private int sShoot, sHit, sHead, sOver, sReload, sHurt, sRifle, sShotgun, sDry, sSwap;
     private boolean ok = false;
 
     Sfx(Context ctx) {
         try {
-            pool = new SoundPool(6, AudioManager.STREAM_MUSIC, 0);
-            sShoot  = load(ctx, "sfx_shoot",  genShoot());
-            sHit    = load(ctx, "sfx_hit",    genBlip(680f, 0.07f, 0f));
-            sHead   = load(ctx, "sfx_head",   genBlip(900f, 0.13f, 700f));
-            sOver   = load(ctx, "sfx_over",   genSweep(540f, 130f, 0.55f));
-            sReload = load(ctx, "sfx_reload", genBlip(320f, 0.10f, 480f));
-            sHurt   = load(ctx, "sfx_hurt",   genSweep(230f, 80f, 0.22f));
+            pool = new SoundPool(8, AudioManager.STREAM_MUSIC, 0);
+            sShoot   = load(ctx, "sfx_shoot",   genShoot());
+            sHit     = load(ctx, "sfx_hit",     genBlip(680f, 0.07f, 0f));
+            sHead    = load(ctx, "sfx_head",    genBlip(900f, 0.13f, 700f));
+            sOver    = load(ctx, "sfx_over",    genSweep(540f, 130f, 0.55f));
+            sReload  = load(ctx, "sfx_reload",  genBlip(320f, 0.10f, 480f));
+            sHurt    = load(ctx, "sfx_hurt",    genSweep(230f, 80f, 0.22f));
+            sRifle   = load(ctx, "sfx_rifle",   genGun(7, 0.07f, 11.0, 1200f, 760f, 0.45f, 0.95f));
+            sShotgun = load(ctx, "sfx_shotgun", genGun(9, 0.20f, 5.0, 560f, 180f, 0.78f, 1.0f));
+            sDry     = load(ctx, "sfx_dry",     genBlip(170f, 0.05f, 90f));
+            sSwap    = load(ctx, "sfx_swap",    genBlip(380f, 0.07f, 620f));
             ok = true;
         } catch (Throwable t) {
             ok = false;
         }
     }
 
-    void shoot()  { play(sShoot, 0.6f); }
-    void hit()    { play(sHit, 0.9f); }
-    void head()   { play(sHead, 1.0f); }
-    void over()   { play(sOver, 0.9f); }
-    void reload() { play(sReload, 0.7f); }
-    void hurt()   { play(sHurt, 0.95f); }
+    void shoot()   { play(sShoot, 0.6f); }
+    void hit()     { play(sHit, 0.9f); }
+    void head()    { play(sHead, 1.0f); }
+    void over()    { play(sOver, 0.9f); }
+    void reload()  { play(sReload, 0.7f); }
+    void hurt()    { play(sHurt, 0.95f); }
+    void rifle()   { play(sRifle, 0.55f); }
+    void shotgun() { play(sShotgun, 0.85f); }
+    void dry()     { play(sDry, 0.6f); }
+    void swap()    { play(sSwap, 0.6f); }
 
     private void play(int id, float vol) {
         if (ok && id != 0 && pool != null) {
@@ -66,6 +74,22 @@ class Sfx {
             float noise = r.nextFloat() * 2f - 1f;
             float chirp = (float) Math.sin(2 * Math.PI * (900 - 700 * t) * i / SR);
             d[i] = (short) (clamp((noise * 0.5f + chirp * 0.6f) * env) * 32000);
+        }
+        return d;
+    }
+
+    /** Generic gunshot: noise + a descending chirp under an exponential decay. */
+    private static short[] genGun(long seed, float dur, double decay,
+                                  float chirpHi, float chirpLo, float noiseAmt, float amp) {
+        int n = (int) (SR * dur);
+        short[] d = new short[n];
+        java.util.Random r = new java.util.Random(seed);
+        for (int i = 0; i < n; i++) {
+            float t = (float) i / n;
+            float env = (float) Math.exp(-decay * t);
+            float noise = r.nextFloat() * 2f - 1f;
+            float chirp = (float) Math.sin(2 * Math.PI * (chirpHi - (chirpHi - chirpLo) * t) * i / SR);
+            d[i] = (short) (clamp((noise * noiseAmt + chirp * (1f - noiseAmt)) * env) * amp * 32000);
         }
         return d;
     }

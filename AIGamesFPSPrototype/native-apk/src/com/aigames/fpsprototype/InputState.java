@@ -10,11 +10,16 @@ public class InputState {
     private float moveX, moveY;     // continuous, range [-1, 1]
     private float lookDX, lookDY;   // accumulated pixels since last consume
     private boolean fireRequested;
+    private boolean fireHeld;        // fire button currently down (for full-auto weapons)
+    private boolean switchRequested; // one-shot weapon switch
     private boolean gameOver;
 
     public synchronized void setMove(float x, float y) { moveX = x; moveY = y; }
     public synchronized void addLook(float dx, float dy) { lookDX += dx; lookDY += dy; }
     public synchronized void requestFire() { fireRequested = true; }
+    public synchronized void requestSwitch() { switchRequested = true; }
+    public synchronized void setFireHeld(boolean v) { fireHeld = v; }
+    public synchronized boolean isFireHeld() { return fireHeld; }
 
     public synchronized float moveX() { return moveX; }
     public synchronized float moveY() { return moveY; }
@@ -32,6 +37,13 @@ public class InputState {
         boolean f = fireRequested;
         fireRequested = false;
         return f;
+    }
+
+    /** Returns true exactly once per weapon-switch request. */
+    public synchronized boolean consumeSwitch() {
+        boolean s = switchRequested;
+        switchRequested = false;
+        return s;
     }
 
     // Published by the renderer; read by the view (tap-anywhere-to-restart).

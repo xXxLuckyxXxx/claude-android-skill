@@ -20,10 +20,13 @@ import javax.microedition.khronos.opengles.GL10;
 
 /**
  * First-person survival shooter (GLES 2.0). Low-poly enemy figures spawn around
- * the arena and walk toward the player; shoot them (head = double points)
- * before they reach you and drain your health. Textured PBR-ish lighting, fog,
- * gradient sky, vignette, contact shadows, a weapon viewmodel, procedural SFX,
- * combo multiplier and a persistent high score.
+ * the arena and walk toward the player (animated legs/arms, not gliding); shoot
+ * them before they reach you and drain your health. Three weapons — pistol, SMG
+ * and shotgun — each with its own magazine, reserve ammo, recoil and feel; kills
+ * top up your ammo. Headshots do far more damage than body hits. Solid cover you
+ * cannot walk through, textured PBR-ish lighting, fog, gradient sky, vignette,
+ * contact shadows, weapon viewmodels, procedural SFX, combo multiplier and a
+ * persistent high score.
  */
 public class FpsRenderer implements GLSurfaceView.Renderer {
 
@@ -33,17 +36,34 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
     private static final float FLASH_TIME = 0.15f;
+    private static final float HITMARK_TIME = 0.22f;
     private static final float COMBO_WINDOW = 2.2f;
-    private static final int MAG_SIZE = 12;
-    private static final float RELOAD_TIME = 1.3f;
+
+    // Weapons: 0 = pistol, 1 = SMG (full-auto), 2 = shotgun.
+    private static final int W_COUNT = 3;
+    private static final int[]     W_MAG       = {12, 30, 6};
+    private static final int[]     W_RES_START = {48, 90, 24};
+    private static final int[]     W_RES_MAX   = {120, 240, 48};
+    private static final float[]   W_INTERVAL  = {0.20f, 0.085f, 0.72f};   // s between shots
+    private static final float[]   W_RELOAD    = {1.15f, 1.70f, 2.00f};
+    private static final int[]     W_PELLETS   = {1, 1, 9};
+    private static final float[]   W_SPREAD    = {0.0f, 0.018f, 0.085f};
+    private static final float[]   W_BODYDMG   = {55f, 26f, 20f};
+    private static final float[]   W_HEADDMG   = {120f, 60f, 46f};
+    private static final float[]   W_RECOIL    = {0.030f, 0.016f, 0.075f};
+    private static final float[]   W_SHAKE     = {0.55f, 0.32f, 1.00f};
+    private static final int[]     W_KILL_REWARD = {6, 10, 4};
+    private static final boolean[] W_AUTO      = {false, true, false};
 
     // Enemies / survival.
     private static final int MAX_ENEMIES = 7;
     private static final float ENEMY_SPEED = 1.7f;     // base m/s
+    private static final float ENEMY_FULL_HP = 100f;
     private static final float SPAWN_DIST = 26f;
     private static final float REACH_DIST = 1.5f;
     private static final float ENEMY_DMG = 20f;
     private static final float MAX_HP = 100f;
+    private static final float ARENA_LIMIT = 18.5f;
 
     private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
 
@@ -82,6 +102,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float timeAcc = 0f;
 
     private float muzzleTimer = 0f, hitTimer = 0f, flashTimer = 0f, hurtFlash = 0f;
+    private float hitMarkerTimer = 0f;
+    private boolean hitMarkerHead = false;
     private int hitBox = -1;
     private boolean lastShotHit = false, lastShotHead = false;
 
@@ -89,16 +111,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int combo = 1;
     private float comboTimer = 0f;
     private int highScore = 0;
-    private int ammo = MAG_SIZE;
-    private float reloadTimer = 0f;
     private float playerHP = MAX_HP;
     private boolean gameOver = false;
+
+    // Per-weapon ammo state.
+    private int curWeapon = 0;
+    private final int[] wMag = new int[W_COUNT];
+    private final int[] wReserve = new int[W_COUNT];
+    private float fireCd = 0f;
+    private float reloadTimer = 0f, reloadTotal = 1f;
+    private float shake = 0f;
+    private float switchAnim = 0f;
 
     private final float[] enX = new float[MAX_ENEMIES];
     private final float[] enZ = new float[MAX_ENEMIES];
     private final float[] enFace = new float[MAX_ENEMIES];
+    private final float[] enHP = new float[MAX_ENEMIES];
+    private final float[] enPhase = new float[MAX_ENEMIES];
+    private final float[] enHurt = new float[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
     private float spawnTimer = 0f;
+
+    private final float[] colTmp = new float[2];
 
     // Static cover: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
     private static final float[][] BOXES = {
@@ -250,6 +284,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (gameOver) return;
         float speed = ENEMY_SPEED * (1f + Math.min(score, 100) * 0.012f);
         for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (enHurt[i] > 0f) enHurt[i] -= dt;
             if (!enAlive[i]) continue;
             float dx = px - enX[i], dz = pz - enZ[i];
             float d = (float) Math.sqrt(dx * dx + dz * dz);
@@ -262,8 +297,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 sfx.hurt();
                 if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
             } else if (d > 1e-4f) {
-                enX[i] += dx / d * speed * dt;
-                enZ[i] += dz / d * speed * dt;
+                float step = speed * dt;
+                enX[i] += dx / d * step;
+                enZ[i] += dz / d * step;
+                enPhase[i] += step * 9f;                 // advance walk cycle with distance
+                colTmp[0] = enX[i]; colTmp[1] = enZ[i];
+                collide(0.4f, false, colTmp);            // slide around cover
+                enX[i] = colTmp[0]; enZ[i] = colTmp[1];
             }
         }
         spawnTimer -= dt;
@@ -280,6 +320,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enX[i] = (float) Math.cos(a) * SPAWN_DIST;
                 enZ[i] = (float) Math.sin(a) * SPAWN_DIST;
                 enFace[i] = 0f;
+                enHP[i] = ENEMY_FULL_HP;
+                enPhase[i] = rng.nextFloat() * 6.2832f;
+                enHurt[i] = 0f;
                 enAlive[i] = true;
                 return;
             }
@@ -301,15 +344,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (!enAlive[i]) continue;
-            Matrix.setIdentityM(gunBase, 0);                 // reuse as enemy base
-            Matrix.translateM(gunBase, 0, enX[i], 0f, enZ[i]);
+            float sw = (float) Math.sin(enPhase[i]);          // limb swing
+            float bob = Math.abs(sw) * 0.045f;                // gait bob
+            float k = enHurt[i] > 0f ? 1.8f : 1f;             // hit flash
+            Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
+            Matrix.translateM(gunBase, 0, enX[i], bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
-            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f, 0.13f, 0.13f);   // torso
-            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.86f, 0.62f, 0.50f);   // head
-            enemyPart(-0.14f, 0.35f, 0f, 0.18f, 0.70f, 0.22f, 0.16f, 0.17f, 0.22f); // leg L
-            enemyPart(0.14f, 0.35f, 0f, 0.18f, 0.70f, 0.22f, 0.16f, 0.17f, 0.22f);  // leg R
-            enemyPart(-0.33f, 1.02f, 0f, 0.13f, 0.58f, 0.16f, 0.52f, 0.11f, 0.11f); // arm L
-            enemyPart(0.33f, 1.02f, 0f, 0.13f, 0.58f, 0.16f, 0.52f, 0.11f, 0.11f);  // arm R
+            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f * k, 0.13f * k, 0.13f * k);   // torso
+            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.86f * k, 0.62f * k, 0.50f * k);   // head
+            enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg L
+            enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg R
+            enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm L
+            enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm R
         }
     }
 
@@ -319,6 +365,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.translateM(partM, 0, lx, ly, lz);
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(model, 0, gunBase, 0, partM, 0);   // model = base * part (world)
+        drawWorld(cube, 36, 0f, r, g, b);
+    }
+
+    /** A limb that pivots about its top (hip/shoulder) so it swings when walking. */
+    private void enemyLimb(float pivX, float pivY, float pivZ, float halfLen,
+                           float sx, float sy, float sz, float angleDeg,
+                           float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, pivX, pivY, pivZ);
+        Matrix.rotateM(partM, 0, angleDeg, 1f, 0f, 0f);
+        Matrix.translateM(partM, 0, 0f, -halfLen, 0f);
+        Matrix.scaleM(partM, 0, sx, sy, sz);
+        Matrix.multiplyMM(model, 0, gunBase, 0, partM, 0);
         drawWorld(cube, 36, 0f, r, g, b);
     }
 
@@ -348,12 +407,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, count);
     }
 
+    // --- weapon viewmodels ---
+
     private void drawGun() {
         Matrix.setIdentityM(gunBase, 0);
-        Matrix.translateM(gunBase, 0, 0.15f, -0.16f, -0.52f - recoil * 0.30f);
-        Matrix.rotateM(gunBase, 0, -3.0f + recoil * 9f, 1f, 0f, 0f);
+        float dip = switchAnim * 0.22f;                       // lower while swapping
+        Matrix.translateM(gunBase, 0, 0.15f, -0.16f - dip, -0.52f - recoil * 0.30f);
+        Matrix.rotateM(gunBase, 0, -3.0f + recoil * 9f + switchAnim * 22f, 1f, 0f, 0f);
         Matrix.rotateM(gunBase, 0, -4f, 0f, 1f, 0f);
 
+        float mz;
+        if (curWeapon == 0) mz = drawPistol();
+        else if (curWeapon == 1) mz = drawRifle();
+        else mz = drawShotgun();
+
+        if (muzzleTimer > 0f) drawMuzzle(mz, curWeapon == 2 ? 1.7f : 1f);
+    }
+
+    private float drawPistol() {
+        gunPart(0f, 0.00f, -0.02f, 0.075f, 0.100f, 0.30f, 0.14f, 0.15f, 0.18f); // slide
+        gunPart(0f, 0.01f, -0.20f, 0.050f, 0.055f, 0.10f, 0.10f, 0.10f, 0.12f); // barrel tip
+        gunPart(0f, -0.13f, 0.10f, 0.070f, 0.170f, 0.085f, 0.10f, 0.09f, 0.08f); // grip
+        gunPart(0f, -0.05f, 0.04f, 0.055f, 0.050f, 0.05f, 0.08f, 0.08f, 0.10f);  // trigger guard
+        gunPart(0f, 0.075f, 0.10f, 0.045f, 0.030f, 0.04f, 0.06f, 0.20f, 0.26f);  // rear sight
+        return -0.30f;
+    }
+
+    private float drawRifle() {
         gunPart(0f, 0.00f, 0.04f, 0.090f, 0.11f, 0.42f, 0.13f, 0.14f, 0.17f);
         gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.12f, 0.12f, 0.15f);
         gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
@@ -363,29 +443,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.18f, 0.18f, 0.22f);
         gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);
         gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
+        return -0.56f;
+    }
 
-        if (muzzleTimer > 0f) {
-            float k = muzzleTimer / MUZZLE_TIME;
-            Matrix.setIdentityM(partM, 0);
-            Matrix.translateM(partM, 0, 0f, 0.02f, -0.56f);
-            float s = 0.05f + 0.05f * k;
-            Matrix.scaleM(partM, 0, s, s, s);
-            Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
-            Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-            submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.3f * k, 1.3f * k);
-            GLES20.glEnable(GLES20.GL_BLEND);
-            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
-            GLES20.glDepthMask(false);
-            Matrix.setIdentityM(partM, 0);
-            Matrix.translateM(partM, 0, 0f, 0.02f, -0.56f);
-            float gs = 0.16f + 0.14f * k;
-            Matrix.scaleM(partM, 0, gs, gs, gs);
-            Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
-            Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-            submit(sphere, sphereVerts, mvp, tmpA, 4f, 0.9f * k, 0.6f * k, 0.25f * k);
-            GLES20.glDepthMask(true);
-            GLES20.glDisable(GLES20.GL_BLEND);
-        }
+    private float drawShotgun() {
+        gunPart(0f, 0.00f, 0.06f, 0.085f, 0.105f, 0.40f, 0.17f, 0.12f, 0.09f);  // receiver (wood)
+        gunPart(0f, 0.030f, -0.30f, 0.050f, 0.050f, 0.42f, 0.23f, 0.24f, 0.27f); // barrel top
+        gunPart(0f, -0.028f, -0.30f, 0.050f, 0.050f, 0.42f, 0.20f, 0.21f, 0.24f); // barrel bottom
+        gunPart(0f, 0.00f, -0.18f, 0.078f, 0.060f, 0.18f, 0.10f, 0.08f, 0.06f);  // pump/forend
+        gunPart(0f, -0.02f, 0.30f, 0.070f, 0.120f, 0.18f, 0.18f, 0.12f, 0.09f);  // stock (wood)
+        gunPart(0f, -0.12f, 0.16f, 0.060f, 0.130f, 0.085f, 0.12f, 0.09f, 0.07f); // grip
+        return -0.62f;
+    }
+
+    private void drawMuzzle(float mz, float scaleMul) {
+        float k = muzzleTimer / MUZZLE_TIME;
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, 0f, 0.02f, mz);
+        float s = (0.05f + 0.05f * k) * scaleMul;
+        Matrix.scaleM(partM, 0, s, s, s);
+        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.3f * k, 1.3f * k);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
+        GLES20.glDepthMask(false);
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, 0f, 0.02f, mz);
+        float gs = (0.16f + 0.14f * k) * scaleMul;
+        Matrix.scaleM(partM, 0, gs, gs, gs);
+        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        submit(sphere, sphereVerts, mvp, tmpA, 4f, 0.9f * k, 0.6f * k, 0.25f * k);
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
     }
 
     private void gunPart(float tx, float ty, float tz, float sx, float sy, float sz,
@@ -403,24 +494,57 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         yaw += lookTmp[0] * LOOK_SENS;
         pitch -= lookTmp[1] * LOOK_SENS;
         float limit = 1.48f;
-        if (pitch > limit) pitch = limit;
-        if (pitch < -limit) pitch = -limit;
+        pitch = clamp(pitch, -limit, limit);
 
-        if (input.consumeFire()) fire();
+        if (input.consumeSwitch()) cycleWeapon();
+        boolean fired = false;
+        if (input.consumeFire()) { fire(); fired = true; }
+        if (!fired && !gameOver && W_AUTO[curWeapon] && input.isFireHeld()) fire();
 
         float mx = input.moveX(), my = input.moveY();
         float fwdX = (float) Math.sin(yaw), fwdZ = -(float) Math.cos(yaw);
         float rgtX = (float) Math.cos(yaw), rgtZ = (float) Math.sin(yaw);
         px += (rgtX * mx + fwdX * my) * MOVE_SPEED * dt;
         pz += (rgtZ * mx + fwdZ * my) * MOVE_SPEED * dt;
+        colTmp[0] = px; colTmp[1] = pz;
+        collide(0.32f, true, colTmp);                 // can't walk through cover / out of arena
+        px = colTmp[0]; pz = colTmp[1];
 
-        float effPitch = pitch + recoil;
-        if (effPitch > limit) effPitch = limit;
+        float jx = 0f, jy = 0f;
+        if (shake > 0f) {
+            jx = (rng.nextFloat() * 2f - 1f) * shake * 0.012f;
+            jy = (rng.nextFloat() * 2f - 1f) * shake * 0.012f;
+        }
+        float effPitch = clamp(pitch + recoil + jy, -limit, limit);
+        float vYaw = yaw + jx;
         float cosP = (float) Math.cos(effPitch);
-        float ldx = cosP * (float) Math.sin(yaw);
+        float ldx = cosP * (float) Math.sin(vYaw);
         float ldy = (float) Math.sin(effPitch);
-        float ldz = -cosP * (float) Math.cos(yaw);
+        float ldz = -cosP * (float) Math.cos(vYaw);
         Matrix.setLookAtM(view, 0, px, py, pz, px + ldx, py + ldy, pz + ldz, 0f, 1f, 0f);
+    }
+
+    /** Circle (radius r) vs the static boxes on XZ, with optional arena clamp. */
+    private void collide(float r, boolean clampArena, float[] io) {
+        float x = io[0], z = io[1];
+        for (int i = 0; i < BOXES.length; i++) {
+            float[] b = BOXES[i];
+            float minx = b[0] - b[3] * 0.5f - r, maxx = b[0] + b[3] * 0.5f + r;
+            float minz = b[2] - b[5] * 0.5f - r, maxz = b[2] + b[5] * 0.5f + r;
+            if (x > minx && x < maxx && z > minz && z < maxz) {
+                float pL = x - minx, pR = maxx - x, pD = z - minz, pU = maxz - z;
+                float m = Math.min(Math.min(pL, pR), Math.min(pD, pU));
+                if (m == pL) x = minx;
+                else if (m == pR) x = maxx;
+                else if (m == pD) z = minz;
+                else z = maxz;
+            }
+        }
+        if (clampArena) {
+            x = clamp(x, -ARENA_LIMIT, ARENA_LIMIT);
+            z = clamp(z, -ARENA_LIMIT, ARENA_LIMIT);
+        }
+        io[0] = x; io[1] = z;
     }
 
     private void tickTimers(float dt) {
@@ -428,15 +552,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (hitTimer > 0f) hitTimer -= dt;
         if (flashTimer > 0f) flashTimer -= dt;
         if (hurtFlash > 0f) hurtFlash -= dt;
+        if (hitMarkerTimer > 0f) hitMarkerTimer -= dt;
+        if (fireCd > 0f) fireCd -= dt;
+        if (shake > 0f) { shake -= dt * 6f; if (shake < 0f) shake = 0f; }
+        if (switchAnim > 0f) { switchAnim -= dt * 4f; if (switchAnim < 0f) switchAnim = 0f; }
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
         if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
-        if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) ammo = MAG_SIZE; }
+        if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) finishReload(); }
         input.setGameOver(gameOver);
     }
 
     private void restart() {
         score = 0; combo = 1; comboTimer = 0f;
-        ammo = MAG_SIZE; reloadTimer = 0f;
+        curWeapon = 0;
+        for (int w = 0; w < W_COUNT; w++) { wMag[w] = W_MAG[w]; wReserve[w] = W_RES_START[w]; }
+        reloadTimer = 0f; fireCd = 0f; shake = 0f; switchAnim = 0f; recoil = 0f;
         playerHP = MAX_HP; hurtFlash = 0f;
         gameOver = false;
         for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
@@ -444,58 +574,125 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         spawnEnemy(); spawnEnemy(); spawnEnemy();
     }
 
+    // --- shooting & weapons ---
+
     private void fire() {
         if (gameOver) { restart(); return; }
         if (reloadTimer > 0f) return;
-        if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); return; }
-        ammo--;
+        if (fireCd > 0f) return;
+        if (wMag[curWeapon] <= 0) { beginReload(); return; }
+        wMag[curWeapon]--;
+        fireCd = W_INTERVAL[curWeapon];
 
-        muzzleTimer = MUZZLE_TIME;
+        muzzleTimer = MUZZLE_TIME * (curWeapon == 2 ? 1.6f : 1f);
         flashTimer = FLASH_TIME;
-        recoil += 0.025f;
-        if (recoil > 0.18f) recoil = 0.18f;
-        sfx.shoot();
+        recoil += W_RECOIL[curWeapon];
+        if (recoil > 0.26f) recoil = 0.26f;
+        shake = W_SHAKE[curWeapon];
+        playWeaponSound();
 
-        float cosP = (float) Math.cos(pitch);
-        float dx = cosP * (float) Math.sin(yaw);
-        float dy = (float) Math.sin(pitch);
-        float dz = -cosP * (float) Math.cos(yaw);
+        int pellets = W_PELLETS[curWeapon];
+        float spread = W_SPREAD[curWeapon];
+        boolean anyHit = false, anyHead = false;
 
-        float best = Float.MAX_VALUE;
-        int type = 0, idx = -1;                 // 1 = body, 2 = head, 3 = scenery
-        for (int i = 0; i < MAX_ENEMIES; i++) {
-            if (!enAlive[i]) continue;
-            float bt = rayBox(px, py, pz, dx, dy, dz,
-                    enX[i] - 0.45f, 0f, enZ[i] - 0.45f, enX[i] + 0.45f, 1.24f, enZ[i] + 0.45f);
-            if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
-            float ht = rayBox(px, py, pz, dx, dy, dz,
-                    enX[i] - 0.22f, 1.28f, enZ[i] - 0.22f, enX[i] + 0.22f, 1.74f, enZ[i] + 0.22f);
-            if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
+        for (int p = 0; p < pellets; p++) {
+            float cosP = (float) Math.cos(pitch);
+            float dx = cosP * (float) Math.sin(yaw);
+            float dy = (float) Math.sin(pitch);
+            float dz = -cosP * (float) Math.cos(yaw);
+            if (spread > 0f) {
+                dx += (rng.nextFloat() * 2f - 1f) * spread;
+                dy += (rng.nextFloat() * 2f - 1f) * spread;
+                dz += (rng.nextFloat() * 2f - 1f) * spread;
+                float inv = 1f / (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                dx *= inv; dy *= inv; dz *= inv;
+            }
+
+            float best = Float.MAX_VALUE;
+            int type = 0, idx = -1;                 // 1 = body, 2 = head, 3 = scenery
+            for (int i = 0; i < MAX_ENEMIES; i++) {
+                if (!enAlive[i]) continue;
+                float bt = rayBox(px, py, pz, dx, dy, dz,
+                        enX[i] - 0.45f, 0f, enZ[i] - 0.45f, enX[i] + 0.45f, 1.24f, enZ[i] + 0.45f);
+                if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
+                float ht = rayBox(px, py, pz, dx, dy, dz,
+                        enX[i] - 0.24f, 1.26f, enZ[i] - 0.24f, enX[i] + 0.24f, 1.78f, enZ[i] + 0.24f);
+                if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
+            }
+            for (int i = 0; i < BOXES.length; i++) {
+                float[] b = BOXES[i];
+                float t = rayBox(px, py, pz, dx, dy, dz,
+                        b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
+                        b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
+                if (t >= 0f && t < best) { best = t; type = 3; idx = i; }
+            }
+
+            if (type == 1 || type == 2) {
+                boolean head = (type == 2);
+                anyHit = true;
+                if (head) anyHead = true;
+                enHurt[idx] = 0.12f;
+                enHP[idx] -= head ? W_HEADDMG[curWeapon] : W_BODYDMG[curWeapon];
+                if (enHP[idx] <= 0f) onKill(idx, head);
+            } else if (type == 3) {
+                hitBox = idx; hitTimer = HIT_TIME;
+            }
         }
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
-            float t = rayBox(px, py, pz, dx, dy, dz,
-                    b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
-                    b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
-            if (t >= 0f && t < best) { best = t; type = 3; idx = i; }
-        }
 
-        if (type == 1 || type == 2) {
-            boolean head = (type == 2);
-            enAlive[idx] = false;
-            combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
-            comboTimer = COMBO_WINDOW;
-            score += combo * (head ? 2 : 1);
-            lastShotHit = true;
-            lastShotHead = head;
-            if (head) sfx.head(); else sfx.hit();
-        } else if (type == 3) {
-            hitBox = idx; hitTimer = HIT_TIME; lastShotHit = false; lastShotHead = false;
-        } else {
-            lastShotHit = false; lastShotHead = false;
-        }
+        lastShotHit = anyHit;
+        lastShotHead = anyHead;
+        if (anyHit) { hitMarkerTimer = HITMARK_TIME; hitMarkerHead = anyHead; }
+        if (anyHead) sfx.head();
+        else if (anyHit) sfx.hit();
 
-        if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); }
+        if (wMag[curWeapon] <= 0) beginReload();
+    }
+
+    private void onKill(int idx, boolean head) {
+        enAlive[idx] = false;
+        combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
+        comboTimer = COMBO_WINDOW;
+        score += combo * (head ? 2 : 1);
+        grantAmmoForKill();
+    }
+
+    /** Kills restock ammo: current weapon gets the reward, the others a trickle. */
+    private void grantAmmoForKill() {
+        wReserve[curWeapon] = Math.min(wReserve[curWeapon] + W_KILL_REWARD[curWeapon], W_RES_MAX[curWeapon]);
+        for (int w = 0; w < W_COUNT; w++) {
+            if (w == curWeapon) continue;
+            wReserve[w] = Math.min(wReserve[w] + 1, W_RES_MAX[w]);
+        }
+    }
+
+    private void beginReload() {
+        if (reloadTimer > 0f) return;
+        if (wMag[curWeapon] >= W_MAG[curWeapon]) return;
+        if (wReserve[curWeapon] <= 0) { sfx.dry(); fireCd = 0.25f; return; }  // out of ammo
+        reloadTimer = W_RELOAD[curWeapon];
+        reloadTotal = W_RELOAD[curWeapon];
+        sfx.reload();
+    }
+
+    private void finishReload() {
+        int need = W_MAG[curWeapon] - wMag[curWeapon];
+        int take = Math.min(need, wReserve[curWeapon]);
+        wMag[curWeapon] += take;
+        wReserve[curWeapon] -= take;
+    }
+
+    private void cycleWeapon() {
+        curWeapon = (curWeapon + 1) % W_COUNT;
+        reloadTimer = 0f;          // cancel any in-progress reload
+        fireCd = 0.14f;            // brief lockout after the swap
+        switchAnim = 1f;
+        sfx.swap();
+    }
+
+    private void playWeaponSound() {
+        if (curWeapon == 0) sfx.shoot();
+        else if (curWeapon == 1) sfx.rifle();
+        else sfx.shotgun();
     }
 
     private static float rayBox(float ox, float oy, float oz, float dx, float dy, float dz,
@@ -567,6 +764,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (!gameOver) {
             if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.16f * (muzzleTimer / MUZZLE_TIME));
 
+            float ccx = width * 0.5f, ccy = height * 0.5f;
+
             float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
             drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 1f, 1f, 1f, 0.16f);
             float kx = input.moveX(), ky = input.moveY();
@@ -575,14 +774,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawCircle(mcx + kx * Hud.MOVE_RADIUS, mcy - ky * Hud.MOVE_RADIUS, 56f, 1f, 1f, 1f, 0.55f);
             drawCircle(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 1f, 0.30f, 0.25f, 0.50f);
 
+            // weapon switch button (shows current weapon 1/2/3, tinted per weapon)
+            float swx = Hud.switchCx(width), swy = Hud.switchCy(height);
+            drawCircle(swx, swy, Hud.SWITCH_RADIUS, weaponR(curWeapon), weaponG(curWeapon), weaponB(curWeapon), 0.45f);
+            drawNumberAt(curWeapon + 1, swx, swy, 22f, 34f, 6f, 12f, 1f, 1f, 1f, 0.95f);
+
+            // crosshair (colors when the last shot landed: gold head, green body)
             float cr = 1f, cg = 1f, cb = 1f;
             if (flashTimer > 0f && lastShotHit) {
                 if (lastShotHead) { cr = 1f; cg = 0.85f; cb = 0.20f; }
                 else { cr = 0.30f; cg = 1f; cb = 0.40f; }
             }
-            float ccx = width * 0.5f, ccy = height * 0.5f;
             drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
             drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
+
+            // expanding hit marker (gold = headshot, white = body)
+            if (hitMarkerTimer > 0f) {
+                float k = hitMarkerTimer / HITMARK_TIME;
+                float off = 14f + 26f * (1f - k);
+                float hr = hitMarkerHead ? 1f : 0.9f, hg = hitMarkerHead ? 0.82f : 1f, hb = hitMarkerHead ? 0.2f : 0.95f;
+                float a = 0.9f * k;
+                drawRectPx(ccx, ccy - off, 3f, 12f, hr, hg, hb, a);
+                drawRectPx(ccx, ccy + off, 3f, 12f, hr, hg, hb, a);
+                drawRectPx(ccx - off, ccy, 12f, 3f, hr, hg, hb, a);
+                drawRectPx(ccx + off, ccy, 12f, 3f, hr, hg, hb, a);
+            }
 
             drawNumberCentered(score, 80f, 26f, 46f, 7f, 16f, 0.55f, 1f, 1f, 0.95f);
 
@@ -600,15 +816,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawNumberCentered(combo, 162f, 20f, 34f, 6f, 12f, 1f, mg, mb, 0.95f);
             }
 
-            float ax = Hud.fireCx(width), ay = Hud.fireCy(height) - Hud.FIRE_RADIUS - 44f;
+            // ammo: magazine (big) + reserve (small), or a reload bar
+            float ax = Hud.fireCx(width), ay = Hud.fireCy(height) - Hud.FIRE_RADIUS - 52f;
             if (reloadTimer > 0f) {
-                float rp = 1f - reloadTimer / RELOAD_TIME;
+                float rp = 1f - reloadTimer / reloadTotal;
                 drawRectPx(ax, ay, 130f, 12f, 0.25f, 0.25f, 0.28f, 0.6f);
                 drawRectPx(ax - 65f + 65f * rp, ay, 130f * rp, 12f, 1f, 0.8f, 0.2f, 0.9f);
             } else {
-                boolean lowAmmo = ammo <= 3;
-                drawNumberAt(ammo, ax, ay, 22f, 34f, 6f, 12f,
-                        lowAmmo ? 1f : 0.85f, lowAmmo ? 0.3f : 0.95f, lowAmmo ? 0.3f : 1f, 0.95f);
+                int mag = wMag[curWeapon];
+                boolean low = mag <= Math.max(2, W_MAG[curWeapon] / 6);
+                drawNumberAt(mag, ax - 26f, ay, 24f, 38f, 7f, 13f,
+                        low ? 1f : 0.9f, low ? 0.3f : 0.95f, low ? 0.3f : 1f, 0.95f);
+                drawNumberAt(wReserve[curWeapon], ax + 46f, ay + 6f, 14f, 24f, 4f, 9f, 0.7f, 0.75f, 0.82f, 0.85f);
             }
         } else {
             drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.62f);
@@ -622,6 +841,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glDisable(GLES20.GL_BLEND);
     }
+
+    private static float weaponR(int w) { return w == 0 ? 0.30f : (w == 1 ? 0.40f : 1.00f); }
+    private static float weaponG(int w) { return w == 0 ? 0.85f : (w == 1 ? 1.00f : 0.62f); }
+    private static float weaponB(int w) { return w == 0 ? 1.00f : (w == 1 ? 0.45f : 0.20f); }
+
+    private static float clamp(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
     private static final int[] SEG = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
 
