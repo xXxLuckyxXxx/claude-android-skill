@@ -13,6 +13,8 @@ import android.opengl.Matrix;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
 
 import javax.microedition.khronos.egl.EGLConfig;
@@ -87,10 +89,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
 
-    private int floorTex, metalTex;
+    private int floorTex, metalTex, terrainTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle;
-    private int sphereVerts, circleVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain;
+    private int sphereVerts, circleVerts, terrainVerts;
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -150,14 +152,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private final float[] colTmp = new float[2];
 
-    // Static cover: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
-    private static final float[][] BOXES = {
-        {-4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f},
-        { 4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f},
-        {-2f, 0.75f, 0f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f},
-        { 2.5f, 0.75f, 1f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f},
-        { 0f, 2.0f, 13f, 20f, 4.0f, 1.0f, 0.78f, 0.82f, 0.90f},
-    };
+    // World geometry — cover crates/pillars first, then building wall/roof boxes.
+    // Each: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b  (posY is the centre).
+    private static final int COVER_BOXES = 4;        // first N cast a ground-shadow blob
+    private final float[][] boxes = buildWorldBoxes();
 
     private static final float[] FOG = {0.46f, 0.52f, 0.62f};
 
@@ -222,6 +220,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         floorTex = uploadTexture(makeFloorBitmap());
         metalTex = uploadTexture(makeMetalBitmap());
 
+        float[] terr = makeTerrain(56, 80f);
+        terrain = makeBuffer(terr);
+        terrainVerts = terr.length / 8;
+        terrainTex = uploadTexture(makeTerrainBitmap());
+
         restart();
         lastNanos = System.nanoTime();
     }
@@ -273,16 +276,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uTime, timeAcc);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, floorTex);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, terrainTex);
         Matrix.setIdentityM(model, 0);
-        drawWorld(floor, 6, 0f, 1f, 1f, 1f);
+        drawWorld(terrain, terrainVerts, 0f, 1f, 1f, 1f);
 
         drawShadows();
 
         GLES20.glUseProgram(prog3);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
+        for (int i = 0; i < boxes.length; i++) {
+            float[] b = boxes[i];
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
@@ -369,7 +372,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float bob = Math.abs(sw) * 0.045f;                // gait bob
             float k = enHurt[i] > 0f ? 1.8f : 1f;             // hit flash
             Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
-            Matrix.translateM(gunBase, 0, enX[i], bob, enZ[i]);
+            Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
             enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f * k, 0.13f * k, 0.13f * k);   // torso
             enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.86f * k, 0.62f * k, 0.50f * k);   // head
@@ -565,12 +568,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         px = colTmp[0]; pz = colTmp[1];
 
         // --- vertical movement: jump / climb / gravity ---
+        boolean wasGrounded = grounded;
         if (input.consumeJump() && !gameOver) doJump();
         vy -= GRAVITY * dt;
         feetY += vy * dt;
         float support = groundSupport();
-        if (feetY <= support) { feetY = support; vy = 0f; grounded = true; }
-        else grounded = false;
+        if (feetY <= support) {
+            feetY = support; vy = 0f; grounded = true;
+        } else if (wasGrounded && vy <= 0f && feetY - support <= 0.6f) {
+            feetY = support; vy = 0f; grounded = true;     // stick to slopes / small steps when walking
+        } else {
+            grounded = false;
+        }
         py = feetY + EYE_H;
 
         // --- head bob / sway while moving (stronger when sprinting) ---
@@ -600,8 +609,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void doJump() {
         if (grounded) { vy = JUMP_V; grounded = false; }
         float best = -1f;
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
+        for (int i = 0; i < boxes.length; i++) {
+            float[] b = boxes[i];
             float boxTop = b[1] + b[4] * 0.5f;
             float rise = boxTop - feetY;
             if (rise <= 0.30f || rise > MANTLE_MAX) continue;
@@ -617,11 +626,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** Highest box top the player is standing over (0 = floor). */
+    /** Highest support under the player: the terrain, or a box top they're standing over. */
     private float groundSupport() {
-        float support = 0f;
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
+        float support = terrainH(px, pz);
+        for (int i = 0; i < boxes.length; i++) {
+            float[] b = boxes[i];
             float boxTop = b[1] + b[4] * 0.5f;
             if (boxTop > feetY + 0.05f) continue;        // can't rest on something above the feet
             float hx = b[3] * 0.5f + 0.30f, hz = b[5] * 0.5f + 0.30f;   // small ledge margin
@@ -635,8 +644,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Circle (radius r, feet at footY) vs the static boxes on XZ, with optional arena clamp. */
     private void collide(float r, float footY, boolean clampArena, float[] io) {
         float x = io[0], z = io[1];
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
+        for (int i = 0; i < boxes.length; i++) {
+            float[] b = boxes[i];
             if (b[1] + b[4] * 0.5f <= footY + 0.05f) continue;   // standing on/above it: walkable
             float minx = b[0] - b[3] * 0.5f - r, maxx = b[0] + b[3] * 0.5f + r;
             float minz = b[2] - b[5] * 0.5f - r, maxz = b[2] + b[5] * 0.5f + r;
@@ -736,8 +745,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                         enX[i] - 0.24f, 1.26f, enZ[i] - 0.24f, enX[i] + 0.24f, 1.78f, enZ[i] + 0.24f);
                 if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
             }
-            for (int i = 0; i < BOXES.length; i++) {
-                float[] b = BOXES[i];
+            for (int i = 0; i < boxes.length; i++) {
+                float[] b = boxes[i];
                 float t = rayBox(px, py, pz, dx, dy, dz,
                         b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
                         b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
@@ -833,24 +842,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         circle.position(0);
         GLES20.glEnableVertexAttribArray(aPBlob);
         GLES20.glVertexAttribPointer(aPBlob, 2, GLES20.GL_FLOAT, false, 8, circle);
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
-            blob(b[0], b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
+        for (int i = 0; i < COVER_BOXES && i < boxes.length; i++) {
+            float[] b = boxes[i];
+            blob(b[0], 0f, b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
         }
         for (int i = 0; i < MAX_ENEMIES; i++) {
-            if (enAlive[i]) blob(enX[i], 1.0f, enZ[i], 0.55f);
+            if (enAlive[i]) blob(enX[i], terrainH(enX[i], enZ[i]), 1.0f, enZ[i], 0.55f);
         }
         GLES20.glDepthMask(true);
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
-    private void blob(float ox, float oy, float oz, float baseR) {
+    private void blob(float ox, float groundY, float oy, float oz, float baseR) {
         float s = oy / (-LDY);
         float fx = ox + LDX * s, fz = oz + LDZ * s;
         float r = baseR * (1f + s * 0.06f);
         float alpha = 0.5f / (1f + s * 0.22f);
         Matrix.setIdentityM(model, 0);
-        Matrix.translateM(model, 0, fx, 0.02f, fz);
+        Matrix.translateM(model, 0, fx, groundY + 0.02f, fz);
         Matrix.scaleM(model, 0, r, 1f, r);
         Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
@@ -1165,6 +1174,121 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         o = faceQuad(d, o, -h, -h, h,  h, -h, h,  h, h, h, -h, h, h,  0, 0, 1);
         o = faceQuad(d, o,  h, -h, -h, -h, -h, -h, -h, h, -h,  h, h, -h,  0, 0, -1);
         return d;
+    }
+
+    // --- terrain & world building ---
+
+    private static float smoothstep(float a, float b, float x) {
+        float t = clamp((x - a) / (b - a), 0f, 1f);
+        return t * t * (3f - 2f * t);
+    }
+
+    /** Rolling-hills height field: flat in the central play area, hillier toward the edges. */
+    private static float terrainH(float x, float z) {
+        float r = (float) Math.sqrt(x * x + z * z);
+        float amp = smoothstep(11f, 27f, r);
+        float h = 1.6f * (float) Math.sin(x * 0.16f) * (float) Math.cos(z * 0.14f)
+                + 0.9f * (float) Math.sin(x * 0.06f + 1.3f)
+                + 0.8f * (float) Math.cos(z * 0.075f + 2.1f)
+                + 0.5f * (float) Math.sin((x + z) * 0.11f);
+        return amp * h;
+    }
+
+    private static float[] makeTerrain(int cells, float size) {
+        float half = size * 0.5f, cs = size / cells;
+        float[] d = new float[cells * cells * 6 * 8];
+        int o = 0;
+        for (int i = 0; i < cells; i++) {
+            float x0 = -half + i * cs, x1 = x0 + cs;
+            for (int j = 0; j < cells; j++) {
+                float z0 = -half + j * cs, z1 = z0 + cs;
+                o = terrVtx(d, o, x0, z0);
+                o = terrVtx(d, o, x1, z0);
+                o = terrVtx(d, o, x1, z1);
+                o = terrVtx(d, o, x0, z0);
+                o = terrVtx(d, o, x1, z1);
+                o = terrVtx(d, o, x0, z1);
+            }
+        }
+        return d;
+    }
+
+    private static int terrVtx(float[] d, int o, float x, float z) {
+        float e = 0.5f;
+        float nx = terrainH(x - e, z) - terrainH(x + e, z);
+        float nz = terrainH(x, z - e) - terrainH(x, z + e);
+        float ny = 2f * e;
+        float inv = 1f / (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+        return put(d, o, x, terrainH(x, z), z, nx * inv, ny * inv, nz * inv, x * 0.25f, z * 0.25f);
+    }
+
+    private static float[][] buildWorldBoxes() {
+        List<float[]> L = new ArrayList<float[]>();
+        // cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
+        L.add(new float[]{-2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
+        L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
+        L.add(new float[]{-3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
+        L.add(new float[]{ 3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
+        // buildings (walls with a doorway + a roof); doors face the play area
+        addBuilding(L, -8f, 1f, 5f, 6f, 3.2f, 2, 0.60f, 0.58f, 0.55f);
+        addBuilding(L,  8f, 0f, 5f, 6f, 3.0f, 3, 0.58f, 0.56f, 0.53f);
+        addBuilding(L,  0f, -8f, 7f, 5f, 3.4f, 0, 0.56f, 0.57f, 0.60f);
+        return L.toArray(new float[0][]);
+    }
+
+    /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x) and a flat roof. */
+    private static void addBuilding(List<float[]> L, float cx, float cz, float w, float d, float h,
+                                    int doorSide, float r, float g, float b) {
+        float t = 0.3f, doorW = 1.9f, doorH = 2.3f;
+        addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b);   // +z
+        addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b);   // -z
+        addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b);  // +x
+        addWall(L, cx - w * 0.5f, cz, t, d, h, doorSide == 3, doorW, doorH, false, r, g, b);  // -x
+        L.add(new float[]{cx, h + 0.15f, cz, w + t, 0.3f, d + t, r * 0.9f, g * 0.9f, b * 0.95f}); // roof
+    }
+
+    private static void addWall(List<float[]> L, float cx, float cz, float sx, float sz, float h,
+                                boolean door, float doorW, float doorH, boolean spanX,
+                                float r, float g, float b) {
+        if (!door) {
+            L.add(new float[]{cx, h * 0.5f, cz, sx, h, sz, r, g, b});
+            return;
+        }
+        if (spanX) {                                   // wall runs along X; gap in the middle
+            float segW = (sx - doorW) * 0.5f;
+            L.add(new float[]{cx - (doorW * 0.5f + segW * 0.5f), h * 0.5f, cz, segW, h, sz, r, g, b});
+            L.add(new float[]{cx + (doorW * 0.5f + segW * 0.5f), h * 0.5f, cz, segW, h, sz, r, g, b});
+            L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, doorW, h - doorH, sz, r, g, b}); // lintel
+        } else {                                       // wall runs along Z
+            float segD = (sz - doorW) * 0.5f;
+            L.add(new float[]{cx, h * 0.5f, cz - (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b});
+            L.add(new float[]{cx, h * 0.5f, cz + (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b});
+            L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, sx, h - doorH, doorW, r, g, b}); // lintel
+        }
+    }
+
+    private static Bitmap makeTerrainBitmap() {
+        int N = 512;
+        Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        c.drawColor(0xFF3A4A2A);                        // base grass-green
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(23);
+        for (int k = 0; k < 60; k++) {                  // soft dirt/grass blotches
+            int shade = rnd.nextInt(3);
+            int col = shade == 0 ? 0x2F3D22 : (shade == 1 ? 0x4A5C30 : 0x5A4A30);
+            p.setColor(0x55000000 | col);
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(70), p);
+        }
+        for (int k = 0; k < 5000; k++) {                // grass speckle
+            int v = rnd.nextInt(70);
+            p.setColor((0x40 << 24) | ((0x30 + v) << 16) | ((0x44 + v) << 8) | (0x22 + v / 2));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1 + rnd.nextInt(3), p);
+        }
+        p.setColor(0x66556055);                          // scattered pebbles
+        for (int k = 0; k < 120; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 1 + rnd.nextInt(2), p);
+        return bmp;
     }
 
     private static float[] makeFloor(float half, float tiles) {
