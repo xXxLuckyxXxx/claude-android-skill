@@ -66,11 +66,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final int MAX_ENEMIES = 7;
     private static final float ENEMY_SPEED = 1.7f;     // base m/s
     private static final float ENEMY_FULL_HP = 100f;
-    private static final float SPAWN_DIST = 26f;
+    private static final float SPAWN_DIST = 30f;
     private static final float REACH_DIST = 1.5f;
     private static final float ENEMY_DMG = 20f;
     private static final float MAX_HP = 100f;
-    private static final float ARENA_LIMIT = 18.5f;
+    private static final float ARENA_LIMIT = 23f;
 
     private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
 
@@ -89,9 +89,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
 
-    private int floorTex, metalTex, terrainTex;
+    private int floorTex, metalTex, terrainTex, cityTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround;
     private int sphereVerts, circleVerts, terrainVerts;
 
     private final float[] proj = new float[16];
@@ -225,6 +225,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         terrainVerts = terr.length / 8;
         terrainTex = uploadTexture(makeTerrainBitmap());
 
+        cityGround = makeBuffer(makeFlatQuad(21f, 0.02f));
+        cityTex = uploadTexture(makeCityBitmap());
+
         restart();
         lastNanos = System.nanoTime();
     }
@@ -280,6 +283,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setIdentityM(model, 0);
         drawWorld(terrain, terrainVerts, 0f, 1f, 1f, 1f);
 
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
+        drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
+
         drawShadows();
 
         GLES20.glUseProgram(prog3);
@@ -320,12 +326,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 sfx.hurt();
                 if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
             } else if (d > 1e-4f) {
+                float a = steerDir(enX[i], enZ[i], (float) Math.atan2(dx, dz));  // navigate round buildings
+                enFace[i] = a;                            // face the way it actually moves
                 float step = speed * dt;
-                enX[i] += dx / d * step;
-                enZ[i] += dz / d * step;
-                enPhase[i] += step * 9f;                 // advance walk cycle with distance
+                enX[i] += (float) Math.sin(a) * step;
+                enZ[i] += (float) Math.cos(a) * step;
+                enPhase[i] += step * 9f;                  // advance walk cycle with distance
                 colTmp[0] = enX[i]; colTmp[1] = enZ[i];
-                collide(0.4f, 0f, false, colTmp);        // enemies stay on the ground, slide around cover
+                collide(0.4f, 0f, false, colTmp);         // backstop: never pass through cover
                 enX[i] = colTmp[0]; enZ[i] = colTmp[1];
             }
         }
@@ -361,6 +369,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             highScore = score;
             prefs.edit().putInt("highscore", highScore).apply();
         }
+    }
+
+    // Steering: try headings fanned out from "straight at the player" and take the first one whose
+    // short probe ahead is clear of buildings — so enemies round corners and use the streets.
+    private static final float[] STEER_OFFSETS = {0f, 0.45f, -0.45f, 0.95f, -0.95f, 1.5f, -1.5f, 2.1f, -2.1f};
+
+    private float steerDir(float ex, float ez, float desired) {
+        for (int k = 0; k < STEER_OFFSETS.length; k++) {
+            float a = desired + STEER_OFFSETS[k];
+            float pxp = ex + (float) Math.sin(a) * 1.5f;
+            float pzp = ez + (float) Math.cos(a) * 1.5f;
+            if (clearOfBuildings(pxp, pzp, 0.5f)) return a;
+        }
+        return desired;                                   // boxed in: go straight, collide() will slide
+    }
+
+    private boolean clearOfBuildings(float x, float z, float r) {
+        for (int i = 0; i < boxes.length; i++) {
+            float[] b = boxes[i];
+            if (b[1] + b[4] * 0.5f < 0.5f) continue;      // ignore anything you'd just step over
+            if (x > b[0] - b[3] * 0.5f - r && x < b[0] + b[3] * 0.5f + r
+             && z > b[2] - b[5] * 0.5f - r && z < b[2] + b[5] * 0.5f + r) return false;
+        }
+        return true;
     }
 
     private void drawEnemies() {
@@ -458,7 +490,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, 0.01f, -0.20f, 0.050f, 0.055f, 0.10f, 0.10f, 0.10f, 0.12f); // barrel tip
         gunPart(0f, -0.13f, 0.10f, 0.070f, 0.170f, 0.085f, 0.10f, 0.09f, 0.08f); // grip
         gunPart(0f, -0.05f, 0.04f, 0.055f, 0.050f, 0.05f, 0.08f, 0.08f, 0.10f);  // trigger guard
-        drawSights(0.02f, -0.22f);
+        drawSights();
         return -0.30f;
     }
 
@@ -467,11 +499,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.12f, 0.12f, 0.15f);
         gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
         gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.09f, 0.09f, 0.11f);
-        gunPart(0f, 0.105f, -0.04f, 0.040f, 0.050f, 0.18f, 0.10f, 0.10f, 0.12f);
+        gunPart(0f, 0.050f, -0.10f, 0.045f, 0.035f, 0.22f, 0.10f, 0.10f, 0.12f);  // low handguard rail
         gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.18f, 0.18f, 0.22f);
         gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);
         gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
-        drawSights(0.10f, -0.50f);
+        drawSights();
         return -0.56f;
     }
 
@@ -482,17 +514,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, 0.00f, -0.18f, 0.078f, 0.060f, 0.18f, 0.10f, 0.08f, 0.06f);  // pump/forend
         gunPart(0f, -0.02f, 0.30f, 0.070f, 0.120f, 0.18f, 0.18f, 0.12f, 0.09f);  // stock (wood)
         gunPart(0f, -0.12f, 0.16f, 0.060f, 0.130f, 0.085f, 0.12f, 0.09f, 0.07f); // grip
-        drawSights(0.10f, -0.50f);
+        drawSights();
         return -0.62f;
     }
 
-    /** Rear notch (two slim posts) + a thin front blade with a small glowing bead. Kept fine so
-     *  the front sight does not cover the target — you aim with the little bead at screen centre. */
-    private void drawSights(float rearZ, float frontZ) {
-        gunPart(-0.036f, 0.112f, rearZ, 0.009f, 0.040f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post L
-        gunPart( 0.036f, 0.112f, rearZ, 0.009f, 0.040f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post R
-        gunPart(0f, 0.102f, frontZ, 0.005f, 0.044f, 0.011f, 0.06f, 0.06f, 0.07f);      // thin front blade
-        gunBeadPart(0f, 0.120f, frontZ, 0.0085f,                                        // small bead = aim point
+    /** Iron sights at FIXED positions so every weapon shows the same sight picture at the same
+     *  on-screen size: a slim rear notch, a thin front blade and a small glowing bead = aim point. */
+    private void drawSights() {
+        float rearZ = -0.05f, frontZ = -0.30f;
+        gunPart(-0.033f, 0.112f, rearZ, 0.009f, 0.042f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post L
+        gunPart( 0.033f, 0.112f, rearZ, 0.009f, 0.042f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post R
+        gunPart(0f, 0.103f, frontZ, 0.006f, 0.044f, 0.012f, 0.06f, 0.06f, 0.07f);      // thin front blade
+        gunBeadPart(0f, 0.120f, frontZ, 0.011f,                                         // small bead = aim point
                 weaponR(curWeapon) * 1.2f, weaponG(curWeapon) * 1.2f, weaponB(curWeapon) * 1.2f);
     }
 
@@ -1187,7 +1220,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Rolling-hills height field: flat over the city core, hillier outskirts toward the edges. */
     private static float terrainH(float x, float z) {
         float r = (float) Math.sqrt(x * x + z * z);
-        float amp = smoothstep(15f, 34f, r);
+        float amp = smoothstep(21f, 40f, r);
         float h = 1.6f * (float) Math.sin(x * 0.16f) * (float) Math.cos(z * 0.14f)
                 + 0.9f * (float) Math.sin(x * 0.06f + 1.3f)
                 + 0.8f * (float) Math.cos(z * 0.075f + 2.1f)
@@ -1230,6 +1263,69 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     };
 
     /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
+    private static float[] makeFlatQuad(float half, float y) {
+        float[] d = new float[6 * 8];
+        int o = 0;
+        o = put(d, o, -half, y, -half, 0, 1, 0, 0f, 0f);
+        o = put(d, o,  half, y, -half, 0, 1, 0, 1f, 0f);
+        o = put(d, o,  half, y,  half, 0, 1, 0, 1f, 1f);
+        o = put(d, o, -half, y, -half, 0, 1, 0, 0f, 0f);
+        o = put(d, o,  half, y,  half, 0, 1, 0, 1f, 1f);
+        o = put(d, o, -half, y,  half, 0, 1, 0, 0f, 1f);
+        return d;
+    }
+
+    /** Top-down city ground: concrete blocks, asphalt streets with sidewalk borders + lane dashes. */
+    private static Bitmap makeCityBitmap() {
+        int N = 1024;
+        float half = 21f;
+        Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        c.drawColor(0xFF6E7173);                          // concrete block base
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        float[] roads = {-20f, -12f, -4f, 4f, 12f, 20f};
+        for (int i = 0; i < roads.length; i++) {          // sidewalk borders (lighter), both axes
+            cityBand(c, p, roads[i], 2.7f, half, N, true, 0xFF9A9E94);
+            cityBand(c, p, roads[i], 2.7f, half, N, false, 0xFF9A9E94);
+        }
+        for (int i = 0; i < roads.length; i++) {          // asphalt on top
+            cityBand(c, p, roads[i], 1.7f, half, N, true, 0xFF34373A);
+            cityBand(c, p, roads[i], 1.7f, half, N, false, 0xFF34373A);
+        }
+        p.setColor(0xFFD9C24E);                            // dashed centre lines
+        for (int i = 0; i < roads.length; i++) {
+            cityDashes(c, p, roads[i], half, N, true);
+            cityDashes(c, p, roads[i], half, N, false);
+        }
+        p.setColor(0x30FFFFFF);                            // plaza highlight in the centre
+        float pa = (-4f + half) / (2f * half) * N, pb = (4f + half) / (2f * half) * N;
+        c.drawRect(pa, pa, pb, pb, p);
+        Random rnd = new Random(31);                       // grain
+        for (int k = 0; k < 4500; k++) {
+            int v = rnd.nextInt(38);
+            p.setColor((0x22 << 24) | (v << 16) | (v << 8) | v);
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1, p);
+        }
+        return bmp;
+    }
+
+    private static void cityBand(Canvas c, Paint p, float center, float halfW, float half, int N, boolean vertical, int col) {
+        p.setColor(col);
+        float a = (center - halfW + half) / (2f * half) * N;
+        float b = (center + halfW + half) / (2f * half) * N;
+        if (vertical) c.drawRect(a, 0, b, N, p);
+        else c.drawRect(0, a, N, b, p);
+    }
+
+    private static void cityDashes(Canvas c, Paint p, float center, float half, int N, boolean vertical) {
+        float cpx = (center + half) / (2f * half) * N, w = 3f, dash = N / 50f;
+        for (float t = 0; t < N; t += dash * 2f) {
+            if (vertical) c.drawRect(cpx - w, t, cpx + w, t + dash, p);
+            else c.drawRect(t, cpx - w, t + dash, cpx + w, p);
+        }
+    }
+
     private static float[][] buildWorldBoxes() {
         List<float[]> L = new ArrayList<float[]>();
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
@@ -1239,16 +1335,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{ 3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
         // city blocks on a grid; keep them in the flat core and clear of the plaza / spawn lane
         Random rc = new Random(101);
-        float[] gs = {-12f, -6f, 0f, 6f, 12f};
+        float[] gs = {-16f, -8f, 0f, 8f, 16f};                     // blocks spaced 8 m -> wide streets
         for (int ix = 0; ix < gs.length; ix++) {
             for (int iz = 0; iz < gs.length; iz++) {
                 float cx = gs[ix], cz = gs[iz];
-                if (cx * cx + cz * cz > 12.5f * 12.5f) continue;   // stay on the flat core
+                if (cx * cx + cz * cz > 18.5f * 18.5f) continue;   // stay on the flat core
                 if (cx == 0f && cz >= 0f) continue;                // open plaza + spawn corridor
-                float w = 3.6f + rc.nextFloat() * 1.2f;
-                float d = 3.6f + rc.nextFloat() * 1.2f;
-                boolean tower = cx * cx + cz * cz > 100f;          // outer ring -> high-rise
-                float h = tower ? 5.5f + rc.nextFloat() * 2.2f : 3.0f + rc.nextFloat() * 1.5f;
+                float w = 2.8f + rc.nextFloat() * 1.3f;
+                float d = 2.8f + rc.nextFloat() * 1.3f;
+                boolean tower = cx * cx + cz * cz > 170f;          // outer ring -> high-rise
+                float h = tower ? 5.5f + rc.nextFloat() * 2.5f : 3.0f + rc.nextFloat() * 1.6f;
                 int doorSide = (Math.abs(cx) >= Math.abs(cz)) ? (cx < 0 ? 2 : 3) : (cz < 0 ? 0 : 1);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 addBuilding(L, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
