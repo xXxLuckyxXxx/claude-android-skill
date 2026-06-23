@@ -1,5 +1,7 @@
 package com.aigames.fpsprototype;
 
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -75,6 +77,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private boolean lastShotHit = false;
 
     private int score = 0;
+    private int combo = 1;
+    private float comboTimer = 0f;
+    private int highScore = 0;
+    private static final float COMBO_WINDOW = 2.2f;
+    private final SharedPreferences prefs;
     private float roundTime = ROUND_TIME;
     private boolean gameOver = false;
 
@@ -94,9 +101,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final float[] FOG = {0.46f, 0.52f, 0.62f};
 
-    public FpsRenderer(InputState input, int buildNumber) {
+    public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
         this.buildNumber = buildNumber;
+        this.prefs = ctx.getSharedPreferences("aigames_fps", Context.MODE_PRIVATE);
+        this.highScore = prefs.getInt("highscore", 0);
     }
 
     @Override
@@ -412,6 +421,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (hitTimer > 0f) hitTimer -= dt;
         if (flashTimer > 0f) flashTimer -= dt;
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
+        if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
 
         for (int i = 0; i < targetAlive.length; i++) {
             if (!targetAlive[i]) {
@@ -421,13 +431,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         if (!gameOver) {
             roundTime -= dt;
-            if (roundTime <= 0f) { roundTime = 0f; gameOver = true; }
+            if (roundTime <= 0f) {
+                roundTime = 0f;
+                gameOver = true;
+                if (score > highScore) {                 // persist new best
+                    highScore = score;
+                    prefs.edit().putInt("highscore", highScore).apply();
+                }
+            }
         }
         input.setGameOver(gameOver);
     }
 
     private void restart() {
         score = 0;
+        combo = 1;
+        comboTimer = 0f;
         roundTime = ROUND_TIME;
         gameOver = false;
         for (int i = 0; i < targetAlive.length; i++) { targetAlive[i] = true; targetRespawn[i] = 0f; }
@@ -465,7 +484,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         if (type == 1) {
-            targetAlive[idx] = false; targetRespawn[idx] = RESPAWN_TIME; score++; lastShotHit = true;
+            targetAlive[idx] = false; targetRespawn[idx] = RESPAWN_TIME;
+            combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;   // chain hits -> higher multiplier
+            comboTimer = COMBO_WINDOW;
+            score += combo;
+            lastShotHit = true;
         } else if (type == 2) {
             hitBox = idx; hitTimer = HIT_TIME; lastShotHit = false;
         } else {
@@ -521,11 +544,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int secs = (int) Math.ceil(roundTime);
             boolean low = secs <= 5;
             drawNumberLeft(secs, 56f, 64f, 20f, 36f, 6f, 12f, 1f, low ? 0.3f : 1f, low ? 0.3f : 1f, 0.95f);
+
+            // combo multiplier (chain hits) + depleting timer bar
+            if (combo > 1) {
+                float ct = comboTimer / COMBO_WINDOW;
+                drawRectPx(width * 0.5f, 126f, 130f * ct, 6f, 1f, 0.78f, 0.2f, 0.9f);
+                float mg = combo >= 5 ? 0.42f : (combo >= 3 ? 0.75f : 1f);
+                float mb = combo >= 3 ? 0.2f : 0.5f;
+                drawNumberCentered(combo, 162f, 20f, 34f, 6f, 12f, 1f, mg, mb, 0.95f);
+            }
         } else {
             drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.62f);
             drawNumberCentered(score, height * 0.40f, 56f, 96f, 12f, 30f, 1f, 1f, 1f, 1f);
-            drawCircle(width * 0.5f, height * 0.72f, 86f, 0.2f, 0.9f, 0.35f, 0.85f);
-            drawRectPx(width * 0.5f, height * 0.72f, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
+            // best score (gold) below the run score
+            drawNumberCentered(highScore, height * 0.40f + 98f, 22f, 40f, 6f, 14f, 1f, 0.84f, 0.3f, 0.95f);
+            drawCircle(width * 0.5f, height * 0.74f, 86f, 0.2f, 0.9f, 0.35f, 0.85f);
+            drawRectPx(width * 0.5f, height * 0.74f, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
         }
 
         drawNumberLeft(buildNumber, width - 116f, 52f, 18f, 30f, 5f, 11f, 1f, 0.8f, 0.2f, 0.95f);
