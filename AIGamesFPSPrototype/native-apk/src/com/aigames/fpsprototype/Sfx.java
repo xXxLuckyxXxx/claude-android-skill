@@ -17,7 +17,7 @@ class Sfx {
     private static final int SR = 22050;
 
     private SoundPool pool;
-    private int sShoot, sHit, sHead, sOver, sReload;
+    private int sShoot, sHit, sHead, sOver, sReload, sHurt;
     private boolean ok = false;
 
     Sfx(Context ctx) {
@@ -28,6 +28,7 @@ class Sfx {
             sHead   = load(ctx, "sfx_head",   genBlip(900f, 0.13f, 700f));
             sOver   = load(ctx, "sfx_over",   genSweep(540f, 130f, 0.55f));
             sReload = load(ctx, "sfx_reload", genBlip(320f, 0.10f, 480f));
+            sHurt   = load(ctx, "sfx_hurt",   genSweep(230f, 80f, 0.22f));
             ok = true;
         } catch (Throwable t) {
             ok = false;
@@ -39,6 +40,7 @@ class Sfx {
     void head()   { play(sHead, 1.0f); }
     void over()   { play(sOver, 0.9f); }
     void reload() { play(sReload, 0.7f); }
+    void hurt()   { play(sHurt, 0.95f); }
 
     private void play(int id, float vol) {
         if (ok && id != 0 && pool != null) {

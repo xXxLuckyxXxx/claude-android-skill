@@ -19,11 +19,11 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * Textured first-person GLES 2.0 renderer + timed shooting game with a more
- * cinematic look: detailed procedural textures, 3-point lighting with rim
- * light, ACES filmic tonemapping, a vignette, gradient sky, distance fog,
- * glowing sphere targets, and a multi-part weapon viewmodel (barrel, stock,
- * magazine, scope) with recoil + muzzle flash. Build number shown in the HUD.
+ * First-person survival shooter (GLES 2.0). Low-poly enemy figures spawn around
+ * the arena and walk toward the player; shoot them (head = double points)
+ * before they reach you and drain your health. Textured PBR-ish lighting, fog,
+ * gradient sky, vignette, contact shadows, a weapon viewmodel, procedural SFX,
+ * combo multiplier and a persistent high score.
  */
 public class FpsRenderer implements GLSurfaceView.Renderer {
 
@@ -33,14 +33,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
     private static final float FLASH_TIME = 0.15f;
-    private static final float RESPAWN_TIME = 1.6f;
-    private static final float TARGET_SCALE = 0.7f;
-    private static final float ROUND_TIME = 30f;
+    private static final float COMBO_WINDOW = 2.2f;
+    private static final int MAG_SIZE = 12;
+    private static final float RELOAD_TIME = 1.3f;
+
+    // Enemies / survival.
+    private static final int MAX_ENEMIES = 7;
+    private static final float ENEMY_SPEED = 1.7f;     // base m/s
+    private static final float SPAWN_DIST = 26f;
+    private static final float REACH_DIST = 1.5f;
+    private static final float ENEMY_DMG = 20f;
+    private static final float MAX_HP = 100f;
+
+    private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
 
     private final InputState input;
     private final int buildNumber;
+    private final SharedPreferences prefs;
+    private final Sfx sfx;
+    private final Random rng = new Random(20);
     private final float[] lookTmp = new float[2];
-    private final float[] tmpPos = new float[3];
 
     private int width = 1, height = 1;
 
@@ -49,9 +61,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
-
-    // Light travel direction (downward), used for projected blob shadows.
-    private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
 
     private int floorTex, metalTex;
 
@@ -72,40 +81,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private long lastNanos;
     private float timeAcc = 0f;
 
-    private float muzzleTimer = 0f, hitTimer = 0f, flashTimer = 0f;
+    private float muzzleTimer = 0f, hitTimer = 0f, flashTimer = 0f, hurtFlash = 0f;
     private int hitBox = -1;
-    private boolean lastShotHit = false;
+    private boolean lastShotHit = false, lastShotHead = false;
 
     private int score = 0;
     private int combo = 1;
     private float comboTimer = 0f;
     private int highScore = 0;
-    private static final float COMBO_WINDOW = 2.2f;
-    private final SharedPreferences prefs;
-    private final Sfx sfx;
-    private float roundTime = ROUND_TIME;
-    private boolean gameOver = false;
-    private boolean lastShotHead = false;
-    private float targetMoveTime = 0f;        // advances faster as difficulty ramps
-
-    // Ammo / reloading.
-    private static final int MAG_SIZE = 12;
-    private static final float RELOAD_TIME = 1.3f;
     private int ammo = MAG_SIZE;
     private float reloadTimer = 0f;
+    private float playerHP = MAX_HP;
+    private boolean gameOver = false;
 
-    private static final float[][] TARGETS = {
-        {-6f, 1.6f, 2f}, {6f, 1.6f, 2f}, {0f, 2.4f, 10f}, {-3f, 1.1f, 7f}, {3f, 1.1f, 7f},
-    };
-    private final boolean[] targetAlive = new boolean[TARGETS.length];
-    private final float[] targetRespawn = new float[TARGETS.length];
+    private final float[] enX = new float[MAX_ENEMIES];
+    private final float[] enZ = new float[MAX_ENEMIES];
+    private final float[] enFace = new float[MAX_ENEMIES];
+    private final boolean[] enAlive = new boolean[MAX_ENEMIES];
+    private float spawnTimer = 0f;
 
+    // Static cover: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b.
     private static final float[][] BOXES = {
         {-4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f},
         { 4f, 1.5f, 4f,  1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f},
         {-2f, 0.75f, 0f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f},
         { 2.5f, 0.75f, 1f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f},
-        { 0f, 2.0f, 12f, 20f, 4.0f, 1.0f, 0.78f, 0.82f, 0.90f},
+        { 0f, 2.0f, 13f, 20f, 4.0f, 1.0f, 0.78f, 0.82f, 0.90f},
     };
 
     private static final float[] FOG = {0.46f, 0.52f, 0.62f};
@@ -116,13 +117,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.prefs = ctx.getSharedPreferences("aigames_fps", Context.MODE_PRIVATE);
         this.highScore = prefs.getInt("highscore", 0);
         this.sfx = new Sfx(ctx);
-    }
-
-    /** Difficulty ramps from 1.0 at round start to ~2.6 at the end. */
-    private float difficulty() {
-        float e = (ROUND_TIME - roundTime) / ROUND_TIME;
-        if (e < 0f) e = 0f; else if (e > 1f) e = 1f;
-        return 1f + e * 1.6f;
     }
 
     @Override
@@ -199,6 +193,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         timeAcc += dt;
 
         updateCamera(dt);
+        updateEnemies(dt);
         tickTimers(dt);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
@@ -228,7 +223,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setIdentityM(model, 0);
         drawWorld(floor, 6, 0f, 1f, 1f, 1f);
 
-        // projected blob / contact shadows on the floor
         drawShadows();
 
         GLES20.glUseProgram(prog3);
@@ -242,17 +236,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(cube, 36, 0f, b[6] * boost, b[7] * boost, b[8] * boost);
         }
 
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!targetAlive[i]) continue;
-            targetPos(i, tmpPos);
-            Matrix.setIdentityM(model, 0);
-            Matrix.translateM(model, 0, tmpPos[0], tmpPos[1], tmpPos[2]);
-            Matrix.scaleM(model, 0, TARGET_SCALE, TARGET_SCALE, TARGET_SCALE);
-            drawWorld(sphere, sphereVerts, 2f, 1.0f, 0.5f, 0.12f);
-        }
-
-        // additive glow (bloom-style) around the live targets
-        drawGlow();
+        drawEnemies();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         drawGun();
@@ -260,11 +244,82 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawHud();
     }
 
-    private void targetPos(int i, float[] out) {
-        float[] h = TARGETS[i];
-        out[0] = h[0] + 2.5f * (float) Math.sin(targetMoveTime * 1.3 + i * 1.7);
-        out[1] = h[1] + 0.4f * (float) Math.sin(targetMoveTime * 2.0 + i * 2.3);
-        out[2] = h[2];
+    // --- enemies ---
+
+    private void updateEnemies(float dt) {
+        if (gameOver) return;
+        float speed = ENEMY_SPEED * (1f + Math.min(score, 100) * 0.012f);
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enAlive[i]) continue;
+            float dx = px - enX[i], dz = pz - enZ[i];
+            float d = (float) Math.sqrt(dx * dx + dz * dz);
+            enFace[i] = (float) Math.atan2(dx, dz);
+            if (d < REACH_DIST) {
+                enAlive[i] = false;
+                playerHP -= ENEMY_DMG;
+                hurtFlash = 0.6f;
+                combo = 1; comboTimer = 0f;
+                sfx.hurt();
+                if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
+            } else if (d > 1e-4f) {
+                enX[i] += dx / d * speed * dt;
+                enZ[i] += dz / d * speed * dt;
+            }
+        }
+        spawnTimer -= dt;
+        if (spawnTimer <= 0f) {
+            spawnEnemy();
+            spawnTimer = Math.max(0.5f, 1.6f - score * 0.012f);
+        }
+    }
+
+    private void spawnEnemy() {
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enAlive[i]) {
+                float a = rng.nextFloat() * 6.2832f;
+                enX[i] = (float) Math.cos(a) * SPAWN_DIST;
+                enZ[i] = (float) Math.sin(a) * SPAWN_DIST;
+                enFace[i] = 0f;
+                enAlive[i] = true;
+                return;
+            }
+        }
+    }
+
+    private void triggerGameOver() {
+        if (gameOver) return;
+        gameOver = true;
+        sfx.over();
+        if (score > highScore) {
+            highScore = score;
+            prefs.edit().putInt("highscore", highScore).apply();
+        }
+    }
+
+    private void drawEnemies() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enAlive[i]) continue;
+            Matrix.setIdentityM(gunBase, 0);                 // reuse as enemy base
+            Matrix.translateM(gunBase, 0, enX[i], 0f, enZ[i]);
+            Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
+            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f, 0.13f, 0.13f);   // torso
+            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.86f, 0.62f, 0.50f);   // head
+            enemyPart(-0.14f, 0.35f, 0f, 0.18f, 0.70f, 0.22f, 0.16f, 0.17f, 0.22f); // leg L
+            enemyPart(0.14f, 0.35f, 0f, 0.18f, 0.70f, 0.22f, 0.16f, 0.17f, 0.22f);  // leg R
+            enemyPart(-0.33f, 1.02f, 0f, 0.13f, 0.58f, 0.16f, 0.52f, 0.11f, 0.11f); // arm L
+            enemyPart(0.33f, 1.02f, 0f, 0.13f, 0.58f, 0.16f, 0.52f, 0.11f, 0.11f);  // arm R
+        }
+    }
+
+    private void enemyPart(float lx, float ly, float lz, float sx, float sy, float sz,
+                           float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, lx, ly, lz);
+        Matrix.scaleM(partM, 0, sx, sy, sz);
+        Matrix.multiplyMM(model, 0, gunBase, 0, partM, 0);   // model = base * part (world)
+        drawWorld(cube, 36, 0f, r, g, b);
     }
 
     private void drawWorld(FloatBuffer buf, int count, float mode, float r, float g, float b) {
@@ -299,28 +354,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.rotateM(gunBase, 0, -3.0f + recoil * 9f, 1f, 0f, 0f);
         Matrix.rotateM(gunBase, 0, -4f, 0f, 1f, 0f);
 
-        // body / receiver
         gunPart(0f, 0.00f, 0.04f, 0.090f, 0.11f, 0.42f, 0.13f, 0.14f, 0.17f);
-        // stock (rear)
         gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.12f, 0.12f, 0.15f);
-        // barrel
         gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
-        // muzzle ring
         gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.09f, 0.09f, 0.11f);
-        // scope body
         gunPart(0f, 0.105f, -0.04f, 0.040f, 0.050f, 0.18f, 0.10f, 0.10f, 0.12f);
-        // scope lens (glass tint)
         gunPart(0f, 0.105f, -0.14f, 0.052f, 0.062f, 0.03f, 0.06f, 0.20f, 0.26f);
-        // magazine
-        gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.16f, 0.16f, 0.20f);
-        // grip
-        gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.11f, 0.10f, 0.10f);
-        // trigger guard
+        gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.18f, 0.18f, 0.22f);
+        gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);
         gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
 
         if (muzzleTimer > 0f) {
             float k = muzzleTimer / MUZZLE_TIME;
-            // bright opaque core
             Matrix.setIdentityM(partM, 0);
             Matrix.translateM(partM, 0, 0f, 0.02f, -0.56f);
             float s = 0.05f + 0.05f * k;
@@ -328,7 +373,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
             Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
             submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.3f * k, 1.3f * k);
-            // additive flash halo
             GLES20.glEnable(GLES20.GL_BLEND);
             GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
             GLES20.glDepthMask(false);
@@ -344,60 +388,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    private void drawShadows() {
-        GLES20.glUseProgram(progBlob);
-        GLES20.glEnable(GLES20.GL_BLEND);
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
-        GLES20.glDepthMask(false);
-        circle.position(0);
-        GLES20.glEnableVertexAttribArray(aPBlob);
-        GLES20.glVertexAttribPointer(aPBlob, 2, GLES20.GL_FLOAT, false, 8, circle);
-        for (int i = 0; i < BOXES.length; i++) {
-            float[] b = BOXES[i];
-            blob(b[0], b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
-        }
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!targetAlive[i]) continue;
-            targetPos(i, tmpPos);
-            blob(tmpPos[0], tmpPos[1], tmpPos[2], TARGET_SCALE * 0.62f);
-        }
-        GLES20.glDepthMask(true);
-        GLES20.glDisable(GLES20.GL_BLEND);
-    }
-
-    private void blob(float ox, float oy, float oz, float baseR) {
-        float s = oy / (-LDY);                          // distance to floor along light
-        float fx = ox + LDX * s, fz = oz + LDZ * s;
-        float r = baseR * (1f + s * 0.06f);
-        float alpha = 0.5f / (1f + s * 0.22f);
-        Matrix.setIdentityM(model, 0);
-        Matrix.translateM(model, 0, fx, 0.02f, fz);
-        Matrix.scaleM(model, 0, r, 1f, r);
-        Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
-        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        GLES20.glUniformMatrix4fv(uBlobMVP, 1, false, mvp, 0);
-        GLES20.glUniform1f(uBlobA, alpha);
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, circleVerts);
-    }
-
-    private void drawGlow() {
-        GLES20.glUseProgram(prog3);
-        GLES20.glEnable(GLES20.GL_BLEND);
-        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
-        GLES20.glDepthMask(false);
-        float k = 1.7f;
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!targetAlive[i]) continue;
-            targetPos(i, tmpPos);
-            Matrix.setIdentityM(model, 0);
-            Matrix.translateM(model, 0, tmpPos[0], tmpPos[1], tmpPos[2]);
-            Matrix.scaleM(model, 0, TARGET_SCALE * k, TARGET_SCALE * k, TARGET_SCALE * k);
-            drawWorld(sphere, sphereVerts, 5f, 0.9f, 0.42f, 0.12f);
-        }
-        GLES20.glDepthMask(true);
-        GLES20.glDisable(GLES20.GL_BLEND);
-    }
-
     private void gunPart(float tx, float ty, float tz, float sx, float sy, float sz,
                          float r, float g, float b) {
         Matrix.setIdentityM(partM, 0);
@@ -409,7 +399,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void updateCamera(float dt) {
-        targetMoveTime += dt * difficulty();
         input.consumeLook(lookTmp);
         yaw += lookTmp[0] * LOOK_SENS;
         pitch -= lookTmp[1] * LOOK_SENS;
@@ -438,45 +427,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (muzzleTimer > 0f) muzzleTimer -= dt;
         if (hitTimer > 0f) hitTimer -= dt;
         if (flashTimer > 0f) flashTimer -= dt;
+        if (hurtFlash > 0f) hurtFlash -= dt;
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
         if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
         if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) ammo = MAG_SIZE; }
-
-        for (int i = 0; i < targetAlive.length; i++) {
-            if (!targetAlive[i]) {
-                targetRespawn[i] -= dt;
-                if (targetRespawn[i] <= 0f) targetAlive[i] = true;
-            }
-        }
-        if (!gameOver) {
-            roundTime -= dt;
-            if (roundTime <= 0f) {
-                roundTime = 0f;
-                gameOver = true;
-                sfx.over();
-                if (score > highScore) {                 // persist new best
-                    highScore = score;
-                    prefs.edit().putInt("highscore", highScore).apply();
-                }
-            }
-        }
         input.setGameOver(gameOver);
     }
 
     private void restart() {
-        score = 0;
-        combo = 1;
-        comboTimer = 0f;
-        ammo = MAG_SIZE;
-        reloadTimer = 0f;
-        roundTime = ROUND_TIME;
+        score = 0; combo = 1; comboTimer = 0f;
+        ammo = MAG_SIZE; reloadTimer = 0f;
+        playerHP = MAX_HP; hurtFlash = 0f;
         gameOver = false;
-        for (int i = 0; i < targetAlive.length; i++) { targetAlive[i] = true; targetRespawn[i] = 0f; }
+        for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
+        spawnTimer = 0.8f;
+        spawnEnemy(); spawnEnemy(); spawnEnemy();
     }
 
     private void fire() {
         if (gameOver) { restart(); return; }
-        if (reloadTimer > 0f) return;                       // mid-reload: can't fire
+        if (reloadTimer > 0f) return;
         if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); return; }
         ammo--;
 
@@ -492,43 +462,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float dz = -cosP * (float) Math.cos(yaw);
 
         float best = Float.MAX_VALUE;
-        int type = 0, idx = -1;
-        float h = TARGET_SCALE * 0.5f;
-        for (int i = 0; i < TARGETS.length; i++) {
-            if (!targetAlive[i]) continue;
-            targetPos(i, tmpPos);
-            float t = rayBox(px, py, pz, dx, dy, dz,
-                    tmpPos[0] - h, tmpPos[1] - h, tmpPos[2] - h,
-                    tmpPos[0] + h, tmpPos[1] + h, tmpPos[2] + h);
-            if (t >= 0f && t < best) { best = t; type = 1; idx = i; }
+        int type = 0, idx = -1;                 // 1 = body, 2 = head, 3 = scenery
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enAlive[i]) continue;
+            float bt = rayBox(px, py, pz, dx, dy, dz,
+                    enX[i] - 0.45f, 0f, enZ[i] - 0.45f, enX[i] + 0.45f, 1.24f, enZ[i] + 0.45f);
+            if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
+            float ht = rayBox(px, py, pz, dx, dy, dz,
+                    enX[i] - 0.22f, 1.28f, enZ[i] - 0.22f, enX[i] + 0.22f, 1.74f, enZ[i] + 0.22f);
+            if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
         }
         for (int i = 0; i < BOXES.length; i++) {
             float[] b = BOXES[i];
             float t = rayBox(px, py, pz, dx, dy, dz,
                     b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
                     b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
-            if (t >= 0f && t < best) { best = t; type = 2; idx = i; }
+            if (t >= 0f && t < best) { best = t; type = 3; idx = i; }
         }
 
-        if (type == 1) {
-            targetPos(idx, tmpPos);                                   // hit target centre
-            float hitY = py + dy * best;
-            boolean head = hitY > tmpPos[1] + (TARGET_SCALE * 0.5f) * 0.30f;
-            targetAlive[idx] = false;
-            targetRespawn[idx] = RESPAWN_TIME / difficulty();         // faster respawn later
+        if (type == 1 || type == 2) {
+            boolean head = (type == 2);
+            enAlive[idx] = false;
             combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
             comboTimer = COMBO_WINDOW;
-            score += combo * (head ? 2 : 1);                          // headshot = double
+            score += combo * (head ? 2 : 1);
             lastShotHit = true;
             lastShotHead = head;
             if (head) sfx.head(); else sfx.hit();
-        } else if (type == 2) {
+        } else if (type == 3) {
             hitBox = idx; hitTimer = HIT_TIME; lastShotHit = false; lastShotHead = false;
         } else {
             lastShotHit = false; lastShotHead = false;
         }
 
-        if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); }    // auto-reload when emptied
+        if (ammo <= 0) { reloadTimer = RELOAD_TIME; sfx.reload(); }
     }
 
     private static float rayBox(float ox, float oy, float oz, float dx, float dy, float dz,
@@ -544,6 +511,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return tmin >= 0f ? tmin : tmax;
     }
 
+    private void drawShadows() {
+        GLES20.glUseProgram(progBlob);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glDepthMask(false);
+        circle.position(0);
+        GLES20.glEnableVertexAttribArray(aPBlob);
+        GLES20.glVertexAttribPointer(aPBlob, 2, GLES20.GL_FLOAT, false, 8, circle);
+        for (int i = 0; i < BOXES.length; i++) {
+            float[] b = BOXES[i];
+            blob(b[0], b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
+        }
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (enAlive[i]) blob(enX[i], 1.0f, enZ[i], 0.55f);
+        }
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    private void blob(float ox, float oy, float oz, float baseR) {
+        float s = oy / (-LDY);
+        float fx = ox + LDX * s, fz = oz + LDZ * s;
+        float r = baseR * (1f + s * 0.06f);
+        float alpha = 0.5f / (1f + s * 0.22f);
+        Matrix.setIdentityM(model, 0);
+        Matrix.translateM(model, 0, fx, 0.02f, fz);
+        Matrix.scaleM(model, 0, r, 1f, r);
+        Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        GLES20.glUniformMatrix4fv(uBlobMVP, 1, false, mvp, 0);
+        GLES20.glUniform1f(uBlobA, alpha);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, circleVerts);
+    }
+
     // --- HUD ---
 
     private void drawHud() {
@@ -551,7 +552,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
 
-        // Cinematic vignette over the scene (before HUD widgets).
         GLES20.glUseProgram(progVig);
         quad.position(0);
         GLES20.glEnableVertexAttribArray(aPVig);
@@ -559,8 +559,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
 
         GLES20.glUseProgram(prog2);
+
+        if (hurtFlash > 0f) {
+            drawQuadNDC(0f, 0f, 1f, 1f, 0.8f, 0.06f, 0.06f, 0.5f * Math.min(hurtFlash, 1f));
+        }
+
         if (!gameOver) {
-            if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.18f * (muzzleTimer / MUZZLE_TIME));
+            if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.16f * (muzzleTimer / MUZZLE_TIME));
+
             float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
             drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 1f, 1f, 1f, 0.16f);
             float kx = input.moveX(), ky = input.moveY();
@@ -571,19 +577,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
             float cr = 1f, cg = 1f, cb = 1f;
             if (flashTimer > 0f && lastShotHit) {
-                if (lastShotHead) { cr = 1f; cg = 0.85f; cb = 0.20f; }   // headshot = gold
-                else { cr = 0.30f; cg = 1f; cb = 0.40f; }                // body hit = green
+                if (lastShotHead) { cr = 1f; cg = 0.85f; cb = 0.20f; }
+                else { cr = 0.30f; cg = 1f; cb = 0.40f; }
             }
             float ccx = width * 0.5f, ccy = height * 0.5f;
             drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, 0.9f);
             drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, 0.9f);
 
             drawNumberCentered(score, 80f, 26f, 46f, 7f, 16f, 0.55f, 1f, 1f, 0.95f);
-            int secs = (int) Math.ceil(roundTime);
-            boolean low = secs <= 5;
-            drawNumberLeft(secs, 56f, 64f, 20f, 36f, 6f, 12f, 1f, low ? 0.3f : 1f, low ? 0.3f : 1f, 0.95f);
 
-            // combo multiplier (chain hits) + depleting timer bar
+            // health bar (top-left)
+            float hp = playerHP / MAX_HP; if (hp < 0f) hp = 0f;
+            float bx0 = 40f, bw = 230f, by = 54f;
+            drawRectPx(bx0 + bw * 0.5f, by, bw, 18f, 0.18f, 0.18f, 0.22f, 0.6f);
+            drawRectPx(bx0 + bw * hp * 0.5f, by, bw * hp, 18f, 1f - hp, 0.2f + 0.7f * hp, 0.22f, 0.92f);
+
             if (combo > 1) {
                 float ct = comboTimer / COMBO_WINDOW;
                 drawRectPx(width * 0.5f, 126f, 130f * ct, 6f, 1f, 0.78f, 0.2f, 0.9f);
@@ -592,7 +600,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawNumberCentered(combo, 162f, 20f, 34f, 6f, 12f, 1f, mg, mb, 0.95f);
             }
 
-            // ammo count / reload bar above the fire button
             float ax = Hud.fireCx(width), ay = Hud.fireCy(height) - Hud.FIRE_RADIUS - 44f;
             if (reloadTimer > 0f) {
                 float rp = 1f - reloadTimer / RELOAD_TIME;
@@ -606,7 +613,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         } else {
             drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.62f);
             drawNumberCentered(score, height * 0.40f, 56f, 96f, 12f, 30f, 1f, 1f, 1f, 1f);
-            // best score (gold) below the run score
             drawNumberCentered(highScore, height * 0.40f + 98f, 22f, 40f, 6f, 14f, 1f, 0.84f, 0.3f, 0.95f);
             drawCircle(width * 0.5f, height * 0.74f, 86f, 0.2f, 0.9f, 0.35f, 0.85f);
             drawRectPx(width * 0.5f, height * 0.74f, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
@@ -688,7 +694,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aP2, 2, GLES20.GL_FLOAT, false, 8, buf);
     }
 
-    // --- textures (procedural, detailed) ---
+    // --- textures ---
 
     private static int uploadTexture(Bitmap bmp) {
         int[] id = new int[1];
@@ -711,28 +717,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         c.drawColor(0xFF0C0E12);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(11);
-
-        // four metal plates with bevels
         int s = N / 2, gap = 14;
         for (int i = 0; i < 2; i++) {
             for (int j = 0; j < 2; j++) {
                 float L = i * s + gap, T = j * s + gap, R = (i + 1) * s - gap, B = (j + 1) * s - gap;
-                int base = 0xFF161B23 + rnd.nextInt(0x0A) * 0x010101;
-                p.setStyle(Paint.Style.FILL); p.setColor(base); c.drawRect(L, T, R, B, p);
+                p.setStyle(Paint.Style.FILL); p.setColor(0xFF161B23 + rnd.nextInt(0x0A) * 0x010101); c.drawRect(L, T, R, B, p);
                 p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(2f);
-                p.setColor(0xFF323C4A); c.drawRect(L + 3, T + 3, R - 3, B - 3, p);   // inner bevel
-                p.setColor(0xFF0A0C10); c.drawRect(L, T, R, B, p);                    // outer shade
+                p.setColor(0xFF323C4A); c.drawRect(L + 3, T + 3, R - 3, B - 3, p);
+                p.setColor(0xFF0A0C10); c.drawRect(L, T, R, B, p);
             }
         }
-        // glowing seam cross
         p.setStyle(Paint.Style.FILL);
         p.setColor(0xFF0F4E63); c.drawRect(0, s - 7, N, s + 7, p); c.drawRect(s - 7, 0, s + 7, N, p);
         p.setColor(0xFF31B6D8); c.drawRect(0, s - 2, N, s + 2, p); c.drawRect(s - 2, 0, s + 2, N, p);
-        // bolts at plate corners
         p.setColor(0xFF3A4554);
         int[] bx = {gap + 14, s - gap - 14, s + gap + 14, N - gap - 14};
         for (int xi = 0; xi < 4; xi++) for (int yi = 0; yi < 4; yi++) c.drawCircle(bx[xi], bx[yi], 4f, p);
-        // scratches
         p.setStyle(Paint.Style.STROKE);
         for (int k = 0; k < 80; k++) {
             int a = 0x10 + rnd.nextInt(0x30);
@@ -741,7 +741,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float x0 = rnd.nextInt(N), y0 = rnd.nextInt(N), ln = 8 + rnd.nextInt(60), ang = rnd.nextFloat() * 6.28f;
             c.drawLine(x0, y0, x0 + ln * (float) Math.cos(ang), y0 + ln * (float) Math.sin(ang), p);
         }
-        // grime speckles
         p.setStyle(Paint.Style.FILL);
         for (int k = 0; k < 2600; k++) {
             int g = rnd.nextInt(80);
@@ -758,29 +757,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Canvas c = new Canvas(b);
         Paint p = new Paint();
         Random rnd = new Random(5);
-        // brushed vertical base
         for (int x = 0; x < N; x++) {
             int gr = 0x2C + rnd.nextInt(0x1C);
             p.setColor(0xFF000000 | (gr << 16) | (gr << 8) | (gr + 6));
             c.drawLine(x, 0, x, N, p);
         }
-        // horizontal panel bands
         p.setColor(0xFF181C22); c.drawRect(0, 70, N, 96, p); c.drawRect(0, N - 96, N, N - 70, p);
-        // warning stripe accent
-        p.setColor(0xFFB7892A);
-        for (int x = -N; x < N; x += 36) { p.setStrokeWidth(0f); }
-        p.setStyle(Paint.Style.FILL);
-        for (int x = -N; x < N; x += 40) {
-            android.graphics.Path path = new android.graphics.Path();
-            path.moveTo(x, 116); path.lineTo(x + 18, 116); path.lineTo(x + 18 - 14, 140); path.lineTo(x - 14, 140); path.close();
-            p.setColor((x / 40) % 2 == 0 ? 0xFFB7892A : 0xFF14171C); c.drawPath(path, p);
-        }
-        // border frame + rivets
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(8f); p.setColor(0xFF101319); c.drawRect(6, 6, N - 6, N - 6, p);
         p.setStyle(Paint.Style.FILL); p.setColor(0xFF424C5C);
         int m = 26;
         c.drawCircle(m, m, 7f, p); c.drawCircle(N - m, m, 7f, p); c.drawCircle(m, N - m, 7f, p); c.drawCircle(N - m, N - m, 7f, p);
-        // scratches
         p.setStyle(Paint.Style.STROKE);
         for (int k = 0; k < 60; k++) {
             int a = 0x14 + rnd.nextInt(0x2A);
@@ -932,11 +918,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    col=uColor*(vec3(0.18,0.20,0.26)+df*vec3(1.1))+sp*vec3(0.8)+rim*vec3(0.15);" +
         "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
-        "  } else if(uMode<4.5){" +
+        "  } else {" +
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
-        "  } else {" +                          // additive glow halo
-        "    vec3 V=normalize(uCamPos-vWorld); float f=max(dot(N,V),0.0);" +
-        "    gl_FragColor=vec4(uColor*pow(f,2.0),1.0); return;" +
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
