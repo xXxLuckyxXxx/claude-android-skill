@@ -1,18 +1,18 @@
 <h1 align="center">📱 AIGames FPS — Android-Spiel</h1>
 
 <p align="center">
-  <a href="https://github.com/xXxLuckyxXxx/claude-android-skill/releases/download/latest/AIGamesFPS.apk">
+  <a href="https://github.com/xXxLuckyxXxx/claude-android-skill/releases/latest">
     <img src="https://img.shields.io/badge/⬇️%20APK%20HERUNTERLADEN-2ea44f?style=for-the-badge&logo=android&logoColor=white" alt="APK herunterladen" height="56">
   </a>
 </p>
 
 <p align="center">
-  <b>1.</b> Grünen Button tippen &nbsp;·&nbsp; <b>2.</b> Falls Chrome unten <b>„Datei könnte schädlich sein"</b> zeigt → <b>„Trotzdem behalten"</b> tippen (der Download ist dann fertig) &nbsp;·&nbsp; <b>3.</b> Datei öffnen → <b>„Installieren"</b> (ggf. „unbekannte Quellen" erlauben)
+  <b>1.</b> Button tippen → Release-Seite (Titel zeigt die aktuelle <b>build-Nummer</b>) &nbsp;·&nbsp; <b>2.</b> Unter <b>„Assets"</b> auf <b>AIGamesFPS.apk</b> tippen &nbsp;·&nbsp; <b>3.</b> Falls „Datei könnte schädlich sein": <b>„Trotzdem behalten"</b> &nbsp;·&nbsp; <b>4.</b> Öffnen → <b>„Installieren"</b>
 </p>
 
-<p align="center"><sub><b>Bleibt der Balken am Ende „hängen"?</b> Die Datei (37&nbsp;KB) ist bereits vollständig geladen — Android hält APKs nur hinter der Sicherheitsabfrage zurück. Benachrichtigung herunterziehen und <b>„Trotzdem behalten/Öffnen"</b> tippen. Im <b>In-App-Browser</b> fehlt dieser Knopf manchmal → dann den Link in <b>Chrome</b> öffnen.</sub></p>
+<p align="center"><sub><b>Wichtig:</b> die Seite in <b>Chrome</b> öffnen, <b>nicht</b> im In-App-Browser — der lädt eine APK sonst mehrfach oder unvollständig und teils eine alte Version. „Hängt" der Balken am Ende, ist die Datei trotzdem komplett: Benachrichtigung herunterziehen und <b>„Trotzdem behalten/Öffnen"</b> tippen.</sub></p>
 
-<p align="center"><sub>Direkt-Fallback: <a href="https://raw.githubusercontent.com/xXxLuckyxXxx/claude-android-skill/main/AIGamesFPS.apk">raw-Link zur APK</a> &nbsp;·&nbsp; Steuerung: links = laufen, rechts = umsehen, Button unten rechts = schießen.</sub></p>
+<p align="center"><sub>Steuerung: links = laufen, rechts = umsehen, Button unten rechts = schießen.</sub></p>
 
 ---
 
