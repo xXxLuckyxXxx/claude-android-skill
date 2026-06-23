@@ -1,0 +1,42 @@
+name: Publish APK download
+
+# Publishes the committed, already-signed AIGamesFPS.apk as the repo's "latest"
+# Release asset. Release downloads are served with
+#   Content-Disposition: attachment; filename=AIGamesFPS.apk
+# which mobile browsers (and in-app browsers) treat as a single clean download —
+# unlike a raw.githubusercontent.com link, which is served as a bare
+# application/octet-stream with no Content-Disposition and tends to be
+# re-triggered / split into many parallel requests on phones.
+#
+# The APK is NOT rebuilt here — we attach the file that is already in the repo,
+# so the signing key (and therefore seamless-update behaviour) is unchanged.
+# Runs automatically whenever the committed APK changes on main, and can also be
+# run manually from the Actions tab.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['AIGamesFPS.apk']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish committed APK as the 'latest' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -f AIGamesFPS.apk || { echo "AIGamesFPS.apk missing at repo root"; exit 1; }
+          NOTES="AIGames FPS prototype (com.aigames.fpsprototype). Direct single-click download, served as an attachment. Same signing key as the in-repo builds, so it installs as a seamless update over a previous version. On Android, if a download misbehaves, open this page in Chrome rather than an in-app browser."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest AIGamesFPS.apk --clobber
+          else
+            gh release create latest AIGamesFPS.apk --latest \
+              --title "AIGames FPS (latest build)" --notes "$NOTES"
+          fi

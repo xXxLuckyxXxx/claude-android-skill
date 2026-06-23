@@ -1,7 +1,7 @@
 <h1 align="center">📱 AIGames FPS — Android-Spiel</h1>
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/xXxLuckyxXxx/claude-android-skill/main/AIGamesFPS.apk">
+  <a href="https://github.com/xXxLuckyxXxx/claude-android-skill/releases/latest/download/AIGamesFPS.apk">
     <img src="https://img.shields.io/badge/⬇️%20APK%20HERUNTERLADEN-2ea44f?style=for-the-badge&logo=android&logoColor=white" alt="APK herunterladen" height="56">
   </a>
 </p>
@@ -10,7 +10,9 @@
   <b>1.</b> Auf den grünen Button tippen &nbsp;·&nbsp; <b>2.</b> Heruntergeladene Datei öffnen &nbsp;·&nbsp; <b>3.</b> „Installieren" (ggf. „unbekannte Quellen" erlauben)
 </p>
 
-<p align="center"><sub>Lädt es nicht durch? Den Link in <b>Chrome</b> öffnen (nicht im In-App-Browser). &nbsp;|&nbsp; Steuerung: links = laufen, rechts = umsehen, Button unten rechts = schießen.</sub></p>
+<p align="center"><sub>Der Button lädt die APK jetzt <b>einmal sauber</b> über eine GitHub-Release (als Datei-Anhang) — kein mehrfaches Laden mehr. Splittet dein Download-Manager sie trotzdem in Teile, ist das harmlos: am Ende entsteht <b>eine</b> APK. Lädt es gar nicht durch? Link in <b>Chrome</b> öffnen (nicht im In-App-Browser).</sub></p>
+
+<p align="center"><sub>Direkt-Fallback: <a href="https://raw.githubusercontent.com/xXxLuckyxXxx/claude-android-skill/main/AIGamesFPS.apk">raw-Link zur APK</a> &nbsp;·&nbsp; Steuerung: links = laufen, rechts = umsehen, Button unten rechts = schießen.</sub></p>
 
 ---
 
