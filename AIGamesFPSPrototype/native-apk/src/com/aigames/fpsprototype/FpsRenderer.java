@@ -407,8 +407,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
             enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, 0.58f * k, 0.13f * k, 0.13f * k);   // torso
-            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.86f * k, 0.62f * k, 0.50f * k);   // head
-            enemyFace();                                                                       // :) eyes + smile
+            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.97f * k, 0.83f * k, 0.30f * k);   // yellow head
+            enemyFace();                                                                       // dopey ._. face
             enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg L
             enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, 0.16f * k, 0.17f * k, 0.22f * k); // leg R
             enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, 0.52f * k, 0.11f * k, 0.11f * k); // arm L
@@ -416,21 +416,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** A cheerful, high-contrast face on the head's front (local +z always faces the player).
-     *  Features are drawn UNLIT (mode 4) so lighting/fog can't wash them out. */
+    /** A goofy, blank "._." face on the head's front (local +z always faces the player):
+     *  two dot eyes and a flat mouth line. Drawn UNLIT (mode 4) for high contrast on the yellow head. */
     private void enemyFace() {
         float fz = 0.176f;
-        // bright eyes with black pupils
-        enemyFacePart(-0.086f, 1.55f, fz, 0.085f, 0.085f, 0.02f, 0.97f, 0.97f, 0.93f);   // eye white L
-        enemyFacePart( 0.086f, 1.55f, fz, 0.085f, 0.085f, 0.02f, 0.97f, 0.97f, 0.93f);   // eye white R
-        enemyFacePart(-0.086f, 1.545f, fz + 0.013f, 0.040f, 0.050f, 0.02f, 0f, 0f, 0f);  // pupil L
-        enemyFacePart( 0.086f, 1.545f, fz + 0.013f, 0.040f, 0.050f, 0.02f, 0f, 0f, 0f);  // pupil R
-        // bold black smile (corners up)
-        enemyFacePart( 0.000f, 1.395f, fz, 0.085f, 0.055f, 0.02f, 0f, 0f, 0f);           // low centre
-        enemyFacePart(-0.078f, 1.415f, fz, 0.060f, 0.055f, 0.02f, 0f, 0f, 0f);           // rising
-        enemyFacePart( 0.078f, 1.415f, fz, 0.060f, 0.055f, 0.02f, 0f, 0f, 0f);
-        enemyFacePart(-0.124f, 1.460f, fz, 0.055f, 0.055f, 0.02f, 0f, 0f, 0f);           // corners up
-        enemyFacePart( 0.124f, 1.460f, fz, 0.055f, 0.055f, 0.02f, 0f, 0f, 0f);
+        enemyFacePart(-0.090f, 1.560f, fz, 0.050f, 0.054f, 0.02f, 0f, 0f, 0f);   // dot eye L
+        enemyFacePart( 0.090f, 1.560f, fz, 0.050f, 0.054f, 0.02f, 0f, 0f, 0f);   // dot eye R
+        enemyFacePart( 0.000f, 1.468f, fz, 0.165f, 0.026f, 0.02f, 0f, 0f, 0f);   // flat dopey mouth line
     }
 
     /** Like enemyPart but UNLIT (mode 4) for crisp, high-contrast facial features. */
