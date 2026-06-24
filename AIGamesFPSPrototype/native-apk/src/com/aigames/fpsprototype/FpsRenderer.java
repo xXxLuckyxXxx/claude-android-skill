@@ -1453,7 +1453,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
     private float[] makeVegetation() {
-        float[] d = new float[360000];
+        float[] d = new float[900000];
         int o = 0;
         Random r = new Random(404);
         float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
@@ -1473,21 +1473,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
             n++;
         }
-        for (int n = 0, tries = 0; n < 140 && tries < 4000; tries++) {     // flowers
+        for (int n = 0, tries = 0; n < 190 && tries < 5000; tries++) {     // flowers (5 varied types)
             float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.25f) || onRoadXZ(x, z)) continue;
-            float by = terrainH(x, z);
-            float stemH = 0.22f + r.nextFloat() * 0.20f, topY = by + stemH;
-            o = vBlade(d, o, x - 0.05f, by, z, r.nextFloat() * 6.2832f, 0.14f, 0.02f, 0.05f, ug1);   // tufts at base
-            o = vBlade(d, o, x + 0.05f, by, z, r.nextFloat() * 6.2832f, 0.16f, 0.02f, 0.05f, ug2);
-            o = vBox(d, o, x, by + stemH * 0.5f, z, 0.018f, stemH, 0.018f, uStem);                  // stem
-            float petU = cell(flowerCells[r.nextInt(flowerCells.length)]);
-            int petals = 5 + r.nextInt(2);
-            float pa0 = r.nextFloat() * 6.2832f, plen = 0.07f + r.nextFloat() * 0.04f, pw = 0.05f + r.nextFloat() * 0.02f;
-            for (int p = 0; p < petals; p++)
-                o = vPetal(d, o, x, topY, z, pa0 + p * (6.2832f / petals), plen, 0.02f, pw, petU);
-            o = vBox(d, o, x, topY + 0.012f, z, 0.045f, 0.03f, 0.045f, uCtr);                        // centre
+            o = vFlower(d, o, x, terrainH(x, z), z, r.nextInt(5), r, uStem, uCtr, flowerCells);
+            n++;
+        }
+        for (int n = 0, tries = 0; n < 12 && tries < 1500; tries++) {      // bouquets (gathered bunches)
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 26f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 0.35f) || onRoadXZ(x, z)) continue;
+            o = vBouquet(d, o, x, terrainH(x, z), z, r, uStem, uCtr, flowerCells);
             n++;
         }
         for (int n = 0, tries = 0; n < 22 && tries < 2000; tries++) {      // bushes
@@ -1579,6 +1576,83 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return o;
     }
 
+    /** A flower of one of five types on a stem. */
+    private static int vFlower(float[] d, int o, float x, float by, float z, int type, Random r,
+                               float uStem, float uCtr, int[] flowerCells) {
+        float petU = cell(flowerCells[r.nextInt(flowerCells.length)]);
+        float stemH = 0.22f + r.nextFloat() * 0.18f, topY = by + stemH;
+        switch (type) {
+            case 1: {  // daisy: many thin white petals, orange centre
+                o = vBox(d, o, x, by + stemH * 0.5f, z, 0.016f, stemH, 0.016f, uStem);
+                int petals = 9 + r.nextInt(3);
+                float pa0 = r.nextFloat() * 6.2832f, uw = cell(6);
+                for (int p = 0; p < petals; p++)
+                    o = vPetal(d, o, x, topY, z, pa0 + p * (6.2832f / petals), 0.075f, 0.012f, 0.024f, uw);
+                o = vBox(d, o, x, topY + 0.008f, z, 0.04f, 0.025f, 0.04f, cell(10));
+                break;
+            }
+            case 2: {  // tulip: taller, four cupped petals pointing up + a leaf
+                float th = stemH + 0.12f;
+                o = vBox(d, o, x, by + th * 0.5f, z, 0.02f, th, 0.02f, uStem);
+                o = vBlade(d, o, x, by, z, r.nextFloat() * 6.2832f, th * 0.7f, 0.05f, 0.05f, cell(1));
+                float pa0 = r.nextFloat() * 6.2832f, ty = by + th - 0.02f;
+                for (int p = 0; p < 4; p++)
+                    o = vPetal(d, o, x, ty, z, pa0 + p * 1.5708f, 0.03f, 0.11f, 0.06f, petU);
+                break;
+            }
+            case 3: {  // pompom: a ball of small colour cubes
+                o = vBox(d, o, x, by + stemH * 0.5f, z, 0.018f, stemH, 0.018f, uStem);
+                int lobes = 6 + r.nextInt(3);
+                for (int l = 0; l < lobes; l++) {
+                    float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * 0.06f;
+                    o = vBox(d, o, x + (float) Math.cos(la) * lr, topY + (r.nextFloat() - 0.35f) * 0.06f,
+                            z + (float) Math.sin(la) * lr, 0.05f, 0.05f, 0.05f, petU);
+                }
+                break;
+            }
+            case 4: {  // big two-tone: six large petals + centre
+                o = vBox(d, o, x, by + stemH * 0.5f, z, 0.02f, stemH, 0.02f, uStem);
+                float pa0 = r.nextFloat() * 6.2832f;
+                for (int p = 0; p < 6; p++)
+                    o = vPetal(d, o, x, topY, z, pa0 + p * 1.0472f, 0.10f, 0.03f, 0.08f, petU);
+                o = vBox(d, o, x, topY + 0.012f, z, 0.06f, 0.035f, 0.06f, uCtr);
+                break;
+            }
+            default: {  // classic five/six petals
+                o = vBlade(d, o, x - 0.05f, by, z, r.nextFloat() * 6.2832f, 0.14f, 0.02f, 0.05f, cell(1));
+                o = vBox(d, o, x, by + stemH * 0.5f, z, 0.018f, stemH, 0.018f, uStem);
+                int petals = 5 + r.nextInt(2);
+                float pa0 = r.nextFloat() * 6.2832f;
+                for (int p = 0; p < petals; p++)
+                    o = vPetal(d, o, x, topY, z, pa0 + p * (6.2832f / petals), 0.08f, 0.02f, 0.055f, petU);
+                o = vBox(d, o, x, topY + 0.012f, z, 0.045f, 0.03f, 0.045f, uCtr);
+                break;
+            }
+        }
+        return o;
+    }
+
+    /** A gathered bunch: several flowers with stems converging into a paper wrap. */
+    private static int vBouquet(float[] d, int o, float x, float by, float z, Random r,
+                                float uStem, float uCtr, int[] flowerCells) {
+        o = vBox(d, o, x, by + 0.10f, z, 0.13f, 0.20f, 0.13f, cell(6));   // wrap
+        int n = 6 + r.nextInt(4);
+        float baseY = by + 0.18f;
+        for (int i = 0; i < n; i++) {
+            float a = r.nextFloat() * 6.2832f, rr = 0.04f + r.nextFloat() * 0.12f;
+            float hx = x + (float) Math.cos(a) * rr, hz = z + (float) Math.sin(a) * rr;
+            float headY = by + 0.36f + r.nextFloat() * 0.16f;
+            float dxh = hx - x, dzh = hz - z, hb = (float) Math.sqrt(dxh * dxh + dzh * dzh);
+            o = vBlade(d, o, x, baseY, z, (float) Math.atan2(dzh, dxh), headY - baseY, 0.02f, hb, cell(3));
+            float petU = cell(flowerCells[r.nextInt(flowerCells.length)]);
+            float pa0 = r.nextFloat() * 6.2832f;
+            for (int p = 0; p < 5; p++)
+                o = vPetal(d, o, hx, headY, hz, pa0 + p * 1.2566f, 0.055f, 0.015f, 0.04f, petU);
+            o = vBox(d, o, hx, headY + 0.008f, hz, 0.035f, 0.022f, 0.035f, uCtr);
+        }
+        return o;
+    }
+
     private static Bitmap makeVegPalette() {
         int W = 16, H = 4;
         Bitmap b = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
@@ -1624,14 +1698,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float half = 21f;
         Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
-        c.drawColor(0xFF6E7173);                          // concrete block base
+        c.drawColor(0xFF3C6E24);                           // lawn / grass base
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        float[] roads = {-20f, -12f, -4f, 4f, 12f, 20f};
-        for (int i = 0; i < roads.length; i++) {          // sidewalk borders (lighter), both axes
-            cityBand(c, p, roads[i], 2.7f, half, N, true, 0xFF9A9E94);
-            cityBand(c, p, roads[i], 2.7f, half, N, false, 0xFF9A9E94);
+        Random rnd = new Random(31);
+        for (int k = 0; k < 420; k++) {                    // mottled green so the lawn isn't flat
+            int g = rnd.nextInt(3);
+            int col = g == 0 ? 0x2E6B1F : (g == 1 ? 0x4A8E2A : 0x356016);
+            p.setColor(0x66000000 | col);
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 9 + rnd.nextInt(48), p);
         }
-        for (int i = 0; i < roads.length; i++) {          // asphalt on top
+        float[] roads = {-20f, -12f, -4f, 4f, 12f, 20f};
+        for (int i = 0; i < roads.length; i++) {           // sidewalk borders (light concrete)
+            cityBand(c, p, roads[i], 2.7f, half, N, true, 0xFFA6A89C);
+            cityBand(c, p, roads[i], 2.7f, half, N, false, 0xFFA6A89C);
+        }
+        for (int i = 0; i < roads.length; i++) {           // asphalt
             cityBand(c, p, roads[i], 1.7f, half, N, true, 0xFF34373A);
             cityBand(c, p, roads[i], 1.7f, half, N, false, 0xFF34373A);
         }
@@ -1640,13 +1721,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             cityDashes(c, p, roads[i], half, N, true);
             cityDashes(c, p, roads[i], half, N, false);
         }
-        p.setColor(0x30FFFFFF);                            // plaza highlight in the centre
-        float pa = (-4f + half) / (2f * half) * N, pb = (4f + half) / (2f * half) * N;
-        c.drawRect(pa, pa, pb, pb, p);
-        Random rnd = new Random(31);                       // grain
-        for (int k = 0; k < 4500; k++) {
-            int v = rnd.nextInt(38);
-            p.setColor((0x22 << 24) | (v << 16) | (v << 8) | v);
+        int[] bed = {0xE03A3A, 0xF7D43A, 0xF06FB0, 0x9B4FE0, 0x4F7BF0, 0xF58A20, 0xF4F0E6};
+        for (int k = 0; k < 70; k++) {                     // painted flower beds on the lawn (off the roads)
+            float wx = rnd.nextInt(N), wy = rnd.nextInt(N);
+            float worldX = wx / N * (2f * half) - half, worldZ = wy / N * (2f * half) - half;
+            if (onRoadXZ(worldX, worldZ)) continue;
+            int col = bed[rnd.nextInt(bed.length)];
+            for (int j = 0; j < 9; j++) {
+                p.setColor(0xCC000000 | col);
+                c.drawCircle(wx + rnd.nextInt(24) - 12, wy + rnd.nextInt(24) - 12, 2 + rnd.nextInt(3), p);
+            }
+        }
+        for (int k = 0; k < 4200; k++) {                   // fine grass grain
+            int v = rnd.nextInt(40);
+            p.setColor((0x22 << 24) | ((0x22 + v) << 16) | ((0x44 + v) << 8) | (0x18 + v / 2));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1, p);
         }
