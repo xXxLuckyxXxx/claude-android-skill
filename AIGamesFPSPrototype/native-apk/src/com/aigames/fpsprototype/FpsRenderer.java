@@ -292,7 +292,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         updateEnemies(dt);
         tickTimers(dt);
 
-        float fov = 68f - 26f * aim + 6f * sprintAnim;   // zoom in on ADS, widen on sprint
+        float fov = 72f - 30f * aim + 6f * sprintAnim;   // wider view; zoom in on ADS, widen on sprint
         Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
@@ -630,12 +630,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float a = aim, s = sprintAnim;
         Matrix.setIdentityM(gunBase, 0);
         // hip -> ADS: slide to centre, raise so the sights sit on the screen centre.
-        float tx = mix(0.15f, 0.0f, a) + 0.05f * s;            // sprint pulls it inward
-        float ty = mix(-0.16f, -SIGHT_BEAD[curWeapon], a) - switchAnim * 0.22f - 0.12f * s;  // ADS: lift sight to centre
-        float tz = mix(-0.52f, -0.30f, a) - recoil * 0.30f * (1f - 0.5f * a) + 0.16f * s;
+        float tx = mix(0.30f, 0.0f, a) + 0.05f * s;            // hip: held to lower-right; ADS: centred
+        float ty = mix(-0.27f, -SIGHT_BEAD[curWeapon], a) - switchAnim * 0.22f - 0.12f * s;  // hip: lowered out of the way; ADS: sight on centre
+        float tz = mix(-0.66f, -0.30f, a) - recoil * 0.30f * (1f - 0.5f * a) + 0.16f * s;    // hip: pushed back (smaller); ADS: close
         Matrix.translateM(gunBase, 0, tx, ty, tz);
-        Matrix.rotateM(gunBase, 0, -3.0f * (1f - a) + recoil * 9f * (1f - 0.5f * a) + switchAnim * 22f + 20f * s, 1f, 0f, 0f);
-        Matrix.rotateM(gunBase, 0, -4f * (1f - a) + 24f * s, 0f, 1f, 0f);
+        Matrix.rotateM(gunBase, 0, -2.0f * (1f - a) + recoil * 9f * (1f - 0.5f * a) + switchAnim * 22f + 20f * s, 1f, 0f, 0f);
+        Matrix.rotateM(gunBase, 0, -8f * (1f - a) + 24f * s, 0f, 1f, 0f);
         Matrix.rotateM(gunBase, 0, 26f * s, 0f, 0f, 1f);       // cant across the body when sprinting
 
         float mz;
@@ -1181,9 +1181,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (lastShotHead) { cr = 1f; cg = 0.85f; cb = 0.20f; }
                 else { cr = 0.30f; cg = 1f; cb = 0.40f; }
             }
-            float xa = 0.9f * (1f - aim) * (1f - 0.7f * sprintAnim);   // fade when aiming / sprinting
-            drawRectPx(ccx, ccy, 28f, 3f, cr, cg, cb, xa);
-            drawRectPx(ccx, ccy, 3f, 28f, cr, cg, cb, xa);
+            float xa = (1f - aim) * (1f - 0.6f * sprintAnim);          // fade when aiming / sprinting
+            if (xa > 0.03f) {
+                float gap = 9f, len = 13f, th = 3f;
+                // dark outline so the reticle stays visible over any background
+                drawRectPx(ccx, ccy, 8f, 8f, 0f, 0f, 0f, 0.55f * xa);
+                drawRectPx(ccx, ccy - gap - len * 0.5f, th + 2f, len + 2f, 0f, 0f, 0f, 0.45f * xa);
+                drawRectPx(ccx, ccy + gap + len * 0.5f, th + 2f, len + 2f, 0f, 0f, 0f, 0.45f * xa);
+                drawRectPx(ccx - gap - len * 0.5f, ccy, len + 2f, th + 2f, 0f, 0f, 0f, 0.45f * xa);
+                drawRectPx(ccx + gap + len * 0.5f, ccy, len + 2f, th + 2f, 0f, 0f, 0f, 0.45f * xa);
+                // bright centre dot = the exact aim point
+                drawRectPx(ccx, ccy, 5f, 5f, cr, cg, cb, 0.98f * xa);
+                // four gapped ticks around it
+                drawRectPx(ccx, ccy - gap - len * 0.5f, th, len, cr, cg, cb, 0.92f * xa);
+                drawRectPx(ccx, ccy + gap + len * 0.5f, th, len, cr, cg, cb, 0.92f * xa);
+                drawRectPx(ccx - gap - len * 0.5f, ccy, len, th, cr, cg, cb, 0.92f * xa);
+                drawRectPx(ccx + gap + len * 0.5f, ccy, len, th, cr, cg, cb, 0.92f * xa);
+            }
 
             // expanding hit marker (gold = headshot, white = body)
             if (hitMarkerTimer > 0f) {
