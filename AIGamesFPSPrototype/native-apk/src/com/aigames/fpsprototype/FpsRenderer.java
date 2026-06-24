@@ -1453,7 +1453,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
     private float[] makeVegetation() {
-        float[] d = new float[900000];
+        float[] d = new float[1300000];
         int o = 0;
         Random r = new Random(404);
         float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
@@ -1487,17 +1487,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = vBouquet(d, o, x, terrainH(x, z), z, r, uStem, uCtr, flowerCells);
             n++;
         }
-        for (int n = 0, tries = 0; n < 22 && tries < 2000; tries++) {      // bushes
-            float a = r.nextFloat() * 6.2832f, rad = 4f + r.nextFloat() * 24f;
-            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
-            if (inBuildingXZ(x, z, 0.4f) || onRoadXZ(x, z)) continue;
-            float by = terrainH(x, z), br = 0.22f + r.nextFloat() * 0.18f;
-            int lobes = 5 + r.nextInt(4);
-            for (int l = 0; l < lobes; l++) {
-                float lx = x + (r.nextFloat() - 0.5f) * br * 1.6f, lz = z + (r.nextFloat() - 0.5f) * br * 1.6f;
-                float s = 0.16f + r.nextFloat() * 0.14f;
-                o = vBox(d, o, lx, by + 0.12f + r.nextFloat() * 0.18f, lz, s, s, s, uBush);
+        // hedges lining the streets (cheap round / low-hedge variants), capped
+        float[] hr = {-12f, -4f, 4f, 12f};
+        int hedge = 0;
+        hedges:
+        for (int ri = 0; ri < hr.length; ri++) {
+            float rc = hr[ri];
+            for (float pos = -16f; pos <= 16f; pos += 4.2f) {
+                float[][] cand = {{rc - 2.9f, pos}, {rc + 2.9f, pos}, {pos, rc - 2.9f}, {pos, rc + 2.9f}};
+                for (int ci = 0; ci < 4; ci++) {
+                    if (hedge >= 64 || o > d.length - 6000) break hedges;
+                    float bx = cand[ci][0], bz = cand[ci][1];
+                    if (inBuildingXZ(bx, bz, 0.3f) || onRoadXZ(bx, bz)) continue;
+                    o = vBush(d, o, bx, terrainH(bx, bz), bz, r.nextBoolean() ? 0 : 4, r, flowerCells);
+                    hedge++;
+                }
             }
+        }
+        // feature bushes (all variants), scattered over the lawn + meadow
+        for (int n = 0, tries = 0; n < 30 && tries < 2500; tries++) {
+            if (o > d.length - 6000) break;
+            float a = r.nextFloat() * 6.2832f, rad = 3f + r.nextFloat() * 25f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 0.45f) || onRoadXZ(x, z)) continue;
+            o = vBush(d, o, x, terrainH(x, z), z, r.nextInt(6), r, flowerCells);
             n++;
         }
         vegVerts = o / 8;
@@ -1649,6 +1662,72 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (int p = 0; p < 5; p++)
                 o = vPetal(d, o, hx, headY, hz, pa0 + p * 1.2566f, 0.055f, 0.015f, 0.04f, petU);
             o = vBox(d, o, hx, headY + 0.008f, hz, 0.035f, 0.022f, 0.035f, uCtr);
+        }
+        return o;
+    }
+
+    /** A rough dome of green lobes with a filled base, for round/flowering/berry bushes. */
+    private static int bushDome(float[] d, int o, float x, float by, float z, float rad, float height,
+                                int lobes, Random r, float gA, float gB) {
+        o = vBox(d, o, x, by + 0.20f, z, rad * 1.7f, 0.40f, rad * 1.7f, gA);   // solid base
+        for (int l = 0; l < lobes; l++) {
+            float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * rad;
+            float lx = x + (float) Math.cos(la) * lr, lz = z + (float) Math.sin(la) * lr;
+            float s = 0.26f + r.nextFloat() * 0.22f;
+            o = vBox(d, o, lx, by + 0.22f + r.nextFloat() * height, lz, s, s, s, r.nextBoolean() ? gA : gB);
+        }
+        return o;
+    }
+
+    /** A bush, one of six bigger variants. */
+    private static int vBush(float[] d, int o, float x, float by, float z, int type, Random r, int[] flowerCells) {
+        float gA = cell(12), gB = cell(13), gC = cell(0);
+        switch (type) {
+            case 1: {  // tall columnar topiary / little conifer
+                int tiers = 4 + r.nextInt(2);
+                float w = 0.42f + r.nextFloat() * 0.16f;
+                for (int t = 0; t < tiers; t++) {
+                    float ww = w * (1f - t * 0.13f);
+                    o = vBox(d, o, x, by + 0.24f + t * 0.32f, z, ww, 0.44f, ww, (t & 1) == 0 ? gA : gC);
+                }
+                break;
+            }
+            case 2: {  // flowering bush: green dome + colour dots
+                o = bushDome(d, o, x, by, z, 0.60f, 0.55f, 8, r, gA, gB);
+                int blooms = 7 + r.nextInt(5);
+                for (int b = 0; b < blooms; b++) {
+                    float ba = r.nextFloat() * 6.2832f, brr = r.nextFloat() * 0.46f;
+                    o = vBox(d, o, x + (float) Math.cos(ba) * brr, by + 0.50f + r.nextFloat() * 0.30f,
+                            z + (float) Math.sin(ba) * brr, 0.075f, 0.075f, 0.075f,
+                            cell(flowerCells[r.nextInt(flowerCells.length)]));
+                }
+                break;
+            }
+            case 3: {  // cone topiary (stacked decreasing tiers)
+                for (int t = 0; t < 4; t++) {
+                    float ww = 0.70f * (1f - t * 0.22f);
+                    o = vBox(d, o, x, by + 0.22f + t * 0.28f, z, ww, 0.32f, ww, gC);
+                }
+                break;
+            }
+            case 4: {  // wide low hedge clump
+                float w = 0.95f + r.nextFloat() * 0.7f, dd = 0.5f + r.nextFloat() * 0.3f, hh = 0.5f + r.nextFloat() * 0.22f;
+                o = vBox(d, o, x, by + hh * 0.5f, z, w, hh, dd, gA);
+                o = vBox(d, o, x + (r.nextFloat() - 0.5f) * w * 0.4f, by + hh * 0.5f + 0.10f, z, w * 0.7f, hh * 0.85f, dd * 0.9f, gB);
+                break;
+            }
+            case 5: {  // berry bush: green dome + dark-red berries
+                o = bushDome(d, o, x, by, z, 0.55f, 0.50f, 8, r, gA, gC);
+                for (int b = 0; b < 9; b++) {
+                    float ba = r.nextFloat() * 6.2832f, brr = r.nextFloat() * 0.42f;
+                    o = vBox(d, o, x + (float) Math.cos(ba) * brr, by + 0.40f + r.nextFloat() * 0.26f,
+                            z + (float) Math.sin(ba) * brr, 0.05f, 0.05f, 0.05f, cell(4));
+                }
+                break;
+            }
+            default:   // round shrub (bigger)
+                o = bushDome(d, o, x, by, z, 0.64f, 0.60f, 9, r, gA, gB);
+                break;
         }
         return o;
     }
