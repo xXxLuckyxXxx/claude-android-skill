@@ -1453,7 +1453,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
     private float[] makeVegetation() {
-        float[] d = new float[1300000];
+        float[] d = new float[2400000];
         int o = 0;
         Random r = new Random(404);
         float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
@@ -1512,6 +1512,27 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (inBuildingXZ(x, z, 0.45f) || onRoadXZ(x, z)) continue;
             o = vBush(d, o, x, terrainH(x, z), z, r.nextInt(6), r, flowerCells);
             n++;
+        }
+        // detailed trees dotted around the meadow / arena edge
+        for (int n = 0, tries = 0; n < 22 && tries < 1500; tries++) {
+            if (o > d.length - 9000) break;
+            float a = r.nextFloat() * 6.2832f, rad = 16f + r.nextFloat() * 8f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 0.6f) || onRoadXZ(x, z)) continue;
+            o = vTree(d, o, x, terrainH(x, z), z, 1.0f + r.nextFloat() * 0.5f, true, r);
+            n++;
+        }
+        // forest ring around the level — hides the map edge / horizon
+        float[] ringR = {25f, 28.5f, 32f, 35.5f, 38.5f};
+        for (int ri = 0; ri < ringR.length; ri++) {
+            int count = (int) (ringR[ri] * 1.7f);
+            for (int i = 0; i < count; i++) {
+                if (o > d.length - 9000) break;
+                float a = (float) i / count * 6.2832f + (r.nextFloat() - 0.5f) * 0.10f;
+                float rr = ringR[ri] + (r.nextFloat() - 0.5f) * 2.4f;
+                float x = (float) Math.cos(a) * rr, z = (float) Math.sin(a) * rr;
+                o = vTree(d, o, x, terrainH(x, z), z, 1.2f + r.nextFloat() * 0.8f, false, r);
+            }
         }
         vegVerts = o / 8;
         return java.util.Arrays.copyOf(d, o);
@@ -1728,6 +1749,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return o;
     }
 
+    /** A tree: a brown trunk with a rounded green crown (detailed up close, simpler far away). */
+    private static int vTree(float[] d, int o, float x, float by, float z, float scale, boolean detail, Random r) {
+        float uTrunk = cell(14), gA = cell(12), gB = cell(13);
+        float trunkH = (1.1f + r.nextFloat() * 0.6f) * scale, tw = 0.18f * scale;
+        o = vBox(d, o, x, by + trunkH * 0.5f, z, tw, trunkH, tw, uTrunk);
+        o = vBox(d, o, x, by + trunkH * 0.88f, z, tw * 0.78f, trunkH * 0.5f, tw * 0.78f, uTrunk);
+        float cy = by + trunkH + 0.30f * scale, crad = (0.9f + r.nextFloat() * 0.5f) * scale;
+        if (detail) {
+            o = vBox(d, o, x, cy, z, crad * 1.4f, crad * 1.3f, crad * 1.4f, gA);     // crown core
+            int lobes = 10 + r.nextInt(5);
+            for (int l = 0; l < lobes; l++) {
+                float la = r.nextFloat() * 6.2832f, lr = crad * (0.4f + r.nextFloat() * 0.7f);
+                float ly = cy + (r.nextFloat() - 0.4f) * crad * 0.9f, s = (0.40f + r.nextFloat() * 0.4f) * scale;
+                o = vBox(d, o, x + (float) Math.cos(la) * lr, ly, z + (float) Math.sin(la) * lr, s, s, s, r.nextBoolean() ? gA : gB);
+            }
+        } else {                                                                     // distant: a few big lobes
+            o = vBox(d, o, x, cy, z, crad * 1.7f, crad * 1.5f, crad * 1.7f, gA);
+            o = vBox(d, o, x + crad * 0.5f, cy + crad * 0.3f, z, crad * 1.1f, crad * 1.1f, crad * 1.1f, gB);
+            o = vBox(d, o, x - crad * 0.4f, cy + crad * 0.2f, z + crad * 0.4f, crad * 1.1f, crad * 1.1f, crad * 1.1f, gA);
+            o = vBox(d, o, x, cy + crad * 0.55f, z - crad * 0.3f, crad * 0.95f, crad * 0.95f, crad * 0.95f, gB);
+        }
+        return o;
+    }
+
     private static Bitmap makeVegPalette() {
         int W = 16, H = 4;
         Bitmap b = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
@@ -1735,7 +1780,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             0xFF2E6B1F, 0xFF3F8A24, 0xFF5CA836, 0xFF356B1C,   // grass dark/mid/light, stem
             0xFFE03A3A, 0xFFF7D43A, 0xFFF4F0E6, 0xFFF06FB0,   // red, yellow, white, pink
             0xFF9B4FE0, 0xFF4F7BF0, 0xFFF58A20, 0xFFF2C53A,   // purple, blue, orange, centre
-            0xFF2C5E1C, 0xFF4A9A2C, 0xFF6BB840, 0xFF3A7A22,   // bush + extra greens
+            0xFF2C5E1C, 0xFF4A9A2C, 0xFF6B4A2A, 0xFF3A7A22,   // 12 bush, 13 green, 14 trunk brown, 15 green
         };
         for (int x = 0; x < W; x++)
             for (int y = 0; y < H; y++) b.setPixel(x, y, c[x]);
