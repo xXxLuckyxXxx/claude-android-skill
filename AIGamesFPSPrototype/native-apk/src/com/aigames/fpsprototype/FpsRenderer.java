@@ -1683,12 +1683,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static int vBush(float[] d, int o, float x, float by, float z, int type, Random r, int[] flowerCells) {
         float gA = cell(12), gB = cell(13), gC = cell(0);
         switch (type) {
-            case 1: {  // tall columnar topiary / little conifer
-                int tiers = 4 + r.nextInt(2);
-                float w = 0.42f + r.nextFloat() * 0.16f;
-                for (int t = 0; t < tiers; t++) {
-                    float ww = w * (1f - t * 0.13f);
-                    o = vBox(d, o, x, by + 0.24f + t * 0.32f, z, ww, 0.44f, ww, (t & 1) == 0 ? gA : gC);
+            case 1: {  // tall egg-shaped bush (rounded, not stepped)
+                o = bushDome(d, o, x, by, z, 0.42f, 0.45f, 7, r, gA, gB);
+                int top = 5 + r.nextInt(3);
+                for (int l = 0; l < top; l++) {
+                    float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * 0.30f, s = 0.24f + r.nextFloat() * 0.16f;
+                    o = vBox(d, o, x + (float) Math.cos(la) * lr, by + 0.70f + r.nextFloat() * 0.50f,
+                            z + (float) Math.sin(la) * lr, s, s, s, r.nextBoolean() ? gA : gB);
                 }
                 break;
             }
@@ -1703,10 +1704,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 }
                 break;
             }
-            case 3: {  // cone topiary (stacked decreasing tiers)
-                for (int t = 0; t < 4; t++) {
-                    float ww = 0.70f * (1f - t * 0.22f);
-                    o = vBox(d, o, x, by + 0.22f + t * 0.28f, z, ww, 0.32f, ww, gC);
+            case 3: {  // layered round topiary (ball on ball, rounded)
+                o = bushDome(d, o, x, by, z, 0.55f, 0.40f, 8, r, gA, gC);          // big lower ball
+                int up = 6;
+                for (int l = 0; l < up; l++) {
+                    float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * 0.34f, s = 0.22f + r.nextFloat() * 0.14f;
+                    o = vBox(d, o, x + (float) Math.cos(la) * lr, by + 0.72f + r.nextFloat() * 0.30f,
+                            z + (float) Math.sin(la) * lr, s, s, s, gA);
                 }
                 break;
             }
