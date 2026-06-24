@@ -62,6 +62,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final int[]     W_KILL_REWARD = {6, 10, 4};
     private static final boolean[] W_AUTO      = {false, true, false};
 
+    // Iron sights mounted per weapon: gun-top under the sights, sight-line height, rear/front Z.
+    private static final float[] SIGHT_BASE  = {0.065f, 0.066f, 0.050f};
+    private static final float[] SIGHT_BEAD  = {0.090f, 0.110f, 0.078f};
+    private static final float[] SIGHT_REARZ = {0.100f, 0.090f, 0.050f};
+    private static final float[] SIGHT_FRONTZ = {-0.180f, -0.300f, -0.550f};
+
     // Enemies / survival.
     private static final int MAX_ENEMIES = 7;
     private static final float ENEMY_SPEED = 1.7f;     // base m/s
@@ -625,7 +631,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setIdentityM(gunBase, 0);
         // hip -> ADS: slide to centre, raise so the sights sit on the screen centre.
         float tx = mix(0.15f, 0.0f, a) + 0.05f * s;            // sprint pulls it inward
-        float ty = mix(-0.16f, -0.12f, a) - switchAnim * 0.22f - 0.12f * s;  // ...and down
+        float ty = mix(-0.16f, -SIGHT_BEAD[curWeapon], a) - switchAnim * 0.22f - 0.12f * s;  // ADS: lift sight to centre
         float tz = mix(-0.52f, -0.30f, a) - recoil * 0.30f * (1f - 0.5f * a) + 0.16f * s;
         Matrix.translateM(gunBase, 0, tx, ty, tz);
         Matrix.rotateM(gunBase, 0, -3.0f * (1f - a) + recoil * 9f * (1f - 0.5f * a) + switchAnim * 22f + 20f * s, 1f, 0f, 0f);
@@ -682,7 +688,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, -0.016f, -0.30f, 0.026f, 0.026f, 0.42f, mk * 0.85f, mg * 0.85f, mb * 0.85f); // tube magazine
         gunPart(0f, -0.018f, -0.16f, 0.050f, 0.052f, 0.17f, wr, wg, wb);         // forend (wood)
         gunPart(0f, -0.018f, -0.16f, 0.056f, 0.044f, 0.155f, wr * 0.85f, wg * 0.85f, wb * 0.85f); // forend rib
-        gunPart(0f, 0.060f, -0.585f, 0.010f, 0.018f, 0.012f, 0.6f, 0.5f, 0.2f);  // front bead (brass)
         gunPartR(0f, -0.030f, 0.28f, 0.052f, 0.085f, 0.22f, -7f, wr, wg, wb);    // stock (wood, slight drop)
         gunPart(0f, -0.062f, 0.40f, 0.058f, 0.105f, 0.05f, wr * 0.9f, wg * 0.9f, wb * 0.9f); // butt pad
         gunPart(0f, -0.062f, 0.05f, 0.038f, 0.026f, 0.06f, mk, mg, mb);          // trigger guard
@@ -690,15 +695,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return -0.66f;
     }
 
-    /** Iron sights at FIXED positions so every weapon shows the same sight picture at the same
-     *  on-screen size: a slim rear notch, a thin front blade and a small glowing bead = aim point. */
+    /** Iron sights mounted on the current weapon: a small base/post connects the gun body up to the
+     *  sight line, with a rear notch and a front blade + glowing bead. The bead is the aim point and,
+     *  via drawGun's ADS lift (-SIGHT_BEAD), sits at screen centre when aiming. */
     private void drawSights() {
-        float rearZ = -0.05f, frontZ = -0.30f;
-        gunPart(-0.033f, 0.112f, rearZ, 0.009f, 0.042f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post L
-        gunPart( 0.033f, 0.112f, rearZ, 0.009f, 0.042f, 0.024f, 0.05f, 0.05f, 0.06f);  // rear post R
-        gunPart(0f, 0.103f, frontZ, 0.006f, 0.044f, 0.012f, 0.06f, 0.06f, 0.07f);      // thin front blade
-        gunBeadPart(0f, 0.120f, frontZ, 0.011f,                                         // small bead = aim point
-                weaponR(curWeapon) * 1.2f, weaponG(curWeapon) * 1.2f, weaponB(curWeapon) * 1.2f);
+        int w = curWeapon;
+        float sb = SIGHT_BASE[w], sy = SIGHT_BEAD[w], rz = SIGHT_REARZ[w], fz = SIGHT_FRONTZ[w];
+        float mc = (sb + sy) * 0.5f, mh = (sy - sb) + 0.012f;            // mount centre + height
+        gunPart(0f, mc, rz, 0.046f, mh, 0.030f, 0.055f, 0.055f, 0.065f);  // rear sight mount block
+        gunPart(-0.028f, sy, rz, 0.010f, 0.032f, 0.028f, 0.05f, 0.05f, 0.06f); // rear notch post L
+        gunPart( 0.028f, sy, rz, 0.010f, 0.032f, 0.028f, 0.05f, 0.05f, 0.06f); // rear notch post R
+        gunPart(0f, mc, fz, 0.014f, mh, 0.016f, 0.055f, 0.055f, 0.065f);  // front sight post mount
+        gunPart(0f, sy - 0.010f, fz, 0.008f, 0.026f, 0.016f, 0.06f, 0.06f, 0.07f); // front blade
+        gunBeadPart(0f, sy, fz, 0.011f,                                   // bead = aim point (centred on ADS)
+                weaponR(w) * 1.2f, weaponG(w) * 1.2f, weaponB(w) * 1.2f);
     }
 
     private void gunBeadPart(float tx, float ty, float tz, float s, float r, float g, float b) {
