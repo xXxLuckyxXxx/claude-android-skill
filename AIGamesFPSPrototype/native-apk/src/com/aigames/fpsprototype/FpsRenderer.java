@@ -640,37 +640,54 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (muzzleTimer > 0f) drawMuzzle(mz, curWeapon == 2 ? 1.7f : 1f);
     }
 
-    private float drawPistol() {
-        gunPart(0f, 0.00f, -0.02f, 0.075f, 0.100f, 0.30f, 0.14f, 0.15f, 0.18f); // slide
-        gunPart(0f, 0.01f, -0.20f, 0.050f, 0.055f, 0.10f, 0.10f, 0.10f, 0.12f); // barrel tip
-        gunPart(0f, -0.13f, 0.10f, 0.070f, 0.170f, 0.085f, 0.10f, 0.09f, 0.08f); // grip
-        gunPart(0f, -0.05f, 0.04f, 0.055f, 0.050f, 0.05f, 0.08f, 0.08f, 0.10f);  // trigger guard
+    private float drawPistol() {                                 // compact pistol (Glock-ish)
+        float dk = 0.16f, dg = 0.17f, dd = 0.20f;               // gunmetal slide
+        float fr = 0.10f, fg = 0.10f, fb = 0.12f;               // polymer frame
+        gunPart(0f, 0.030f, -0.02f, 0.060f, 0.070f, 0.32f, dk, dg, dd);          // slide
+        gunPart(0f, 0.060f, 0.120f, 0.060f, 0.030f, 0.10f, dk * 0.9f, dg * 0.9f, dd * 0.9f); // rear sight hump
+        gunPart(0f, 0.010f, -0.205f, 0.034f, 0.040f, 0.07f, 0.06f, 0.06f, 0.07f); // muzzle end
+        gunPart(0f, -0.020f, -0.05f, 0.050f, 0.045f, 0.26f, fr, fg, fb);          // frame / dust cover
+        gunPart(0f, -0.072f, 0.020f, 0.044f, 0.028f, 0.075f, fr, fg, fb);         // trigger guard bar
+        gunPart(0f, -0.058f, 0.030f, 0.016f, 0.034f, 0.018f, 0.05f, 0.05f, 0.06f); // trigger
+        gunPartR(0f, -0.150f, 0.100f, 0.056f, 0.195f, 0.075f, 13f, fr + 0.02f, fg + 0.02f, fb + 0.02f); // raked grip
+        gunPartR(0f, -0.250f, 0.122f, 0.060f, 0.028f, 0.080f, 13f, 0.07f, 0.07f, 0.08f);  // magazine base
         drawSights();
-        return -0.30f;
+        return -0.24f;
     }
 
-    private float drawRifle() {
-        gunPart(0f, 0.00f, 0.04f, 0.090f, 0.11f, 0.42f, 0.13f, 0.14f, 0.17f);
-        gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.12f, 0.12f, 0.15f);
-        gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
-        gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.09f, 0.09f, 0.11f);
-        gunPart(0f, 0.050f, -0.10f, 0.045f, 0.035f, 0.22f, 0.10f, 0.10f, 0.12f);  // low handguard rail
-        gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.18f, 0.18f, 0.22f);
-        gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);
-        gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
+    private float drawRifle() {                                 // SMG (MP5-style)
+        float bk = 0.12f, bg = 0.12f, bb = 0.14f;               // black body
+        float mk = 0.20f, mg = 0.21f, mb = 0.24f;               // metal accents
+        gunPart(0f, 0.0f, 0.04f, 0.058f, 0.075f, 0.36f, bk, bg, bb);             // receiver
+        gunPart(0f, 0.052f, 0.10f, 0.045f, 0.028f, 0.20f, mk, mg, mb);           // top rib / rear sight base
+        gunPart(0f, -0.02f, -0.20f, 0.052f, 0.060f, 0.20f, bk * 0.95f, bg * 0.95f, bb * 0.95f); // handguard
+        gunPart(0f, 0.0f, -0.36f, 0.020f, 0.020f, 0.18f, 0.05f, 0.05f, 0.06f);   // barrel
+        gunPart(0f, 0.038f, -0.31f, 0.026f, 0.050f, 0.03f, mk, mg, mb);          // front sight hood
+        gunPart(0f, 0.0f, -0.46f, 0.032f, 0.032f, 0.05f, 0.07f, 0.07f, 0.08f);   // muzzle
+        gunPartR(0f, -0.155f, -0.01f, 0.044f, 0.20f, 0.052f, -16f, mk * 0.7f, mg * 0.7f, mb * 0.7f);  // mag (upper)
+        gunPartR(0f, -0.295f, -0.075f, 0.044f, 0.15f, 0.050f, -26f, mk * 0.65f, mg * 0.65f, mb * 0.65f); // mag (curved lower)
+        gunPartR(0f, -0.150f, 0.155f, 0.048f, 0.16f, 0.058f, 15f, bk + 0.02f, bg + 0.02f, bb + 0.02f); // pistol grip
+        gunPart(0f, 0.0f, 0.27f, 0.040f, 0.055f, 0.16f, bk, bg, bb);             // stock arm
+        gunPart(0f, -0.015f, 0.38f, 0.048f, 0.085f, 0.05f, bk + 0.02f, bg + 0.02f, bb + 0.02f); // butt pad
+        gunPart(-0.052f, 0.045f, -0.10f, 0.018f, 0.018f, 0.06f, mk + 0.06f, mg + 0.06f, mb + 0.06f); // cocking handle
         drawSights();
-        return -0.56f;
+        return -0.50f;
     }
 
-    private float drawShotgun() {
-        gunPart(0f, 0.00f, 0.06f, 0.085f, 0.105f, 0.40f, 0.17f, 0.12f, 0.09f);  // receiver (wood)
-        gunPart(0f, 0.030f, -0.30f, 0.050f, 0.050f, 0.42f, 0.23f, 0.24f, 0.27f); // barrel top
-        gunPart(0f, -0.028f, -0.30f, 0.050f, 0.050f, 0.42f, 0.20f, 0.21f, 0.24f); // barrel bottom
-        gunPart(0f, 0.00f, -0.18f, 0.078f, 0.060f, 0.18f, 0.10f, 0.08f, 0.06f);  // pump/forend
-        gunPart(0f, -0.02f, 0.30f, 0.070f, 0.120f, 0.18f, 0.18f, 0.12f, 0.09f);  // stock (wood)
-        gunPart(0f, -0.12f, 0.16f, 0.060f, 0.130f, 0.085f, 0.12f, 0.09f, 0.07f); // grip
+    private float drawShotgun() {                               // pump-action (Remington 870-style)
+        float mk = 0.16f, mg = 0.17f, mb = 0.20f;               // blued steel
+        float wr = 0.34f, wg = 0.20f, wb = 0.09f;               // wood
+        gunPart(0f, 0.0f, 0.07f, 0.058f, 0.075f, 0.26f, mk * 0.9f, mg * 0.9f, mb * 0.9f); // receiver
+        gunPart(0f, 0.032f, -0.34f, 0.028f, 0.028f, 0.52f, mk, mg, mb);          // barrel
+        gunPart(0f, -0.016f, -0.30f, 0.026f, 0.026f, 0.42f, mk * 0.85f, mg * 0.85f, mb * 0.85f); // tube magazine
+        gunPart(0f, -0.018f, -0.16f, 0.050f, 0.052f, 0.17f, wr, wg, wb);         // forend (wood)
+        gunPart(0f, -0.018f, -0.16f, 0.056f, 0.044f, 0.155f, wr * 0.85f, wg * 0.85f, wb * 0.85f); // forend rib
+        gunPart(0f, 0.060f, -0.585f, 0.010f, 0.018f, 0.012f, 0.6f, 0.5f, 0.2f);  // front bead (brass)
+        gunPartR(0f, -0.030f, 0.28f, 0.052f, 0.085f, 0.22f, -7f, wr, wg, wb);    // stock (wood, slight drop)
+        gunPart(0f, -0.062f, 0.40f, 0.058f, 0.105f, 0.05f, wr * 0.9f, wg * 0.9f, wb * 0.9f); // butt pad
+        gunPart(0f, -0.062f, 0.05f, 0.038f, 0.026f, 0.06f, mk, mg, mb);          // trigger guard
         drawSights();
-        return -0.62f;
+        return -0.66f;
     }
 
     /** Iron sights at FIXED positions so every weapon shows the same sight picture at the same
@@ -722,6 +739,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                          float r, float g, float b) {
         Matrix.setIdentityM(partM, 0);
         Matrix.translateM(partM, 0, tx, ty, tz);
+        Matrix.scaleM(partM, 0, sx, sy, sz);
+        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        submit(cube, 36, mvp, tmpA, 3f, r, g, b);
+    }
+
+    /** Like gunPart but pitched about its X axis (for raked grips, angled/curved magazines, stocks). */
+    private void gunPartR(float tx, float ty, float tz, float sx, float sy, float sz,
+                          float rotXDeg, float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, tx, ty, tz);
+        Matrix.rotateM(partM, 0, rotXDeg, 1f, 0f, 0f);
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
