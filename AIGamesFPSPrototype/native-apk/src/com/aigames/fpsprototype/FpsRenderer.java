@@ -1666,71 +1666,63 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return o;
     }
 
-    /** A rough dome of green lobes with a filled base, for round/flowering/berry bushes. */
+    /** A full, wide, rounded mound of green lobes (always wider than tall — a bush, never a tree). */
     private static int bushDome(float[] d, int o, float x, float by, float z, float rad, float height,
                                 int lobes, Random r, float gA, float gB) {
-        o = vBox(d, o, x, by + 0.20f, z, rad * 1.7f, 0.40f, rad * 1.7f, gA);   // solid base
-        for (int l = 0; l < lobes; l++) {
-            float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * rad;
-            float lx = x + (float) Math.cos(la) * lr, lz = z + (float) Math.sin(la) * lr;
-            float s = 0.26f + r.nextFloat() * 0.22f;
-            o = vBox(d, o, lx, by + 0.22f + r.nextFloat() * height, lz, s, s, s, r.nextBoolean() ? gA : gB);
+        float coreW = rad * 1.5f, coreH = height + 0.20f;
+        o = vBox(d, o, x, by + 0.10f + coreH * 0.5f, z, coreW, coreH, coreW, gA);     // wide, low core
+        for (int l = 0; l < lobes; l++) {                                             // side lobes (kept low)
+            float la = r.nextFloat() * 6.2832f, lr = rad * (0.5f + r.nextFloat() * 0.55f);
+            float s = 0.30f + r.nextFloat() * 0.22f;
+            o = vBox(d, o, x + (float) Math.cos(la) * lr, by + 0.16f + r.nextFloat() * height * 0.5f,
+                    z + (float) Math.sin(la) * lr, s, s, s, r.nextBoolean() ? gA : gB);
+        }
+        for (int k = 0; k < 3; k++) {                                                 // crown lobes round the top
+            float s = 0.30f + r.nextFloat() * 0.16f;
+            o = vBox(d, o, x + (r.nextFloat() - 0.5f) * rad * 0.7f, by + 0.10f + coreH,
+                    z + (r.nextFloat() - 0.5f) * rad * 0.7f, s, s * 0.82f, s, gA);
         }
         return o;
     }
 
-    /** A bush, one of six bigger variants. */
+    /** A bush — six rounded variants, all wider than tall (no spiky / stepped shapes). */
     private static int vBush(float[] d, int o, float x, float by, float z, int type, Random r, int[] flowerCells) {
         float gA = cell(12), gB = cell(13), gC = cell(0);
         switch (type) {
-            case 1: {  // tall egg-shaped bush (rounded, not stepped)
-                o = bushDome(d, o, x, by, z, 0.42f, 0.45f, 7, r, gA, gB);
-                int top = 5 + r.nextInt(3);
-                for (int l = 0; l < top; l++) {
-                    float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * 0.30f, s = 0.24f + r.nextFloat() * 0.16f;
-                    o = vBox(d, o, x + (float) Math.cos(la) * lr, by + 0.70f + r.nextFloat() * 0.50f,
-                            z + (float) Math.sin(la) * lr, s, s, s, r.nextBoolean() ? gA : gB);
-                }
+            case 1:    // big full shrub
+                o = bushDome(d, o, x, by, z, 0.92f, 0.52f, 12, r, gA, gB);
                 break;
-            }
-            case 2: {  // flowering bush: green dome + colour dots
-                o = bushDome(d, o, x, by, z, 0.60f, 0.55f, 8, r, gA, gB);
-                int blooms = 7 + r.nextInt(5);
+            case 2: {  // flowering bush: green mound + colour dots on top
+                o = bushDome(d, o, x, by, z, 0.64f, 0.46f, 9, r, gA, gB);
+                int blooms = 8 + r.nextInt(5);
                 for (int b = 0; b < blooms; b++) {
-                    float ba = r.nextFloat() * 6.2832f, brr = r.nextFloat() * 0.46f;
-                    o = vBox(d, o, x + (float) Math.cos(ba) * brr, by + 0.50f + r.nextFloat() * 0.30f,
+                    float ba = r.nextFloat() * 6.2832f, brr = r.nextFloat() * 0.6f;
+                    o = vBox(d, o, x + (float) Math.cos(ba) * brr, by + 0.42f + r.nextFloat() * 0.22f,
                             z + (float) Math.sin(ba) * brr, 0.075f, 0.075f, 0.075f,
                             cell(flowerCells[r.nextInt(flowerCells.length)]));
                 }
                 break;
             }
-            case 3: {  // layered round topiary (ball on ball, rounded)
-                o = bushDome(d, o, x, by, z, 0.55f, 0.40f, 8, r, gA, gC);          // big lower ball
-                int up = 6;
-                for (int l = 0; l < up; l++) {
-                    float la = r.nextFloat() * 6.2832f, lr = r.nextFloat() * 0.34f, s = 0.22f + r.nextFloat() * 0.14f;
-                    o = vBox(d, o, x + (float) Math.cos(la) * lr, by + 0.72f + r.nextFloat() * 0.30f,
-                            z + (float) Math.sin(la) * lr, s, s, s, gA);
-                }
+            case 3:    // low wide mound
+                o = bushDome(d, o, x, by, z, 0.85f, 0.32f, 11, r, gA, gC);
                 break;
-            }
             case 4: {  // wide low hedge clump
-                float w = 0.95f + r.nextFloat() * 0.7f, dd = 0.5f + r.nextFloat() * 0.3f, hh = 0.5f + r.nextFloat() * 0.22f;
+                float w = 0.95f + r.nextFloat() * 0.7f, dd = 0.5f + r.nextFloat() * 0.3f, hh = 0.45f + r.nextFloat() * 0.18f;
                 o = vBox(d, o, x, by + hh * 0.5f, z, w, hh, dd, gA);
-                o = vBox(d, o, x + (r.nextFloat() - 0.5f) * w * 0.4f, by + hh * 0.5f + 0.10f, z, w * 0.7f, hh * 0.85f, dd * 0.9f, gB);
+                o = vBox(d, o, x + (r.nextFloat() - 0.5f) * w * 0.4f, by + hh * 0.5f + 0.08f, z, w * 0.7f, hh * 0.85f, dd * 0.9f, gB);
                 break;
             }
-            case 5: {  // berry bush: green dome + dark-red berries
-                o = bushDome(d, o, x, by, z, 0.55f, 0.50f, 8, r, gA, gC);
+            case 5: {  // berry bush: green mound + dark-red berries
+                o = bushDome(d, o, x, by, z, 0.60f, 0.42f, 9, r, gA, gC);
                 for (int b = 0; b < 9; b++) {
-                    float ba = r.nextFloat() * 6.2832f, brr = r.nextFloat() * 0.42f;
-                    o = vBox(d, o, x + (float) Math.cos(ba) * brr, by + 0.40f + r.nextFloat() * 0.26f,
+                    float ba = r.nextFloat() * 6.2832f, brr = r.nextFloat() * 0.55f;
+                    o = vBox(d, o, x + (float) Math.cos(ba) * brr, by + 0.36f + r.nextFloat() * 0.20f,
                             z + (float) Math.sin(ba) * brr, 0.05f, 0.05f, 0.05f, cell(4));
                 }
                 break;
             }
-            default:   // round shrub (bigger)
-                o = bushDome(d, o, x, by, z, 0.64f, 0.60f, 9, r, gA, gB);
+            default:   // round shrub
+                o = bushDome(d, o, x, by, z, 0.66f, 0.46f, 9, r, gA, gB);
                 break;
         }
         return o;
