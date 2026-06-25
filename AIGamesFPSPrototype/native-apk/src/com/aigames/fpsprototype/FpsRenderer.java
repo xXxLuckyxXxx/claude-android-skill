@@ -84,12 +84,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int width = 1, height = 1;
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
-    private int progSky, aPSky, uSkyTop, uSkyBot;
+    private int progSky, aPSky, uSkyTop, uSkyBot, uSkySun, uSkyFog, uSkyYaw, uSkyPitch, uSkyTanX, uSkyTanY, uSkyTime;
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, buildingTex, crateTex, clothTex, skinTex;
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts;
@@ -104,6 +104,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private float px = 0f, py = 1.6f, pz = 9f;
     private float yaw = 0f, pitch = -0.08f;
+    private float viewYaw = 0f, viewPitch = -0.08f;   // actual look angles used to build the view (for the sky ray)
     private float recoil = 0f;
     private long lastNanos;
     private float timeAcc = 0f;
@@ -178,7 +179,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
     private int nearDoor = -1;
 
-    private static final float[] FOG = {0.46f, 0.52f, 0.62f};
+    private static final float[] FOG = {0.66f, 0.75f, 0.85f};
 
     public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
@@ -198,7 +199,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        GLES20.glClearColor(0.46f, 0.52f, 0.62f, 1f);
+        GLES20.glClearColor(0.66f, 0.75f, 0.85f, 1f);
 
         prog3 = buildProgram(VERT3_SRC, FRAG3_SRC);
         aPos = GLES20.glGetAttribLocation(prog3, "aPos");
@@ -218,6 +219,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         aPSky = GLES20.glGetAttribLocation(progSky, "aP");
         uSkyTop = GLES20.glGetUniformLocation(progSky, "uTop");
         uSkyBot = GLES20.glGetUniformLocation(progSky, "uBot");
+        uSkySun = GLES20.glGetUniformLocation(progSky, "uSun");
+        uSkyFog = GLES20.glGetUniformLocation(progSky, "uFog");
+        uSkyYaw = GLES20.glGetUniformLocation(progSky, "uYaw");
+        uSkyPitch = GLES20.glGetUniformLocation(progSky, "uPitch");
+        uSkyTanX = GLES20.glGetUniformLocation(progSky, "uTanX");
+        uSkyTanY = GLES20.glGetUniformLocation(progSky, "uTanY");
+        uSkyTime = GLES20.glGetUniformLocation(progSky, "uTime");
 
         progVig = buildProgram(VERT_VIG_SRC, FRAG_VIG_SRC);
         aPVig = GLES20.glGetAttribLocation(progVig, "aP");
@@ -257,8 +265,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         cityGround = makeBuffer(makeFlatQuad(21f, 0.02f));
         cityTex = uploadTexture(makeCityBitmap());
 
-        vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
+        vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes, trees (sets vegVerts)
         vegTex = uploadPalette(makeVegPalette());
+
+        buildingTex = uploadTexture(makeBuildingBitmap());   // glass-and-concrete facade with lit windows
+        crateTex = uploadTexture(makeCrateBitmap());         // wooden shipping crate
+        clothTex = uploadTexture(makeClothBitmap());         // soft fabric for enemy clothing
+        skinTex = uploadTexture(makeSkinBitmap());           // smooth skin for heads/hands
 
         restart();
         lastNanos = System.nanoTime();
@@ -291,12 +304,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
-        // Sky
+        // Sky — atmospheric dome with a real sun + drifting clouds, reconstructed per-pixel
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDepthMask(false);
         GLES20.glUseProgram(progSky);
-        GLES20.glUniform3f(uSkyTop, 0.05f, 0.07f, 0.16f);
-        GLES20.glUniform3f(uSkyBot, 0.52f, 0.58f, 0.68f);
+        GLES20.glUniform3f(uSkyTop, 0.16f, 0.34f, 0.62f);
+        GLES20.glUniform3f(uSkyBot, 0.62f, 0.74f, 0.86f);
+        GLES20.glUniform3f(uSkySun, -0.4f, 1.0f, -0.3f);
+        GLES20.glUniform3f(uSkyFog, FOG[0], FOG[1], FOG[2]);
+        float tanY = (float) Math.tan(Math.toRadians(fov * 0.5));
+        GLES20.glUniform1f(uSkyYaw, viewYaw);
+        GLES20.glUniform1f(uSkyPitch, viewPitch);
+        GLES20.glUniform1f(uSkyTanX, tanY * aspect);
+        GLES20.glUniform1f(uSkyTanY, tanY);
+        GLES20.glUniform1f(uSkyTime, timeAcc);
         quad.position(0);
         GLES20.glEnableVertexAttribArray(aPSky);
         GLES20.glVertexAttribPointer(aPSky, 2, GLES20.GL_FLOAT, false, 8, quad);
@@ -319,16 +340,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
         drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
 
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes / trees (mode 5 = foliage)
         Matrix.setIdentityM(model, 0);
-        drawWorld(vegetation, vegVerts, 0f, 1f, 1f, 1f);
+        drawWorld(vegetation, vegVerts, 5f, 1f, 1f, 1f);
 
         drawShadows();
 
         GLES20.glUseProgram(prog3);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        int boundTex = -1;
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
+            // crates (0,1) = wood; pillars (2,3) = metal; everything else = building facade
+            int tex = (i < 2) ? crateTex : (i < COVER_BOXES ? metalTex : buildingTex);
+            if (tex != boundTex) { GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex); boundTex = tex; }
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
@@ -438,7 +462,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void drawEnemies() {
         GLES20.glUseProgram(prog3);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (!enAlive[i]) continue;
             float sw = (float) Math.sin(enPhase[i]);          // limb swing
@@ -447,23 +470,68 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float[] o = OUTFITS[enOutfit[i]];
             float shR = o[0] * k, shG = o[1] * k, shB = o[2] * k;   // shirt (torso + arms)
             float paR = o[3] * k, paG = o[4] * k, paB = o[5] * k;   // pants (legs)
+            float skR = 0.98f * k, skG = 0.83f * k, skB = 0.62f * k; // skin
             Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
             Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
-            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, shR, shG, shB);                       // torso (shirt)
-            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.97f * k, 0.83f * k, 0.30f * k);     // yellow head
-            enemyFace(enFaceType[i]);                                                           // goofy face (varies)
-            enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, paR, paG, paB); // leg L
-            enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, paR, paG, paB); // leg R
-            enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, shR, shG, shB); // arm L
-            enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, shR, shG, shB); // arm R
+
+            // --- body (fabric) ---
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clothTex);
+            enemyPart(0f, 1.02f, 0f, 0.52f, 0.64f, 0.32f, shR, shG, shB);                       // chest
+            enemyPart(0f, 0.74f, 0f, 0.46f, 0.20f, 0.30f, paR * 1.05f, paG * 1.05f, paB * 1.05f); // hips/belt
+            enemyLimb(-0.15f, 0.66f, 0f, 0.33f, 0.18f, 0.66f, 0.22f,  sw * 26f, paR, paG, paB);  // leg L
+            enemyLimb( 0.15f, 0.66f, 0f, 0.33f, 0.18f, 0.66f, 0.22f, -sw * 26f, paR, paG, paB);  // leg R
+            enemyLimb(-0.34f, 1.30f, 0f, 0.26f, 0.13f, 0.52f, 0.16f, -sw * 22f, shR, shG, shB);  // arm L (upper)
+            enemyLimb( 0.34f, 1.30f, 0f, 0.26f, 0.13f, 0.52f, 0.16f,  sw * 22f, shR, shG, shB);  // arm R (upper)
+
+            // --- skin: rounded head, neck, hands ---
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, skinTex);
+            enemyPart(0f, 1.40f, 0f, 0.16f, 0.14f, 0.16f, skR, skG, skB);                       // neck
+            enemyBall(0f, 1.52f, 0f, 0.40f, skR, skG, skB);                                     // round head
+            enemyLimbPiece(-0.34f, 1.30f, 0f, -sw * 22f, -0.60f, 0.07f, 0.11f, 0.11f, 0.10f, skR, skG, skB); // hand L
+            enemyLimbPiece( 0.34f, 1.30f, 0f,  sw * 22f, -0.60f, 0.07f, 0.11f, 0.11f, 0.10f, skR, skG, skB); // hand R
+
+            // --- boots (dark) ---
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clothTex);
+            enemyLimbPiece(-0.15f, 0.66f, 0f,  sw * 26f, -0.66f, 0.10f, 0.20f, 0.14f, 0.30f, 0.13f, 0.10f, 0.08f); // boot L
+            enemyLimbPiece( 0.15f, 0.66f, 0f, -sw * 26f, -0.66f, 0.10f, 0.20f, 0.14f, 0.30f, 0.13f, 0.10f, 0.08f); // boot R
+
+            // --- team cap ---
+            enemyPart(0f, 1.70f, 0f, 0.40f, 0.16f, 0.40f, shR * 0.85f, shG * 0.85f, shB * 0.85f);   // crown
+            enemyPart(0f, 1.66f, 0.20f, 0.34f, 0.05f, 0.18f, shR * 0.7f, shG * 0.7f, shB * 0.7f);    // brim (front)
+
+            // --- face (unlit, drawn last so it reads on the head) ---
+            enemyFace(enFaceType[i]);
         }
+    }
+
+    /** A sphere part in enemy-local space (rounded head). */
+    private void enemyBall(float lx, float ly, float lz, float d, float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, lx, ly, lz);
+        Matrix.scaleM(partM, 0, d, d, d);
+        Matrix.multiplyMM(model, 0, gunBase, 0, partM, 0);
+        drawWorld(sphere, sphereVerts, 0f, r, g, b);
+    }
+
+    /** A small box placed in a limb's swinging frame (hands, feet) — same pivot/angle
+     *  as the limb, then translated down its length (offY) and forward (offZ). */
+    private void enemyLimbPiece(float pivX, float pivY, float pivZ, float angleDeg,
+                                float offY, float offZ, float sx, float sy, float sz,
+                                float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, pivX, pivY, pivZ);
+        Matrix.rotateM(partM, 0, angleDeg, 1f, 0f, 0f);
+        Matrix.translateM(partM, 0, 0f, offY, offZ);
+        Matrix.scaleM(partM, 0, sx, sy, sz);
+        Matrix.multiplyMM(model, 0, gunBase, 0, partM, 0);
+        drawWorld(cube, 36, 0f, r, g, b);
     }
 
     /** One of several funny / dopey faces (chosen per enemy). Features drawn UNLIT (mode 4)
      *  for high contrast on the yellow head; local +z always faces the player. */
     private void enemyFace(int t) {
-        float fz = 0.176f;
+        float fz = 0.205f;
         switch (t) {
             case 0:   // big goofy open grin  :D
                 enemyFacePart(-0.085f, 1.560f, fz, 0.052f, 0.054f, 0.02f, 0f, 0f, 0f);   // eye L
@@ -597,7 +665,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void drawDoors() {
         GLES20.glUseProgram(prog3);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, crateTex);
         for (int i = 0; i < doorData.length; i++) {
             float[] dd = doorData[i];
             float ang = doorOpen[i] * 85f;                  // swing open up to ~85°
@@ -641,34 +709,42 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private float drawPistol() {
-        gunPart(0f, 0.00f, -0.02f, 0.075f, 0.100f, 0.30f, 0.14f, 0.15f, 0.18f); // slide
-        gunPart(0f, 0.01f, -0.20f, 0.050f, 0.055f, 0.10f, 0.10f, 0.10f, 0.12f); // barrel tip
-        gunPart(0f, -0.13f, 0.10f, 0.070f, 0.170f, 0.085f, 0.10f, 0.09f, 0.08f); // grip
+        gunPart(0f, 0.00f, -0.02f, 0.075f, 0.100f, 0.30f, 0.16f, 0.17f, 0.20f);  // slide
+        gunPart(0f, 0.035f, -0.05f, 0.055f, 0.030f, 0.24f, 0.10f, 0.10f, 0.12f); // slide top rib
+        gunPart(0f, 0.01f, -0.20f, 0.050f, 0.055f, 0.10f, 0.09f, 0.09f, 0.11f);  // barrel shroud
+        gunPart(0f, 0.012f, -0.255f, 0.030f, 0.030f, 0.04f, 0.05f, 0.05f, 0.06f);// muzzle
+        gunPartRot(0f, -0.13f, 0.105f, 11f, 0.072f, 0.180f, 0.085f, 0.11f, 0.10f, 0.09f);  // raked grip
+        gunPart(0f, -0.225f, 0.135f, 0.078f, 0.035f, 0.090f, 0.07f, 0.07f, 0.08f);// magazine floorplate
         gunPart(0f, -0.05f, 0.04f, 0.055f, 0.050f, 0.05f, 0.08f, 0.08f, 0.10f);  // trigger guard
+        gunPart(0.052f, 0.02f, -0.04f, 0.012f, 0.030f, 0.10f, 0.06f, 0.06f, 0.07f); // ejection port
         drawSights();
         return -0.30f;
     }
 
     private float drawRifle() {
-        gunPart(0f, 0.00f, 0.04f, 0.090f, 0.11f, 0.42f, 0.13f, 0.14f, 0.17f);
-        gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.12f, 0.12f, 0.15f);
-        gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.20f, 0.21f, 0.24f);
-        gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.09f, 0.09f, 0.11f);
-        gunPart(0f, 0.050f, -0.10f, 0.045f, 0.035f, 0.22f, 0.10f, 0.10f, 0.12f);  // low handguard rail
-        gunPart(0f, -0.14f, -0.02f, 0.052f, 0.16f, 0.085f, 0.18f, 0.18f, 0.22f);
-        gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);
-        gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.09f, 0.09f, 0.11f);
+        gunPart(0f, 0.00f, 0.04f, 0.090f, 0.11f, 0.42f, 0.15f, 0.16f, 0.19f);    // upper receiver
+        gunPart(0f, -0.02f, 0.26f, 0.075f, 0.10f, 0.16f, 0.13f, 0.13f, 0.16f);   // lower/buffer
+        gunPart(0f, 0.02f, -0.34f, 0.040f, 0.040f, 0.34f, 0.22f, 0.23f, 0.26f);  // barrel
+        gunPart(0f, 0.02f, -0.52f, 0.052f, 0.052f, 0.06f, 0.08f, 0.08f, 0.10f);  // flash hider
+        gunPart(0f, 0.062f, -0.02f, 0.030f, 0.028f, 0.40f, 0.10f, 0.10f, 0.12f); // top rail
+        gunPart(0f, 0.050f, -0.10f, 0.045f, 0.035f, 0.22f, 0.11f, 0.11f, 0.13f); // handguard rail
+        gunPartRot(0f, -0.18f, 0.06f, -14f, 0.052f, 0.20f, 0.075f, 0.12f, 0.13f, 0.16f); // angled magazine
+        gunPart(0f, -0.14f, 0.14f, 0.060f, 0.15f, 0.080f, 0.12f, 0.10f, 0.09f);  // pistol grip
+        gunPart(0f, -0.07f, 0.06f, 0.050f, 0.045f, 0.05f, 0.08f, 0.08f, 0.10f);  // trigger guard
+        gunPart(0f, 0.005f, 0.40f, 0.070f, 0.090f, 0.10f, 0.10f, 0.10f, 0.12f);  // stock
         drawSights();
         return -0.56f;
     }
 
     private float drawShotgun() {
-        gunPart(0f, 0.00f, 0.06f, 0.085f, 0.105f, 0.40f, 0.17f, 0.12f, 0.09f);  // receiver (wood)
-        gunPart(0f, 0.030f, -0.30f, 0.050f, 0.050f, 0.42f, 0.23f, 0.24f, 0.27f); // barrel top
-        gunPart(0f, -0.028f, -0.30f, 0.050f, 0.050f, 0.42f, 0.20f, 0.21f, 0.24f); // barrel bottom
-        gunPart(0f, 0.00f, -0.18f, 0.078f, 0.060f, 0.18f, 0.10f, 0.08f, 0.06f);  // pump/forend
-        gunPart(0f, -0.02f, 0.30f, 0.070f, 0.120f, 0.18f, 0.18f, 0.12f, 0.09f);  // stock (wood)
-        gunPart(0f, -0.12f, 0.16f, 0.060f, 0.130f, 0.085f, 0.12f, 0.09f, 0.07f); // grip
+        gunPart(0f, 0.00f, 0.06f, 0.085f, 0.105f, 0.40f, 0.19f, 0.13f, 0.10f);   // receiver (wood)
+        gunPart(0f, 0.030f, -0.30f, 0.050f, 0.050f, 0.42f, 0.25f, 0.26f, 0.29f); // barrel top
+        gunPart(0f, -0.028f, -0.30f, 0.050f, 0.050f, 0.42f, 0.22f, 0.23f, 0.26f);// barrel bottom
+        gunPart(0f, -0.058f, -0.24f, 0.040f, 0.030f, 0.30f, 0.14f, 0.14f, 0.16f);// magazine tube
+        gunPart(0f, 0.00f, -0.18f, 0.078f, 0.060f, 0.18f, 0.11f, 0.09f, 0.07f);  // pump/forend
+        gunPart(0f, 0.045f, -0.50f, 0.020f, 0.026f, 0.04f, 0.06f, 0.06f, 0.07f); // front bead post
+        gunPartRot(0f, -0.04f, 0.30f, 8f, 0.070f, 0.120f, 0.20f, 0.20f, 0.13f, 0.10f); // angled stock (wood)
+        gunPart(0f, -0.12f, 0.16f, 0.060f, 0.130f, 0.085f, 0.13f, 0.10f, 0.08f); // grip
         drawSights();
         return -0.62f;
     }
@@ -722,6 +798,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                          float r, float g, float b) {
         Matrix.setIdentityM(partM, 0);
         Matrix.translateM(partM, 0, tx, ty, tz);
+        Matrix.scaleM(partM, 0, sx, sy, sz);
+        Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        submit(cube, 36, mvp, tmpA, 3f, r, g, b);
+    }
+
+    /** A gun part rotated about the X axis (for angled magazines, stocks, optics). */
+    private void gunPartRot(float tx, float ty, float tz, float rotXDeg, float sx, float sy, float sz,
+                            float r, float g, float b) {
+        Matrix.setIdentityM(partM, 0);
+        Matrix.translateM(partM, 0, tx, ty, tz);
+        Matrix.rotateM(partM, 0, rotXDeg, 1f, 0f, 0f);
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
@@ -792,6 +880,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float ldy = (float) Math.sin(effPitch);
         float ldz = -cosP * (float) Math.cos(vYaw);
         Matrix.setLookAtM(view, 0, px, eyeY, pz, px + ldx, eyeY + ldy, pz + ldz, 0f, 1f, 0f);
+        viewYaw = vYaw; viewPitch = effPitch;
     }
 
     /** Jump if grounded; if a low ledge is right in front, size the boost to climb it. */
@@ -1360,6 +1449,136 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return b;
     }
 
+    /** Glass-and-concrete building facade: a grid of windows (some lit warm, some dark/
+     *  reflective sky) set into a concrete frame. Tiled once per wall face; the white
+     *  base lets the per-building PALETTE tint come through via uColor. */
+    private static Bitmap makeBuildingBitmap() {
+        int N = 512;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFB9B4AA);                              // concrete base (tinted by uColor)
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(73);
+        // faint vertical concrete streaking
+        p.setStyle(Paint.Style.FILL);
+        for (int k = 0; k < 90; k++) {
+            int a = 0x10 + rnd.nextInt(0x22);
+            p.setColor((a << 24) | 0x00000000);
+            float x = rnd.nextInt(N);
+            c.drawRect(x, 0, x + 1 + rnd.nextInt(2), N, p);
+        }
+        int cols = 3, rows = 5;
+        float mx = N * 0.07f, my = N * 0.06f;                 // outer margin
+        float gx = N * 0.05f, gy = N * 0.045f;                // gaps between windows
+        float cw = (N - 2 * mx - (cols - 1) * gx) / cols;
+        float ch = (N - 2 * my - (rows - 1) * gy) / rows;
+        for (int j = 0; j < rows; j++) {
+            for (int i = 0; i < cols; i++) {
+                float L = mx + i * (cw + gx), T = my + j * (ch + gy), R = L + cw, B = T + ch;
+                // recessed frame (dark) then sill (light)
+                p.setColor(0xFF20242B); c.drawRect(L - 4, T - 4, R + 4, B + 4, p);
+                p.setColor(0xFFCDC8BC); c.drawRect(L - 6, B + 2, R + 6, B + 7, p);
+                boolean lit = rnd.nextInt(100) < 28;
+                if (lit) {                                    // warm interior glow, gradient top->bottom
+                    int[] warm = {0xFFFFE7A8, 0xFFFFD27A, 0xFFF7B85C};
+                    for (int s = 0; s < 3; s++) {
+                        p.setColor(warm[s]);
+                        c.drawRect(L, T + ch * s / 3f, R, T + ch * (s + 1) / 3f, p);
+                    }
+                } else {                                      // glass: cool sky reflection, brighter at top
+                    p.setColor(0xFF6E8BA6); c.drawRect(L, T, R, B, p);
+                    p.setColor(0xFF93AEC6); c.drawRect(L, T, R, T + ch * 0.45f, p);
+                    p.setColor(0x55FFFFFF); c.drawRect(L, T, R, T + ch * 0.14f, p);
+                }
+                // mullions (window cross-bars)
+                p.setColor(0xCC2A2E34);
+                c.drawRect(L + cw * 0.5f - 1.5f, T, L + cw * 0.5f + 1.5f, B, p);
+                c.drawRect(L, T + ch * 0.5f - 1.5f, R, T + ch * 0.5f + 1.5f, p);
+                // a soft reflection streak across the glass
+                if (!lit) { p.setColor(0x30FFFFFF); c.drawRect(L, T + ch * 0.2f, R, T + ch * 0.28f, p); }
+            }
+        }
+        // ground-floor band + faint storey lines for scale
+        p.setColor(0x33000000);
+        for (int j = 1; j < rows; j++) c.drawRect(0, my + j * (ch + gy) - gy * 0.5f - 1, N, my + j * (ch + gy) - gy * 0.5f + 1, p);
+        return b;
+    }
+
+    /** A wooden shipping crate: plank boards, dark seams, diagonal braces, corner bolts. */
+    private static Bitmap makeCrateBitmap() {
+        int N = 512;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(91);
+        int planks = 5;
+        float ph = (float) N / planks;
+        for (int i = 0; i < planks; i++) {                   // horizontal planks with grain
+            int shade = 0x6E4A24 + rnd.nextInt(0x18) * 0x010101;
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFF000000 | shade);
+            c.drawRect(0, i * ph, N, (i + 1) * ph, p);
+            p.setColor(0x55000000); p.setStrokeWidth(3f); p.setStyle(Paint.Style.STROKE);
+            c.drawLine(0, i * ph, N, i * ph, p);             // seam between planks
+            p.setStyle(Paint.Style.FILL);
+            for (int k = 0; k < 26; k++) {                   // grain streaks
+                int a = 0x12 + rnd.nextInt(0x20);
+                p.setColor((a << 24) | 0x00301A08);
+                float y = i * ph + rnd.nextInt((int) ph);
+                c.drawLine(0, y, N, y + (rnd.nextInt(7) - 3), p);
+            }
+        }
+        p.setStyle(Paint.Style.STROKE);
+        p.setColor(0xFF5A3A1C); p.setStrokeWidth(26f);       // diagonal cross-braces
+        c.drawLine(0, 0, N, N, p); c.drawLine(N, 0, 0, N, p);
+        p.setStrokeWidth(34f); p.setColor(0xFF4A2F16);       // outer frame
+        c.drawRect(0, 0, N, N, p);
+        p.setStyle(Paint.Style.FILL); p.setColor(0xFF6E6A60);   // corner bolts
+        int m = 30, br = 9;
+        c.drawCircle(m, m, br, p); c.drawCircle(N - m, m, br, p);
+        c.drawCircle(m, N - m, br, p); c.drawCircle(N - m, N - m, br, p);
+        return b;
+    }
+
+    /** Soft woven fabric: near-white base (tinted by the outfit colour) with a faint
+     *  diagonal weave and gentle per-face shading so clothing reads as cloth, not metal. */
+    private static Bitmap makeClothBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFF2F2F2);
+        Paint p = new Paint();
+        p.setStrokeWidth(1f);
+        for (int k = -N; k < N; k += 4) {                    // diagonal weave threads
+            p.setColor(0x10000000); c.drawLine(k, 0, k + N, N, p);
+            p.setColor(0x0CFFFFFF); c.drawLine(k + 2, 0, k + 2 + N, N, p);
+        }
+        Random rnd = new Random(57);
+        for (int k = 0; k < 1800; k++) {                     // subtle fibre speckle
+            int a = 0x0A + rnd.nextInt(0x12);
+            p.setColor((a << 24));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawPoint(x, y, p);
+        }
+        return b;
+    }
+
+    /** Smooth skin: warm off-white base with very faint mottling (tinted per part). */
+    private static Bitmap makeSkinBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFFFFFFF);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(63);
+        for (int k = 0; k < 80; k++) {
+            int a = 0x08 + rnd.nextInt(0x10);
+            p.setColor((a << 24) | 0x00C08040);
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 2 + rnd.nextInt(5), p);
+        }
+        return b;
+    }
+
     // --- geometry (pos3, normal3, uv2) ---
 
     private static int put(float[] d, int o, float x, float y, float z, float nx, float ny, float nz, float u, float v) {
@@ -1441,70 +1660,111 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // Facade colour palette: concrete, brick, steel-blue, sandstone, dark concrete.
     private static final float[][] PALETTE = {
-        {0.62f, 0.60f, 0.56f}, {0.66f, 0.45f, 0.38f}, {0.50f, 0.55f, 0.62f},
-        {0.72f, 0.68f, 0.58f}, {0.46f, 0.50f, 0.52f},
+        {0.82f, 0.80f, 0.75f}, {0.86f, 0.62f, 0.50f}, {0.66f, 0.74f, 0.84f},
+        {0.90f, 0.84f, 0.70f}, {0.62f, 0.68f, 0.72f}, {0.74f, 0.78f, 0.72f},
     };
 
     /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
     // --- vegetation (one baked mesh, coloured via a tiny palette texture) ---
 
-    private static float cell(int i) { return (i + 0.5f) / 16f; }   // palette column centre
+    private static float cell(int i) { return (i + 0.5f) / 24f; }   // palette column centre
 
     /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
     private float[] makeVegetation() {
-        float[] d = new float[360000];
+        float[] d = new float[1_200_000];
         int o = 0;
         Random r = new Random(404);
         float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
         int[] flowerCells = {4, 5, 6, 7, 8, 9, 10};
+        int[] canopyCells = {16, 17, 18};
+        float uTrunk = cell(19), uTrunkD = cell(20);
 
-        for (int n = 0, tries = 0; n < 360 && tries < 5000; tries++) {     // grass tufts
-            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
+        for (int n = 0, tries = 0; n < 900 && tries < 14000; tries++) {    // dense grass tufts
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 30f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.2f) || onRoadXZ(x, z)) continue;
             float by = terrainH(x, z);
-            int blades = 4 + r.nextInt(4);
+            int blades = 5 + r.nextInt(5);
             for (int b = 0; b < blades; b++) {
-                float bx = x + (r.nextFloat() - 0.5f) * 0.18f, bz = z + (r.nextFloat() - 0.5f) * 0.18f;
+                float bx = x + (r.nextFloat() - 0.5f) * 0.22f, bz = z + (r.nextFloat() - 0.5f) * 0.22f;
                 float ug = r.nextInt(3) == 0 ? ug0 : (r.nextBoolean() ? ug1 : ug2);
-                o = vBlade(d, o, bx, by, bz, r.nextFloat() * 6.2832f,
-                        0.16f + r.nextFloat() * 0.22f, 0.02f + r.nextFloat() * 0.02f, 0.04f + r.nextFloat() * 0.10f, ug);
+                o = vBlade(d, o, bx, terrainH(bx, bz), bz, r.nextFloat() * 6.2832f,
+                        0.18f + r.nextFloat() * 0.26f, 0.02f + r.nextFloat() * 0.025f, 0.05f + r.nextFloat() * 0.12f, ug);
             }
             n++;
         }
-        for (int n = 0, tries = 0; n < 140 && tries < 4000; tries++) {     // flowers
-            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
+        for (int n = 0, tries = 0; n < 220 && tries < 5000; tries++) {     // flowers
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 30f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.25f) || onRoadXZ(x, z)) continue;
             float by = terrainH(x, z);
-            float stemH = 0.22f + r.nextFloat() * 0.20f, topY = by + stemH;
+            float stemH = 0.22f + r.nextFloat() * 0.22f, topY = by + stemH;
             o = vBlade(d, o, x - 0.05f, by, z, r.nextFloat() * 6.2832f, 0.14f, 0.02f, 0.05f, ug1);   // tufts at base
             o = vBlade(d, o, x + 0.05f, by, z, r.nextFloat() * 6.2832f, 0.16f, 0.02f, 0.05f, ug2);
-            o = vBox(d, o, x, by + stemH * 0.5f, z, 0.018f, stemH, 0.018f, uStem);                  // stem
+            o = vBox(d, o, x, by + stemH * 0.5f, z, 0.018f, stemH, 0.018f, uStem, 0.45f);            // stem
             float petU = cell(flowerCells[r.nextInt(flowerCells.length)]);
             int petals = 5 + r.nextInt(2);
             float pa0 = r.nextFloat() * 6.2832f, plen = 0.07f + r.nextFloat() * 0.04f, pw = 0.05f + r.nextFloat() * 0.02f;
             for (int p = 0; p < petals; p++)
                 o = vPetal(d, o, x, topY, z, pa0 + p * (6.2832f / petals), plen, 0.02f, pw, petU);
-            o = vBox(d, o, x, topY + 0.012f, z, 0.045f, 0.03f, 0.045f, uCtr);                        // centre
+            o = vBox(d, o, x, topY + 0.012f, z, 0.045f, 0.03f, 0.045f, uCtr, 0.85f);                 // centre
             n++;
         }
-        for (int n = 0, tries = 0; n < 22 && tries < 2000; tries++) {      // bushes
-            float a = r.nextFloat() * 6.2832f, rad = 4f + r.nextFloat() * 24f;
+        for (int n = 0, tries = 0; n < 34 && tries < 3000; tries++) {      // bushes
+            float a = r.nextFloat() * 6.2832f, rad = 4f + r.nextFloat() * 26f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.4f) || onRoadXZ(x, z)) continue;
-            float by = terrainH(x, z), br = 0.22f + r.nextFloat() * 0.18f;
-            int lobes = 5 + r.nextInt(4);
+            float by = terrainH(x, z), br = 0.24f + r.nextFloat() * 0.20f;
+            int lobes = 6 + r.nextInt(5);
             for (int l = 0; l < lobes; l++) {
-                float lx = x + (r.nextFloat() - 0.5f) * br * 1.6f, lz = z + (r.nextFloat() - 0.5f) * br * 1.6f;
-                float s = 0.16f + r.nextFloat() * 0.14f;
-                o = vBox(d, o, lx, by + 0.12f + r.nextFloat() * 0.18f, lz, s, s, s, uBush);
+                float lx = x + (r.nextFloat() - 0.5f) * br * 1.7f, lz = z + (r.nextFloat() - 0.5f) * br * 1.7f;
+                float s = 0.16f + r.nextFloat() * 0.16f;
+                float ub = r.nextInt(3) == 0 ? uBush : cell(13 + r.nextInt(3));
+                o = vBox(d, o, lx, by + 0.14f + r.nextFloat() * 0.20f, lz, s, s, s, ub, 0.5f);
             }
+            n++;
+        }
+        for (int n = 0, tries = 0; n < 16 && tries < 3000; tries++) {      // trees (trunk + layered canopy)
+            float a = r.nextFloat() * 6.2832f, rad = 7f + r.nextFloat() * 26f;
+            float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
+            if (inBuildingXZ(x, z, 1.0f) || onRoadXZ(x, z)) continue;
+            o = tree(d, o, r, x, z, uTrunk, uTrunkD, canopyCells);
             n++;
         }
         vegVerts = o / 8;
         return java.util.Arrays.copyOf(d, o);
+    }
+
+    /** A stylised low-poly tree: a tapered trunk of stacked bark boxes topped by a
+     *  rounded cluster of canopy puffs (each puff sways in the wind). */
+    private int tree(float[] d, int o, Random r, float x, float z,
+                     float uTrunk, float uTrunkD, int[] canopyCells) {
+        float by = terrainH(x, z);
+        float trunkH = 1.5f + r.nextFloat() * 1.4f;
+        float tw = 0.16f + r.nextFloat() * 0.07f;
+        int segs = 4;
+        for (int s = 0; s < segs; s++) {                       // trunk: tapers as it rises, barely sways
+            float f0 = (float) s / segs, f1 = (float) (s + 1) / segs;
+            float w = tw * (1f - 0.45f * f0);
+            float segH = trunkH * (f1 - f0) + 0.02f;
+            float cyl = by + (f0 + f1) * 0.5f * trunkH;
+            float lean = f0 * 0.06f;
+            o = vBox(d, o, x + lean, cyl, z, w, segH, w, (s == 0 ? uTrunkD : uTrunk), 0.04f + 0.10f * f0);
+        }
+        float topY = by + trunkH;
+        float cr = 0.7f + r.nextFloat() * 0.5f;                 // canopy radius
+        int puffs = 9 + r.nextInt(6);
+        for (int p = 0; p < puffs; p++) {                      // canopy: overlapping leafy puffs
+            float pa = r.nextFloat() * 6.2832f, pr = r.nextFloat() * cr * 0.8f;
+            float lx = x + (float) Math.cos(pa) * pr;
+            float lz = z + (float) Math.sin(pa) * pr;
+            float ly = topY + 0.10f + r.nextFloat() * cr * 0.9f;
+            float s = cr * (0.5f + r.nextFloat() * 0.5f);
+            float uc = cell(canopyCells[r.nextInt(canopyCells.length)]);
+            o = vBox(d, o, lx, ly, lz, s, s * 0.85f, s, uc, 0.55f + 0.25f * r.nextFloat());
+        }
+        return o;
     }
 
     private boolean inBuildingXZ(float x, float z, float m) {
@@ -1523,7 +1783,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return false;
     }
 
-    /** A tapered, slightly bent grass/leaf blade (2 triangles). */
+    /** A tapered, slightly bent grass/leaf blade (2 triangles). v encodes the wind sway
+     *  weight: 0 at the rooted base, 1 at the free tip (also drives base ambient occlusion). */
     private static int vBlade(float[] d, int o, float cx, float by, float cz, float ang,
                               float h, float w, float bend, float u) {
         float dx = (float) Math.cos(ang), dz = (float) Math.sin(ang);
@@ -1531,12 +1792,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float blx = cx - px * hw, blz = cz - pz * hw, brx = cx + px * hw, brz = cz + pz * hw;
         float tx = cx + dx * bend, tz = cz + dz * bend, ty = by + h;
         float tlx = tx - px * tw, tlz = tz - pz * tw, trx = tx + px * tw, trz = tz + pz * tw;
-        o = put(d, o, blx, by, blz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, brx, by, brz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, blx, by, blz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, tlx, ty, tlz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, blx, by, blz, 0f, 1f, 0f, u, 0f);
+        o = put(d, o, brx, by, brz, 0f, 1f, 0f, u, 0f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 1f);
+        o = put(d, o, blx, by, blz, 0f, 1f, 0f, u, 0f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 1f);
+        o = put(d, o, tlx, ty, tlz, 0f, 1f, 0f, u, 1f);
         return o;
     }
 
@@ -1548,45 +1809,50 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float blx = cx - px * hw, blz = cz - pz * hw, brx = cx + px * hw, brz = cz + pz * hw;
         float tx = cx + dx * len, tz = cz + dz * len, ty = cy + rise;
         float tlx = tx - px * hw * 0.4f, tlz = tz - pz * hw * 0.4f, trx = tx + px * hw * 0.4f, trz = tz + pz * hw * 0.4f;
-        o = put(d, o, blx, cy, blz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, brx, cy, brz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, blx, cy, blz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.5f);
-        o = put(d, o, tlx, ty, tlz, 0f, 1f, 0f, u, 0.5f);
+        o = put(d, o, blx, cy, blz, 0f, 1f, 0f, u, 0.55f);
+        o = put(d, o, brx, cy, brz, 0f, 1f, 0f, u, 0.55f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.85f);
+        o = put(d, o, blx, cy, blz, 0f, 1f, 0f, u, 0.55f);
+        o = put(d, o, trx, ty, trz, 0f, 1f, 0f, u, 0.85f);
+        o = put(d, o, tlx, ty, tlz, 0f, 1f, 0f, u, 0.85f);
         return o;
     }
 
-    private static int vBox(float[] d, int o, float cx, float cy, float cz, float sx, float sy, float sz, float u) {
+    /** A box whose every vertex carries a uniform sway weight (v) — used for stems,
+     *  flower centres, bush lobes and tree canopy puffs (trunks pass a tiny weight). */
+    private static int vBox(float[] d, int o, float cx, float cy, float cz, float sx, float sy, float sz, float u, float sway) {
         float hx = sx * 0.5f, hy = sy * 0.5f, hz = sz * 0.5f;
-        o = vQuad(d, o, cx - hx, cy + hy, cz - hz, cx + hx, cy + hy, cz - hz, cx + hx, cy + hy, cz + hz, cx - hx, cy + hy, cz + hz, 0f, 1f, 0f, u);
-        o = vQuad(d, o, cx - hx, cy - hy, cz + hz, cx + hx, cy - hy, cz + hz, cx + hx, cy - hy, cz - hz, cx - hx, cy - hy, cz - hz, 0f, -1f, 0f, u);
-        o = vQuad(d, o, cx + hx, cy - hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy + hy, cz - hz, cx + hx, cy - hy, cz - hz, 1f, 0f, 0f, u);
-        o = vQuad(d, o, cx - hx, cy - hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy + hy, cz + hz, cx - hx, cy - hy, cz + hz, -1f, 0f, 0f, u);
-        o = vQuad(d, o, cx - hx, cy - hy, cz + hz, cx - hx, cy + hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy - hy, cz + hz, 0f, 0f, 1f, u);
-        o = vQuad(d, o, cx + hx, cy - hy, cz - hz, cx + hx, cy + hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy - hy, cz - hz, 0f, 0f, -1f, u);
+        o = vQuad(d, o, cx - hx, cy + hy, cz - hz, cx + hx, cy + hy, cz - hz, cx + hx, cy + hy, cz + hz, cx - hx, cy + hy, cz + hz, 0f, 1f, 0f, u, sway);
+        o = vQuad(d, o, cx - hx, cy - hy, cz + hz, cx + hx, cy - hy, cz + hz, cx + hx, cy - hy, cz - hz, cx - hx, cy - hy, cz - hz, 0f, -1f, 0f, u, sway);
+        o = vQuad(d, o, cx + hx, cy - hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy + hy, cz - hz, cx + hx, cy - hy, cz - hz, 1f, 0f, 0f, u, sway);
+        o = vQuad(d, o, cx - hx, cy - hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy + hy, cz + hz, cx - hx, cy - hy, cz + hz, -1f, 0f, 0f, u, sway);
+        o = vQuad(d, o, cx - hx, cy - hy, cz + hz, cx - hx, cy + hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy - hy, cz + hz, 0f, 0f, 1f, u, sway);
+        o = vQuad(d, o, cx + hx, cy - hy, cz - hz, cx + hx, cy + hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy - hy, cz - hz, 0f, 0f, -1f, u, sway);
         return o;
     }
 
     private static int vQuad(float[] d, int o, float ax, float ay, float az, float bx, float by, float bz,
-                             float cx, float cy, float cz, float ex, float ey, float ez, float nx, float ny, float nz, float u) {
-        o = put(d, o, ax, ay, az, nx, ny, nz, u, 0.5f);
-        o = put(d, o, bx, by, bz, nx, ny, nz, u, 0.5f);
-        o = put(d, o, cx, cy, cz, nx, ny, nz, u, 0.5f);
-        o = put(d, o, ax, ay, az, nx, ny, nz, u, 0.5f);
-        o = put(d, o, cx, cy, cz, nx, ny, nz, u, 0.5f);
-        o = put(d, o, ex, ey, ez, nx, ny, nz, u, 0.5f);
+                             float cx, float cy, float cz, float ex, float ey, float ez, float nx, float ny, float nz, float u, float sway) {
+        o = put(d, o, ax, ay, az, nx, ny, nz, u, sway);
+        o = put(d, o, bx, by, bz, nx, ny, nz, u, sway);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, u, sway);
+        o = put(d, o, ax, ay, az, nx, ny, nz, u, sway);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, u, sway);
+        o = put(d, o, ex, ey, ez, nx, ny, nz, u, sway);
         return o;
     }
 
     private static Bitmap makeVegPalette() {
-        int W = 16, H = 4;
+        int W = 24, H = 4;
         Bitmap b = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         int[] c = {
-            0xFF2E6B1F, 0xFF3F8A24, 0xFF5CA836, 0xFF356B1C,   // grass dark/mid/light, stem
-            0xFFE03A3A, 0xFFF7D43A, 0xFFF4F0E6, 0xFFF06FB0,   // red, yellow, white, pink
-            0xFF9B4FE0, 0xFF4F7BF0, 0xFFF58A20, 0xFFF2C53A,   // purple, blue, orange, centre
-            0xFF2C5E1C, 0xFF4A9A2C, 0xFF6BB840, 0xFF3A7A22,   // bush + extra greens
+            0xFF2E6B1F, 0xFF3F8A24, 0xFF5CA836, 0xFF356B1C,   // 0-3  grass dark/mid/light, stem
+            0xFFE03A3A, 0xFFF7D43A, 0xFFF4F0E6, 0xFFF06FB0,   // 4-7  red, yellow, white, pink
+            0xFF9B4FE0, 0xFF4F7BF0, 0xFFF58A20, 0xFFF2C53A,   // 8-11 purple, blue, orange, centre
+            0xFF2C5E1C, 0xFF4A9A2C, 0xFF6BB840, 0xFF3A7A22,   // 12-15 bush + extra greens
+            0xFF234E18, 0xFF356E1F, 0xFF4C8E2A,               // 16-18 tree canopy dark/mid/light
+            0xFF6E4A28, 0xFF513418,                            // 19-20 trunk light/dark bark
+            0xFFC65A2E, 0xFFE0A030, 0xFF8A9A3A,               // 21-23 autumn red/gold, olive
         };
         for (int x = 0; x < W; x++)
             for (int y = 0; y < H; y++) b.setPixel(x, y, c[x]);
@@ -1747,22 +2013,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 512;
         Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
-        c.drawColor(0xFF3A4A2A);                        // base grass-green
+        c.drawColor(0xFF44642C);                        // base meadow green
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(23);
-        for (int k = 0; k < 60; k++) {                  // soft dirt/grass blotches
-            int shade = rnd.nextInt(3);
-            int col = shade == 0 ? 0x2F3D22 : (shade == 1 ? 0x4A5C30 : 0x5A4A30);
-            p.setColor(0x55000000 | col);
-            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(70), p);
+        // large soft colour zones (lush, dry, mossy, earthy)
+        int[] zone = {0xFF3C5824, 0xFF55763A, 0xFF6E7A38, 0xFF5A4A2C, 0xFF4E6E30};
+        for (int k = 0; k < 80; k++) {
+            p.setColor(0x66000000 | (zone[rnd.nextInt(zone.length)] & 0xFFFFFF));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 30 + rnd.nextInt(110), p);
         }
-        for (int k = 0; k < 5000; k++) {                // grass speckle
-            int v = rnd.nextInt(70);
-            p.setColor((0x40 << 24) | ((0x30 + v) << 16) | ((0x44 + v) << 8) | (0x22 + v / 2));
+        // dense fine grass speckle in two passes (dark blades then bright tips)
+        for (int k = 0; k < 9000; k++) {
+            int v = rnd.nextInt(60);
+            p.setColor((0x3A << 24) | ((0x24 + v) << 16) | ((0x38 + v) << 8) | (0x18 + v / 2));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
-            c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1 + rnd.nextInt(3), p);
+            c.drawRect(x, y, x + 1, y + 2 + rnd.nextInt(3), p);
         }
-        p.setColor(0x66556055);                          // scattered pebbles
+        for (int k = 0; k < 4000; k++) {
+            int v = rnd.nextInt(70);
+            p.setColor((0x33 << 24) | ((0x60 + v / 2) << 16) | ((0x80 + v / 3) << 8) | (0x30 + v / 3));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 1, y + 1 + rnd.nextInt(3), p);
+        }
+        // a couple of worn dirt patches
+        p.setColor(0x70654A2A);
+        for (int k = 0; k < 10; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 10 + rnd.nextInt(26), p);
+        // tiny clover/flower flecks for life
+        int[] fleck = {0xFFE8D24A, 0xFFEDEDED, 0xFFE07AB0};
+        for (int k = 0; k < 90; k++) {
+            p.setColor(0xCC000000 | (fleck[rnd.nextInt(fleck.length)] & 0xFFFFFF));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 1.2f + rnd.nextFloat() * 1.6f, p);
+        }
+        p.setColor(0x66606858);                          // scattered pebbles
         for (int k = 0; k < 120; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 1 + rnd.nextInt(2), p);
         return bmp;
     }
@@ -1842,10 +2124,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float[] QUAD_DATA = {-1f, -1f, 1f, -1f, 1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f};
 
     private static final String VERT3_SRC =
-        "uniform mat4 uMVP; uniform mat4 uModel;" +
+        "uniform mat4 uMVP; uniform mat4 uModel; uniform float uMode; uniform float uTime;" +
         "attribute vec4 aPos; attribute vec3 aNormal; attribute vec2 aUV;" +
         "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
-        "void main(){ vWorld=(uModel*aPos).xyz; vNormal=aNormal; vUV=aUV; gl_Position=uMVP*aPos; }";
+        "void main(){" +
+        "  vec4 pos=aPos;" +
+        "  if(uMode>4.5){" +                       // foliage: wind sway (model is identity, so object==world)
+        "    float w=aUV.y;" +                      // sway weight: 0 at the base, 1 at the tip
+        "    float ph=pos.x*0.7+pos.z*0.55;" +
+        "    float gust=sin(uTime*1.7+ph)+0.5*sin(uTime*3.3+ph*1.9);" +
+        "    pos.x+=gust*0.055*w;" +
+        "    pos.z+=cos(uTime*1.3+ph*0.8)*0.040*w;" +
+        "    pos.y-=abs(gust)*0.012*w;" +           // slight nod downward as it bends
+        "  }" +
+        "  vWorld=(uModel*pos).xyz; vNormal=aNormal; vUV=aUV; gl_Position=uMVP*pos; }";
 
     private static final String FRAG3_SRC =
         "precision mediump float;" +
@@ -1853,44 +2145,88 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
+        // warm sun + cool sky-fill hemisphere lighting, shared by the lit modes
+        "const vec3 SUN=vec3(1.28,1.16,0.92); const vec3 SKYAMB=vec3(0.34,0.40,0.52); const vec3 GNDAMB=vec3(0.20,0.19,0.16);" +
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
-        "  if(uMode<0.5){" +
+        "  if(uMode<0.5){" +                         // lit, textured (ground, walls, crates, enemies)
         "    vec3 tex=texture2D(uTex,vUV).rgb;" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         "    float df=max(dot(N,L),0.0);" +
-        "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
+        "    float sh=smoothstep(0.0,0.45,df);" +     // soften the terminator
+        "    float hemi=0.5+0.5*N.y;" +               // sky above / ground below ambient
+        "    vec3 amb=mix(GNDAMB,SKYAMB,hemi);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
-        "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
+        "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),42.0)*sh;" +
         "    vec3 base=tex*uColor;" +
-        "    col=base*(vec3(0.16,0.18,0.24)+df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
-        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30);" +
-        "  } else if(uMode<2.5){" +
+        "    col=base*(amb+df*sh*SUN)+sp*vec3(0.7)*(0.4+tex.r)+rim*vec3(0.14,0.17,0.24);" +
+        "  } else if(uMode<2.5){" +                   // emissive beacon (pulsing fresnel)
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
         "    col=uColor*pulse+uColor*fr*1.8+fr*vec3(0.35);" +
-        "  } else if(uMode<3.5){" +
+        "  } else if(uMode<3.5){" +                   // weapon viewmodel (view-space key light)
         "    vec3 L=normalize(vec3(-0.3,0.55,0.75)); vec3 V=vec3(0.0,0.0,1.0);" +
-        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),40.0);" +
+        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),46.0);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
-        "    col=uColor*(vec3(0.18,0.20,0.26)+df*vec3(1.1))+sp*vec3(0.8)+rim*vec3(0.15);" +
+        "    col=uColor*(vec3(0.20,0.22,0.28)+df*vec3(1.12))+sp*vec3(0.85)+rim*vec3(0.16,0.18,0.22);" +
         "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
-        "  } else {" +
+        "  } else if(uMode<4.5){" +                   // unlit emissive (muzzle, sight bead, face features)
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
+        "  } else {" +                                // foliage: translucent, double-sided, AO toward the base
+        "    vec3 tex=texture2D(uTex,vUV).rgb;" +
+        "    vec3 L=normalize(uLightDir); vec3 V=normalize(uCamPos-vWorld);" +
+        "    vec3 Nf=N*sign(dot(N,V)+0.001);" +       // face the camera (leaves lit from both sides)
+        "    float df=max(dot(Nf,L),0.0);" +
+        "    float back=max(dot(-Nf,L),0.0); float trans=pow(back,1.5)*0.7;" +  // light glowing through
+        "    float ao=0.45+0.55*vUV.y;" +             // darker at the base of the tuft
+        "    vec3 base=tex*uColor;" +
+        "    col=base*(SKYAMB*0.7+df*SUN)*ao + base*trans*vec3(0.55,0.85,0.30);" +
         "  }" +
-        "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.82);" +
+        "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-12.0)/64.0,0.0,0.80);" +
+        "  fog*=fog*(3.0-2.0*fog);" +
         "  col=mix(col,uFogColor,fog);" +
         "  gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0);" +
         "}";
 
+    // Sky: reconstruct a per-pixel world-space view ray, then shade an atmospheric
+    // dome with a real sun disk + glow and two drifting procedural cloud layers.
     private static final String VERT_SKY_SRC =
-        "attribute vec2 aP; varying float vy; void main(){ vy=aP.y; gl_Position=vec4(aP,0.999,1.0); }";
+        "attribute vec2 aP; varying vec2 vNdc; void main(){ vNdc=aP; gl_Position=vec4(aP,0.999,1.0); }";
 
     private static final String FRAG_SKY_SRC =
-        "precision mediump float; varying float vy; uniform vec3 uTop; uniform vec3 uBot;" +
-        "void main(){ float t=clamp(vy*0.5+0.5,0.0,1.0); vec3 c=mix(uBot,uTop,t*t);" +
-        "  float h=1.0-smoothstep(0.0,0.18,abs(vy)); c+=vec3(0.20,0.14,0.09)*h;" +
-        "  gl_FragColor=vec4(pow(c,vec3(0.4545)),1.0); }";
+        "precision mediump float; varying vec2 vNdc;" +
+        "uniform vec3 uTop; uniform vec3 uBot; uniform vec3 uSun; uniform vec3 uFog;" +
+        "uniform float uYaw; uniform float uPitch; uniform float uTanX; uniform float uTanY; uniform float uTime;" +
+        "float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }" +
+        "float noise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);" +
+        "  float a=hash(i),b=hash(i+vec2(1,0)),c=hash(i+vec2(0,1)),d=hash(i+vec2(1,1));" +
+        "  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }" +
+        "float fbm(vec2 p){ float s=0.0,a=0.5; for(int i=0;i<4;i++){ s+=a*noise(p); p*=2.02; a*=0.5; } return s; }" +
+        "void main(){" +
+        "  vec3 d=normalize(vec3(vNdc.x*uTanX, vNdc.y*uTanY, -1.0));" +    // camera-space ray
+        "  float cp=cos(uPitch),sp=sin(uPitch);" +                          // pitch about X
+        "  d=vec3(d.x, d.y*cp - d.z*sp, d.y*sp + d.z*cp);" +
+        "  float cy=cos(uYaw),sy=sin(uYaw);" +                              // yaw about Y
+        "  d=vec3(d.x*cy - d.z*sy, d.y, d.x*sy + d.z*cy);" +
+        "  float h=clamp(d.y*0.5+0.5,0.0,1.0);" +
+        "  vec3 sky=mix(uBot,uTop,h*h);" +
+        "  float horizon=1.0-smoothstep(0.0,0.22,abs(d.y));" +             // warm haze band
+        "  sky=mix(sky,uFog,horizon*0.85);" +
+        "  float sd=max(dot(d,normalize(uSun)),0.0);" +
+        "  sky+=vec3(1.0,0.85,0.6)*pow(sd,8.0)*0.5;" +                      // broad sun glow
+        "  sky+=vec3(1.0,0.95,0.8)*smoothstep(0.9975,0.9991,sd)*2.2;" +    // sun disk
+        "  if(d.y>0.01){" +                                                 // clouds projected onto a dome plane
+        "    vec2 uv=d.xz/(d.y+0.18);" +
+        "    float t=uTime*0.012;" +
+        "    float c1=fbm(uv*1.1+vec2(t,t*0.6));" +
+        "    float c2=fbm(uv*2.3+vec2(-t*1.7,t*0.4));" +
+        "    float cl=smoothstep(0.55,1.05,c1*0.7+c2*0.5);" +
+        "    cl*=smoothstep(0.0,0.30,d.y);" +                               // thin out toward the horizon
+        "    vec3 lit=mix(vec3(0.80,0.82,0.88),vec3(1.0,0.97,0.90),sd*0.5+0.5);" +
+        "    sky=mix(sky,lit,cl*0.9);" +
+        "  }" +
+        "  gl_FragColor=vec4(pow(sky,vec3(0.4545)),1.0);" +
+        "}";
 
     private static final String VERT_VIG_SRC =
         "attribute vec2 aP; varying vec2 vP; void main(){ vP=aP; gl_Position=vec4(aP,0.0,1.0); }";
