@@ -181,6 +181,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final float[] FOG = {0.66f, 0.75f, 0.85f};
 
+    // Decorative (non-colliding, non-shootable) street lamps in the open plaza / spawn
+    // corridor: {x, z, poleHeight}. Pure visual accents with an emissive warm head.
+    private static final float[][] LAMPS = {
+        {-5.0f, 1.5f, 3.2f}, {5.0f, 1.5f, 3.2f},
+        {-5.0f, 7.0f, 3.2f}, {5.0f, 7.0f, 3.2f},
+        {-0.0f, 6.5f, 3.6f},
+    };
+
     public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
         this.buildNumber = buildNumber;
@@ -361,6 +369,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         drawDoors();
+        drawLamps();
         drawEnemies();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
@@ -684,6 +693,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float em = (i == nearDoor) ? 1.3f : 1f;         // highlight the door you can use
             drawWorld(cube, 36, 0f, dd[8] * em, dd[9] * em, dd[10] * em);
         }
+    }
+
+    /** Decorative street lamps: a dark metal pole + cross-arm with an emissive warm head.
+     *  Purely visual — not added to the collision/hit boxes. */
+    private void drawLamps() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        for (int i = 0; i < LAMPS.length; i++) {
+            float lx = LAMPS[i][0], lz = LAMPS[i][1], h = LAMPS[i][2];
+            float by = terrainH(lx, lz);
+            lampBox(lx, by + h * 0.5f, lz, 0.07f, h, 0.07f, 0f, 0.16f, 0.17f, 0.20f);          // pole
+            lampBox(lx, by + h - 0.02f, lz + 0.18f, 0.06f, 0.06f, 0.42f, 0f, 0.14f, 0.15f, 0.18f); // cross-arm
+            lampBox(lx, by + h - 0.06f, lz + 0.38f, 0.16f, 0.12f, 0.18f, 0f, 0.10f, 0.10f, 0.12f); // housing
+            lampBox(lx, by + h - 0.10f, lz + 0.38f, 0.13f, 0.06f, 0.14f, 4f, 1.6f, 1.35f, 0.7f);   // emissive lens
+        }
+    }
+
+    private void lampBox(float cx, float cy, float cz, float sx, float sy, float sz,
+                         float mode, float r, float g, float b) {
+        Matrix.setIdentityM(model, 0);
+        Matrix.translateM(model, 0, cx, cy, cz);
+        Matrix.scaleM(model, 0, sx, sy, sz);
+        drawWorld(cube, 36, mode, r, g, b);
     }
 
     // --- weapon viewmodels ---
