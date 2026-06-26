@@ -1905,11 +1905,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // --- text (bitmap-font atlas) ---
     // Monospace ASCII 32..127 in a FONT_COLS x FONT_ROWS grid, white-on-transparent.
     private static final int FONT_COLS = 16, FONT_ROWS = 6;
-    private static final float TEXT_ADV = 0.60f;   // glyph cell width as a fraction of size
+    // Proportional font metrics, filled by makeFontAtlas(): per-glyph advance (em units) and atlas-cell
+    // width fraction (for UV). 96 glyphs = ASCII 32..127.
+    private final float[] glyphAdv = new float[96];
+    private final float[] glyphUVW = new float[96];
+    private float fontBoxH = 1.5f;                  // glyph box height / text size (set at bake time)
 
     /** Width in px a string would occupy at the given size (for centring / right-align). */
-    private float measureText(int len, float sizePx) { return len * sizePx * us * TEXT_ADV; }
-    private float measureText(String s, float sizePx) { return measureText(s.length(), sizePx); }
+    private float measureText(int len, float sizePx) { return len * 0.5f * sizePx * us; }   // rough; real layout uses the String form
+    private float measureText(String s, float sizePx) {
+        float sz = sizePx * us, w = 0f;
+        for (int i = 0; i < s.length(); i++) {
+            int gi = s.charAt(i) - 32;
+            w += (gi >= 0 && gi < 96 ? glyphAdv[gi] : 0.5f) * sz;
+        }
+        return w;
+    }
 
     /** Draw text with its LEFT edge at xPx and vertical CENTRE at yPx. Restores prog2 afterwards. */
     private void drawText(String s, float xPx, float yPx, float sizePx, float r, float g, float b, float a) {
@@ -1918,7 +1929,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fontTex);
         GLES20.glUniform1i(uFontTex, 0);
         GLES20.glUniform4f(uColT, r, g, b, a);
-        GLES20.glUniform2f(uUVscaleT, 1f / FONT_COLS, 1f / FONT_ROWS);
         textQuad.position(0);
         GLES20.glEnableVertexAttribArray(aPText);
         GLES20.glVertexAttribPointer(aPText, 2, GLES20.GL_FLOAT, false, 16, textQuad);
@@ -1927,19 +1937,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aUVText, 2, GLES20.GL_FLOAT, false, 16, textQuad);
 
         float sz = sizePx * us;
-        float cw = sz * TEXT_ADV;
-        float hsx = (cw * 0.5f) / width * 2f, hsy = (sz * 0.5f) / height * 2f;
+        float hsy = (sz * fontBoxH * 0.5f) / height * 2f;
         float oy = 1f - yPx / height * 2f;
+        float penX = xPx;
         for (int i = 0; i < s.length(); i++) {
-            int idx = s.charAt(i) - 32;
-            if (idx >= 0 && idx < FONT_COLS * FONT_ROWS && s.charAt(i) != ' ') {
-                int col = idx % FONT_COLS, row = idx / FONT_COLS;
+            int gi = s.charAt(i) - 32;
+            if (gi < 0 || gi >= FONT_COLS * FONT_ROWS) { penX += 0.5f * sz; continue; }
+            float aw = glyphAdv[gi] * sz;                       // advance = glyph box width (proportional)
+            if (s.charAt(i) != ' ') {
+                int col = gi % FONT_COLS, row = gi / FONT_COLS;
                 GLES20.glUniform2f(uUVoffT, (float) col / FONT_COLS, (float) row / FONT_ROWS);
-                GLES20.glUniform2f(uScaleT, hsx, hsy);
-                float cx = xPx + i * cw + cw * 0.5f;
-                GLES20.glUniform2f(uOffT, cx / width * 2f - 1f, oy);
+                GLES20.glUniform2f(uUVscaleT, glyphUVW[gi] / FONT_COLS, 1f / FONT_ROWS);
+                GLES20.glUniform2f(uScaleT, (aw * 0.5f) / width * 2f, hsy);
+                GLES20.glUniform2f(uOffT, (penX + aw * 0.5f) / width * 2f - 1f, oy);
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
             }
+            penX += aw;
         }
         GLES20.glUseProgram(prog2);   // HUD/menu code assumes prog2 is active
     }
@@ -2022,23 +2035,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return id[0];
     }
 
-    /** Bake monospace ASCII 32..127 white-on-transparent into a FONT_COLS x FONT_ROWS grid. */
-    private static Bitmap makeFontAtlas() {
-        int cw = 48, ch = 64;
+    /** Bake Roboto Bold (proportional) ASCII 32..127 white-on-transparent, recording per-glyph advances. */
+    private Bitmap makeFontAtlas() {
+        int cw = 80, ch = 92;
         Bitmap b = Bitmap.createBitmap(FONT_COLS * cw, FONT_ROWS * ch, Bitmap.Config.ARGB_8888);  // transparent
         Canvas c = new Canvas(b);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setColor(0xFFFFFFFF);
-        p.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
-        p.setTextSize(ch * 0.72f);
-        p.setTextAlign(Paint.Align.CENTER);
+        p.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));     // Roboto Bold
+        float ts = ch * 0.62f;
+        p.setTextSize(ts);
+        p.setTextAlign(Paint.Align.LEFT);
         Paint.FontMetrics fm = p.getFontMetrics();
-        float baseOff = -(fm.ascent + fm.descent) * 0.5f;   // vertically centre the glyph in its cell
+        float baseY = (ch - (fm.descent - fm.ascent)) * 0.5f - fm.ascent;   // centre the line box in the cell
+        fontBoxH = ch / ts;
+        char[] one = new char[1];
         int cells = FONT_COLS * FONT_ROWS;
         for (int i = 0; i < cells; i++) {
-            char ch2 = (char) (32 + i);
+            one[0] = (char) (32 + i);
             int col = i % FONT_COLS, row = i / FONT_COLS;
-            c.drawText(String.valueOf(ch2), col * cw + cw * 0.5f, row * ch + ch * 0.5f + baseOff, p);
+            float adv = p.measureText(one, 0, 1);
+            glyphAdv[i] = adv / ts;
+            glyphUVW[i] = Math.min(adv, (float) cw) / cw;
+            c.drawText(one, 0, 1, col * cw, row * ch + baseY, p);
         }
         return b;
     }
