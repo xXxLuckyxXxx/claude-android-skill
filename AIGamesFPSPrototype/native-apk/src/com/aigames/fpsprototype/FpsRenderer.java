@@ -224,6 +224,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float waveBanner = 0f;     // banner display timer
     private String waveBannerText = "";
 
+    // Death pixel particles (enemies burst into voxels when killed).
+    private static final int MAX_PARTICLES = 256;
+    private final float[] pX = new float[MAX_PARTICLES], pY = new float[MAX_PARTICLES], pZ = new float[MAX_PARTICLES];
+    private final float[] pVX = new float[MAX_PARTICLES], pVY = new float[MAX_PARTICLES], pVZ = new float[MAX_PARTICLES];
+    private final float[] pLife = new float[MAX_PARTICLES], pMaxLife = new float[MAX_PARTICLES];
+    private final float[] pR = new float[MAX_PARTICLES], pG = new float[MAX_PARTICLES], pB = new float[MAX_PARTICLES];
+    private final float[] pSize = new float[MAX_PARTICLES];
+    private int pNext = 0;
+
     // Clothing schemes: shirt RGB (torso + arms) + pants RGB (legs). Bright/saturated so
     // enemies stand out from the grey buildings and green ground.
     private static final float[][] OUTFITS = {
@@ -370,6 +379,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         updateDoors(dt);
         updateCamera(dt);
         updateEnemies(dt);
+        updateParticles(dt);
         tickTimers(dt);
 
         float adsZoom = (curWeapon == 3) ? 46f : 30f;   // sniper zooms much harder through its scope
@@ -425,6 +435,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         drawDoors();
         drawEnemies();
+        drawParticles();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         if (state == ST_PLAYING) drawGun();
@@ -537,6 +548,65 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enAlive[i] = true;
                 return;
             }
+        }
+    }
+
+    // --- death pixel particles ---
+
+    /** Burst an enemy into many coloured voxels (shirt / pants / yellow head). Bosses spew more. */
+    private void spawnDeathBurst(float ex, float ez, float scale, int outfit) {
+        float[] o = OUTFITS[outfit];
+        float groundY = terrainH(ex, ez);
+        int count = Math.round(26 * scale);
+        for (int n = 0; n < count; n++) {
+            int i = pNext;
+            pNext = (pNext + 1) % MAX_PARTICLES;
+            float ox = (rng.nextFloat() - 0.5f) * 0.6f * scale;
+            float oz = (rng.nextFloat() - 0.5f) * 0.6f * scale;
+            pX[i] = ex + ox;
+            pY[i] = groundY + rng.nextFloat() * 1.7f * scale;
+            pZ[i] = ez + oz;
+            pVX[i] = ox * 5f + (rng.nextFloat() - 0.5f) * 2.2f;       // burst outward
+            pVZ[i] = oz * 5f + (rng.nextFloat() - 0.5f) * 2.2f;
+            pVY[i] = 2.4f + rng.nextFloat() * 3.6f;                   // pop up
+            int c = rng.nextInt(3);
+            if (c == 0)      { pR[i] = o[0]; pG[i] = o[1]; pB[i] = o[2]; }   // shirt
+            else if (c == 1) { pR[i] = o[3]; pG[i] = o[4]; pB[i] = o[5]; }   // pants
+            else             { pR[i] = 0.97f; pG[i] = 0.83f; pB[i] = 0.30f; } // yellow head
+            pSize[i] = (0.05f + rng.nextFloat() * 0.045f) * scale;
+            pMaxLife[i] = 0.55f + rng.nextFloat() * 0.45f;
+            pLife[i] = pMaxLife[i];
+        }
+    }
+
+    private void updateParticles(float dt) {
+        for (int i = 0; i < MAX_PARTICLES; i++) {
+            if (pLife[i] <= 0f) continue;
+            pLife[i] -= dt;
+            pVY[i] -= GRAVITY * dt;
+            pX[i] += pVX[i] * dt;
+            pY[i] += pVY[i] * dt;
+            pZ[i] += pVZ[i] * dt;
+            float g = terrainH(pX[i], pZ[i]) + pSize[i] * 0.5f;
+            if (pY[i] < g) {                              // land: small bounce + friction
+                pY[i] = g; pVY[i] = -pVY[i] * 0.25f;
+                pVX[i] *= 0.6f; pVZ[i] *= 0.6f;
+            }
+        }
+    }
+
+    private void drawParticles() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);   // mode 3 ignores the texture
+        for (int i = 0; i < MAX_PARTICLES; i++) {
+            if (pLife[i] <= 0f) continue;
+            float lf = pLife[i] / pMaxLife[i];               // 1 -> 0
+            float s = pSize[i] * (0.35f + 0.65f * lf);        // shrink as it dies
+            Matrix.setIdentityM(model, 0);
+            Matrix.translateM(model, 0, pX[i], pY[i], pZ[i]);
+            Matrix.scaleM(model, 0, s, s, s);
+            float boost = lf > 0.8f ? 1.6f : 1f;              // brief bright pop on spawn
+            drawWorld(cube, 36, 3f, pR[i] * boost, pG[i] * boost, pB[i] * boost);
         }
     }
 
@@ -861,14 +931,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void drawSights() {
         int w = curWeapon;
         float sb = SIGHT_BASE[w], sy = SIGHT_BEAD[w], rz = SIGHT_REARZ[w], fz = SIGHT_FRONTZ[w];
-        float mc = (sb + sy) * 0.5f, mh = (sy - sb) + 0.012f;            // mount centre + height
-        gunPart(0f, mc, rz, 0.046f, mh, 0.030f, 0.055f, 0.055f, 0.065f);  // rear sight mount block
-        gunPart(-0.028f, sy, rz, 0.010f, 0.032f, 0.028f, 0.05f, 0.05f, 0.06f); // rear notch post L
-        gunPart( 0.028f, sy, rz, 0.010f, 0.032f, 0.028f, 0.05f, 0.05f, 0.06f); // rear notch post R
-        gunPart(0f, mc, fz, 0.014f, mh, 0.016f, 0.055f, 0.055f, 0.065f);  // front sight post mount
-        gunPart(0f, sy - 0.010f, fz, 0.008f, 0.026f, 0.016f, 0.06f, 0.06f, 0.07f); // front blade
-        gunBeadPart(0f, sy, fz, 0.011f,                                   // bead = aim point (centred on ADS)
-                weaponR(w) * 1.2f, weaponG(w) * 1.2f, weaponB(w) * 1.2f);
+        float pc = (sb + sy) * 0.5f, ph = (sy - sb) + 0.010f;            // sight-post centre + height
+        float dk = 0.05f, dg = 0.05f, db = 0.06f;                        // matte sight metal
+        // Rear notch (Kimme): two thin posts + a low base bridge — OPEN in the middle so the target
+        // (and the front dot) show through. No solid block at eye level.
+        gunPart(0f, sb + 0.005f, rz, 0.064f, 0.010f, 0.026f, dk, dg, db);     // low base bridge
+        gunPart(-0.030f, pc, rz, 0.008f, ph, 0.024f, dk, dg, db);            // notch post L
+        gunPart( 0.030f, pc, rz, 0.008f, ph, 0.024f, dk, dg, db);            // notch post R
+        // Front sight (Korn): a thin post (Strich) with a bright glowing dot (Punkt) on top = aim point.
+        gunPart(0f, pc, fz, 0.007f, ph, 0.012f, dk, dg, db);                 // front post
+        gunBeadPart(0f, sy + 0.005f, fz, 0.015f,                             // bright dot (centres on ADS)
+                0.55f + 0.45f * weaponR(w), 0.55f + 0.45f * weaponG(w), 0.55f + 0.45f * weaponB(w));
     }
 
     private void gunBeadPart(float tx, float ty, float tz, float s, float r, float g, float b) {
@@ -1114,6 +1187,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
         for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; }
+        for (int i = 0; i < MAX_PARTICLES; i++) pLife[i] = 0f;
         waveBreak = 0f; waveBanner = 0f; bossPending = 0;
         beginWave(1);
     }
@@ -1201,6 +1275,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void onKill(int idx, boolean head) {
+        spawnDeathBurst(enX[idx], enZ[idx], enScale[idx], enOutfit[idx]);   // pixel-burst feedback
         enAlive[idx] = false;
         combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
         comboTimer = COMBO_WINDOW;
@@ -1455,6 +1530,36 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawRectPx(ccx + gap + len * 0.5f, ccy, len, th, cr, cg, cb, 0.92f * xa);
             }
 
+            // ADS aiming reticle — fades IN when aiming so there's always a crisp aim point
+            float ads = aim * (1f - 0.7f * sprintAnim);
+            if (ads > 0.03f) {
+                if (curWeapon == 3) {
+                    // sniper scope: thin crosshair + centre dot
+                    float ln = 78f, th = 2f, g2 = 12f;
+                    drawRectPx(ccx - g2 - ln * 0.5f, ccy, ln + 2f, th + 2f, 0f, 0f, 0f, 0.5f * ads);
+                    drawRectPx(ccx + g2 + ln * 0.5f, ccy, ln + 2f, th + 2f, 0f, 0f, 0f, 0.5f * ads);
+                    drawRectPx(ccx, ccy - g2 - ln * 0.5f, th + 2f, ln + 2f, 0f, 0f, 0f, 0.5f * ads);
+                    drawRectPx(ccx, ccy + g2 + ln * 0.5f, th + 2f, ln + 2f, 0f, 0f, 0f, 0.5f * ads);
+                    drawRectPx(ccx - g2 - ln * 0.5f, ccy, ln, th, cr, cg, cb, 0.95f * ads);
+                    drawRectPx(ccx + g2 + ln * 0.5f, ccy, ln, th, cr, cg, cb, 0.95f * ads);
+                    drawRectPx(ccx, ccy - g2 - ln * 0.5f, th, ln, cr, cg, cb, 0.95f * ads);
+                    drawRectPx(ccx, ccy + g2 + ln * 0.5f, th, ln, cr, cg, cb, 0.95f * ads);
+                    drawRectPx(ccx, ccy, 7f, 7f, 0f, 0f, 0f, 0.6f * ads);
+                    drawRectPx(ccx, ccy, 4f, 4f, cr, cg, cb, ads);
+                } else {
+                    // iron sights: bright dot (Punkt) + short post below (Strich) + side notch ticks (Kimme)
+                    float postLen = 16f, tickH = 11f, side = 14f, th = 3f;
+                    drawRectPx(ccx, ccy, 8f, 8f, 0f, 0f, 0f, 0.6f * ads);
+                    drawRectPx(ccx, ccy + 6f + postLen * 0.5f, th + 2f, postLen + 2f, 0f, 0f, 0f, 0.5f * ads);
+                    drawRectPx(ccx - side, ccy, th + 2f, tickH + 2f, 0f, 0f, 0f, 0.45f * ads);
+                    drawRectPx(ccx + side, ccy, th + 2f, tickH + 2f, 0f, 0f, 0f, 0.45f * ads);
+                    drawRectPx(ccx, ccy, 5f, 5f, cr, cg, cb, ads);                                  // aim dot
+                    drawRectPx(ccx, ccy + 6f + postLen * 0.5f, th, postLen, cr, cg, cb, 0.95f * ads); // post
+                    drawRectPx(ccx - side, ccy, th, tickH, cr, cg, cb, 0.9f * ads);                  // notch L
+                    drawRectPx(ccx + side, ccy, th, tickH, cr, cg, cb, 0.9f * ads);                  // notch R
+                }
+            }
+
             // expanding hit marker (gold = headshot, white = body)
             if (hitMarkerTimer > 0f) {
                 float k = hitMarkerTimer / HITMARK_TIME;
@@ -1476,8 +1581,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawRectPx(bx0 + bw * hp * 0.5f, by, bw * hp, 18f, 1f - hp, 0.2f + 0.7f * hp, 0.22f, 0.92f);
 
             // cash + level + xp progress (top-left, under the health bar)
-            drawText("$" + cash, 40f, 92f, 26f, 1f, 0.86f, 0.25f, 0.96f);
-            drawText("LV " + playerLevel, 40f, 120f, 20f, 0.65f, 0.85f, 1f, 0.95f);
+            drawTextShadow("$" + cash, 40f, 92f, 26f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
+            drawTextShadow("LV " + playerLevel, 40f, 120f, 20f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
             float lp = levelProgress();
             drawRectPx(40f + 116f, 120f, 120f, 7f, 0.2f, 0.2f, 0.24f, 0.7f);
             drawRectPx(40f + 56f + 120f * lp * 0.5f, 120f, 120f * lp, 7f, 0.4f, 0.75f, 1f, 0.95f);
@@ -1535,59 +1640,70 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Run-over recap: shows what you earned, then CONTINUE → hub (where you spend it). */
     private void drawSummary() {
         menuPreamble();
-        drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.72f);
+        drawQuadNDC(0f, 0f, 1f, 1f, 0.04f, 0.02f, 0.03f, 0.80f);
         float cx = width * 0.5f;
         float btnY = height - 130f, btnW = Math.min(440f, width * 0.8f), btnH = 104f;
         if (input.consumeMenuTap(tap) && hitRect(cx, btnY, btnW, btnH, tap[0], tap[1])) {
             state = ST_HUB; sfx.swap();
         }
-        drawTextCentered("RUN OVER", cx, height * 0.16f, 54f, 1f, 0.5f, 0.3f, 1f);
-        drawTextCentered("SCORE " + score, cx, height * 0.16f + 74f, 30f, 1f, 1f, 1f, 0.95f);
-        drawTextCentered("BEST " + highScore, cx, height * 0.16f + 112f, 22f, 1f, 0.84f, 0.3f, 0.9f);
+        drawTextCenteredShadow("RUN OVER", cx, height * 0.15f, 56f, 1f, 0.45f, 0.3f, 1f);
+        drawTextCenteredShadow("SCORE " + score, cx, height * 0.15f + 76f, 30f, 1f, 1f, 1f, 0.95f);
+        drawTextCenteredShadow("BEST " + highScore, cx, height * 0.15f + 114f, 22f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.9f);
 
-        float y = height * 0.40f;
-        drawTextCentered("EARNED $" + runCash, cx, y, 32f, 1f, 0.86f, 0.25f, 1f);
-        drawTextCentered("+" + runXp + " XP", cx, y + 46f, 24f, 0.6f, 0.85f, 1f, 0.95f);
-        drawTextCentered(runKills + " KILLS  WAVE " + wave, cx, y + 84f, 24f, 0.85f, 0.85f, 0.9f, 0.95f);
+        // earnings card
+        float y = height * 0.42f;
+        drawPanel(cx, y + 50f, Math.min(560f, width * 0.86f), 180f, 0.09f, 0.11f, 0.16f, 0.92f);
+        drawTextCenteredShadow("EARNED $" + runCash, cx, y, 34f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
+        drawTextCenteredShadow("+" + runXp + " XP", cx, y + 46f, 24f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.95f);
+        drawTextCenteredShadow(runKills + " KILLS   WAVE " + wave, cx, y + 84f, 24f, 0.85f, 0.85f, 0.92f, 0.95f);
         if (levelsGainedThisRun > 0)
-            drawTextCentered("LEVEL UP - NOW LV " + playerLevel, cx, y + 128f, 26f, 0.3f, 1f, 0.5f, 1f);
+            drawTextCenteredShadow("LEVEL UP - NOW LV " + playerLevel, cx, y + 128f, 26f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 1f);
 
-        drawRectPx(cx, btnY, btnW, btnH, 0.16f, 0.5f, 0.2f, 0.95f);
-        drawTextCentered("CONTINUE", cx, btnY, 34f, 1f, 1f, 1f, 1f);
+        drawRectPx(cx, btnY, btnW + 14f, btnH + 14f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 0.22f);   // glow
+        drawPanel(cx, btnY, btnW, btnH, 0.14f, 0.58f, 0.24f, 0.97f);
+        drawTextCenteredShadow("CONTINUE", cx, btnY, 34f, 1f, 1f, 1f, 1f);
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
     /** The hub: balance, three tabs, the PLAY button, and the active tab's content. */
     private void drawHub() {
         menuPreamble();
-        drawQuadNDC(0f, 0f, 1f, 1f, 0.02f, 0.03f, 0.05f, 0.84f);
-        boolean tapped = input.consumeMenuTap(tap);
+        drawQuadNDC(0f, 0f, 1f, 1f, 0.03f, 0.04f, 0.07f, 0.90f);              // dark base
         float cx = width * 0.5f;
+        drawRectPx(cx, 52f, width, 104f, 0.07f, 0.09f, 0.15f, 0.97f);         // header band
+        drawRectPx(cx, 105f, width, 4f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);  // accent line
+        boolean tapped = input.consumeMenuTap(tap);
 
-        drawText("$" + cash, 36f, 56f, 34f, 1f, 0.86f, 0.25f, 1f);
-        drawTextRight("LV " + playerLevel, width - 36f, 56f, 30f, 0.65f, 0.85f, 1f, 1f);
-        drawTextCentered("AIGAMES FPS", cx, 50f, 24f, 0.8f, 0.85f, 0.95f, 0.85f);
-        drawTextCentered("BUILD " + buildNumber, cx, 84f, 16f, 0.5f, 0.55f, 0.62f, 0.8f);
+        // header: title, cash (gold), level (cyan) + xp bar
+        drawTextCenteredShadow("AIGAMES FPS", cx, 32f, 24f, 0.85f, 0.9f, 1f, 0.92f);
+        drawTextShadow("$" + cash, 34f, 72f, 38f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
+        drawTextRight("LV " + playerLevel, width - 34f, 60f, 30f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+        float lp = levelProgress(), xbw = 220f, xbx = width - 34f - xbw;
+        drawRectPx(xbx + xbw * 0.5f, 90f, xbw, 8f, 0.18f, 0.2f, 0.24f, 0.85f);
+        drawRectPx(xbx + xbw * lp * 0.5f, 90f, xbw * lp, 8f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.95f);
 
         // tabs
         String[] tabs = {"WEAPONS", "UPGRADES", "ABILITIES"};
-        float tabW = Math.min(280f, (width - 80f) / 3f), tabH = 66f, tabY = 128f, gap = 12f;
+        float tabW = Math.min(280f, (width - 80f) / 3f), tabH = 64f, tabY = 152f, gap = 12f;
         float totalW = tabW * 3 + gap * 2, x0 = cx - totalW * 0.5f + tabW * 0.5f;
         for (int i = 0; i < 3; i++) {
-            float tx = x0 + i * (tabW + gap);
-            if (tapped && hitRect(tx, tabY, tabW, tabH, tap[0], tap[1])) { hubTab = i; sfx.swap(); tapped = false; }
+            float txp = x0 + i * (tabW + gap);
+            if (tapped && hitRect(txp, tabY, tabW, tabH, tap[0], tap[1])) { hubTab = i; sfx.swap(); tapped = false; }
             boolean sel = hubTab == i;
-            drawRectPx(tx, tabY, tabW, tabH, sel ? 0.22f : 0.10f, sel ? 0.42f : 0.13f, sel ? 0.58f : 0.17f, 0.94f);
-            drawTextCentered(tabs[i], tx, tabY, 20f, 1f, 1f, 1f, sel ? 1f : 0.65f);
+            drawPanel(txp, tabY, tabW, tabH, sel ? 0.18f : 0.10f, sel ? 0.40f : 0.12f, sel ? 0.60f : 0.16f, 0.96f);
+            if (sel) drawRectPx(txp, tabY + tabH * 0.5f - 5f, tabW - 18f, 5f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.95f);
+            drawTextCenteredShadow(tabs[i], txp, tabY, 20f, 1f, 1f, 1f, sel ? 1f : 0.6f);
         }
 
-        // PLAY
-        float playY = height - 92f, playW = Math.min(460f, width * 0.82f), playH = 108f;
+        // PLAY button (big, vivid, glowing)
+        float playY = height - 92f, playW = Math.min(470f, width * 0.84f), playH = 112f;
         if (tapped && hitRect(cx, playY, playW, playH, tap[0], tap[1])) { startRun(); return; }
-        drawRectPx(cx, playY, playW, playH, 0.16f, 0.52f, 0.2f, 0.96f);
-        drawTextCentered("PLAY", cx, playY, 46f, 1f, 1f, 1f, 1f);
+        drawRectPx(cx, playY, playW + 16f, playH + 16f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 0.22f);  // glow
+        drawPanel(cx, playY, playW, playH, 0.14f, 0.6f, 0.24f, 0.98f);
+        drawTextCenteredShadow("PLAY", cx, playY, 48f, 1f, 1f, 1f, 1f);
+        drawText("B" + buildNumber, 22f, height - 20f, 15f, 0.5f, 0.55f, 0.62f, 0.7f);
 
-        float top = 188f, bottom = playY - playH * 0.5f - 18f;
+        float top = 212f, bottom = playY - playH * 0.5f - 18f;
         if (hubTab == 0) hubWeapons(top, bottom, tapped);
         else if (hubTab == 1) hubUpgrades(top, bottom, tapped);
         else hubAbilities(top, bottom, tapped);
@@ -1599,25 +1715,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      * doneText != null shows a grey status (OWNED/MAX) with no button; locked shows a red gate label.
      */
     private boolean hubRow(float y, float rowH, String name, String detail, int cost,
-                           boolean afford, boolean locked, String lockMsg, String doneText, boolean tapped) {
+                           boolean afford, boolean locked, String lockMsg, String doneText, boolean tapped,
+                           float ar, float ag, float ab, int pipCount, int pipFilled) {
         float cx = width * 0.5f;
-        float rowW = Math.min(width - 56f, 800f);
+        float rowW = Math.min(width - 56f, 820f);
         float x0 = cx - rowW * 0.5f;
-        drawRectPx(cx, y, rowW, rowH, 0.10f, 0.12f, 0.16f, 0.92f);
-        drawText(name, x0 + 22f, y - rowH * 0.17f, Math.min(28f, rowH * 0.34f), 1f, 1f, 1f, 0.97f);
-        drawText(detail, x0 + 22f, y + rowH * 0.26f, Math.min(19f, rowH * 0.24f), 0.68f, 0.78f, 0.9f, 0.92f);
+        drawPanel(cx, y, rowW, rowH, 0.11f, 0.13f, 0.18f, 0.95f);
+        drawRectPx(x0 + 9f, y, 8f, rowH - 16f, ar, ag, ab, 0.95f);                       // left accent bar
+        drawTextShadow(name, x0 + 30f, y - rowH * 0.18f, Math.min(28f, rowH * 0.34f), 1f, 1f, 1f, 0.98f);
+        drawTextShadow(detail, x0 + 30f, y + rowH * 0.24f, Math.min(18f, rowH * 0.22f),
+                0.45f + 0.55f * ar, 0.45f + 0.55f * ag, 0.45f + 0.55f * ab, 0.92f);
 
-        float btnW = 188f, btnH = rowH - 22f, bcx = x0 + rowW - btnW * 0.5f - 16f;
+        float btnW = 190f, btnH = rowH - 22f, bcx = x0 + rowW - btnW * 0.5f - 16f;
+        if (pipCount > 0) drawPips(bcx - btnW * 0.5f - pipCount * 16f - 26f, y, pipCount, pipFilled, ar, ag, ab);
+
         boolean buy = false;
         if (doneText != null) {
-            drawRectPx(bcx, y, btnW, btnH, 0.16f, 0.2f, 0.18f, 0.9f);
-            drawTextCentered(doneText, bcx, y, 22f, 0.6f, 0.85f, 0.65f, 1f);
+            drawPanel(bcx, y, btnW, btnH, 0.16f, 0.24f, 0.18f, 0.92f);
+            drawTextCenteredShadow(doneText, bcx, y, 22f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 1f);
         } else if (locked) {
-            drawRectPx(bcx, y, btnW, btnH, 0.22f, 0.13f, 0.13f, 0.9f);
-            drawTextCentered(lockMsg, bcx, y, 19f, 1f, 0.6f, 0.5f, 1f);
+            drawPanel(bcx, y, btnW, btnH, 0.30f, 0.14f, 0.14f, 0.92f);
+            drawTextCenteredShadow(lockMsg, bcx, y, 18f, AC_RED[0], AC_RED[1], AC_RED[2], 1f);
         } else {
-            drawRectPx(bcx, y, btnW, btnH, afford ? 0.16f : 0.2f, afford ? 0.5f : 0.16f, afford ? 0.2f : 0.16f, 0.95f);
-            drawTextCentered("$" + cost, bcx, y, 23f, 1f, 1f, 1f, afford ? 1f : 0.55f);
+            drawPanel(bcx, y, btnW, btnH, afford ? 0.14f : 0.18f, afford ? 0.58f : 0.18f, afford ? 0.24f : 0.18f, 0.96f);
+            drawTextCenteredShadow("$" + cost, bcx, y, 23f, 1f, 1f, 1f, afford ? 1f : 0.5f);
             if (tapped && afford && hitRect(bcx, y, btnW, btnH, tap[0], tap[1])) buy = true;
         }
         return buy;
@@ -1634,7 +1755,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             String detail = "DMG " + Math.round(W_BODYDMG[w]) + "   MAG " + W_MAG[w]
                     + (W_PELLETS[w] > 1 ? "   x" + W_PELLETS[w] : "") + (W_AUTO[w] ? "   AUTO" : "");
             if (hubRow(y, rowH, WEAPON_NAME[w], detail, cost, cash >= cost, locked,
-                    "REACH LV " + WEAPON_REQ_LVL[w], owned ? "OWNED" : null, tapped)) {
+                    "REACH LV " + WEAPON_REQ_LVL[w], owned ? "OWNED" : null, tapped,
+                    weaponR(w), weaponG(w), weaponB(w), 0, 0)) {
                 cash -= cost; wOwned[w] = 1; sfx.swap(); saveMeta();
             }
             y += rowH + gap;
@@ -1654,8 +1776,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 upgradeSel = w; sfx.swap(); tapped = false;
             }
             boolean sel = upgradeSel == w;
-            drawRectPx(sx, top + selH * 0.5f, selW, selH, sel ? 0.28f : 0.11f, sel ? 0.4f : 0.14f, sel ? 0.5f : 0.18f, owned ? 0.92f : 0.45f);
-            drawTextCentered(owned ? WEAPON_NAME[w] : "LOCK", sx, top + selH * 0.5f, 18f, 1f, 1f, 1f, owned ? (sel ? 1f : 0.7f) : 0.45f);
+            drawPanel(sx, top + selH * 0.5f, selW, selH, sel ? 0.20f : 0.10f, sel ? 0.38f : 0.13f, sel ? 0.52f : 0.17f, owned ? 0.94f : 0.4f);
+            if (sel) drawRectPx(sx, top + selH - 3f, selW - 16f, 4f, weaponR(w), weaponG(w), weaponB(w), 0.95f);
+            drawTextCenteredShadow(owned ? WEAPON_NAME[w] : "LOCK", sx, top + selH * 0.5f, 18f, 1f, 1f, 1f, owned ? (sel ? 1f : 0.65f) : 0.4f);
         }
 
         float listTop = top + selH + 16f;
@@ -1666,8 +1789,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int tier = upgTier[upgradeSel][c];
             boolean maxed = tier >= UPG_MAX_TIER;
             int cost = maxed ? 0 : UPG_COST[tier + 1];
+            float[] col = UPG_COL[c];
             if (hubRow(y, rowH, UPG_NAME[c], upgDetail(upgradeSel, c), cost, cash >= cost, false, "",
-                    maxed ? "MAX" : null, tapped)) {
+                    maxed ? "MAX" : null, tapped, col[0], col[1], col[2], UPG_MAX_TIER, tier)) {
                 cash -= cost; upgTier[upgradeSel][c] = tier + 1; sfx.swap(); saveMeta();
             }
             y += rowH + rgap;
@@ -1682,8 +1806,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int lv = abLevel[ab], mx = AB_MAX_LEVEL[ab];
             boolean maxed = lv >= mx;
             int cost = maxed ? 0 : AB_COST[ab][lv];
+            float[] col = AB_COL[ab];
             if (hubRow(y, rowH, AB_NAME[ab], abDetail(ab), cost, cash >= cost, false, "",
-                    maxed ? "MAX" : null, tapped)) {
+                    maxed ? "MAX" : null, tapped, col[0], col[1], col[2], mx, lv)) {
                 cash -= cost; abLevel[ab] = lv + 1; sfx.swap(); saveMeta();
             }
             y += rowH + gap;
@@ -1847,6 +1972,44 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Draw text right-aligned so it ENDS at xPx. */
     private void drawTextRight(String s, float xPx, float yPx, float sizePx, float r, float g, float b, float a) {
         drawText(s, xPx - measureText(s, sizePx), yPx, sizePx, r, g, b, a);
+    }
+
+    // --- modern UI helpers (accent palette + beveled cards + shadowed text + progress pips) ---
+    private static final float[] AC_GOLD  = {1.00f, 0.82f, 0.26f};
+    private static final float[] AC_CYAN  = {0.32f, 0.80f, 1.00f};
+    private static final float[] AC_GREEN = {0.30f, 0.86f, 0.42f};
+    private static final float[] AC_RED   = {1.00f, 0.42f, 0.42f};
+    // Per-category / per-ability accent colours for the shop rows.
+    private static final float[][] UPG_COL = {{1f,0.42f,0.42f}, {1f,0.6f,0.22f}, {0.32f,0.8f,1f}, {0.3f,0.86f,0.42f}};
+    private static final float[][] AB_COL = {
+        {0.3f,0.86f,0.42f}, {0.32f,0.8f,1f}, {1f,0.42f,0.42f}, {1f,0.82f,0.26f},
+        {1f,0.45f,0.62f},   {0.5f,0.9f,1f},  {0.72f,0.52f,1f}, {1f,0.6f,0.22f},
+    };
+
+    /** A beveled card: drop shadow + base fill + a brighter top highlight strip. */
+    private void drawPanel(float cx, float cy, float w, float h, float r, float g, float b, float a) {
+        drawRectPx(cx, cy + 5f, w, h, 0f, 0f, 0f, 0.35f * a);                                 // drop shadow
+        drawRectPx(cx, cy, w, h, r, g, b, a);                                                 // base
+        drawRectPx(cx, cy - h * 0.5f + h * 0.11f, w, h * 0.22f, r + 0.13f, g + 0.13f, b + 0.13f, 0.5f * a); // top sheen
+    }
+
+    /** Left-anchored text with a dark drop shadow so it stays readable over any background. */
+    private void drawTextShadow(String s, float x, float y, float size, float r, float g, float b, float a) {
+        drawText(s, x + 2.5f, y + 2.5f, size, 0f, 0f, 0f, 0.65f * a);
+        drawText(s, x, y, size, r, g, b, a);
+    }
+    private void drawTextCenteredShadow(String s, float cx, float y, float size, float r, float g, float b, float a) {
+        drawTextShadow(s, cx - measureText(s, size) * 0.5f, y, size, r, g, b, a);
+    }
+
+    /** A left-to-right row of small pips; the first `filled` are bright accent, the rest dim. */
+    private void drawPips(float x, float y, int count, int filled, float r, float g, float b) {
+        float ps = 11f, gap = 5f;
+        for (int i = 0; i < count; i++) {
+            float px2 = x + i * (ps + gap) + ps * 0.5f;
+            if (i < filled) drawRectPx(px2, y, ps, ps, r, g, b, 0.95f);
+            else drawRectPx(px2, y, ps, ps, 0.28f, 0.30f, 0.34f, 0.8f);
+        }
     }
 
     // --- textures ---
