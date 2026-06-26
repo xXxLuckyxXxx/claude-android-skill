@@ -256,6 +256,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // Each: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b  (posY is the centre).
     private static final int COVER_BOXES = 4;        // first N cast a ground-shadow blob
     private final float[][] boxes;
+    private int numCover = COVER_BOXES;              // boxes that cast a shadow (props); set by the level loader
 
     // Interactive doors. doorData[i] = cx, cy, cz, hw, hh, ht, axis(0=spansX,1=spansZ), hingeSign, r,g,b.
     private static final float INTERACT_DIST = 2.6f;
@@ -276,7 +277,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         ArrayList<float[]> bl = new ArrayList<float[]>();
         ArrayList<float[]> dl = new ArrayList<float[]>();
         ArrayList<float[]> hl = new ArrayList<float[]>();
-        buildWorldInto(bl, dl, hl);
+        // A custom level (placed via the web editor + adb push) overrides the procedural village.
+        if (!buildWorldFromFile(ctx, bl, dl, hl)) buildWorldInto(bl, dl, hl);
         this.boxes = bl.toArray(new float[0][]);
         this.doorData = dl.toArray(new float[0][]);
         this.houseRects = hl;
@@ -1460,7 +1462,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         circle.position(0);
         GLES20.glEnableVertexAttribArray(aPBlob);
         GLES20.glVertexAttribPointer(aPBlob, 2, GLES20.GL_FLOAT, false, 8, circle);
-        for (int i = 0; i < COVER_BOXES && i < boxes.length; i++) {
+        for (int i = 0; i < numCover && i < boxes.length; i++) {
             float[] b = boxes[i];
             blob(b[0], 0f, b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
         }
@@ -2695,6 +2697,57 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             else c.drawRect(t, cpx - w, t + dash, cpx + w, p);
         }
     }
+
+    /**
+     * Optional custom level produced by the web editor (tools/editor/level-editor.html) and pushed to
+     * the device at  <app-external-files>/level.lvl  (adb push, no rebuild needed). Plain-text lines:
+     *   H x z w d h roof door r g b     a house (roof 0-2, door 0=+z 1=-z 2=+x 3=-x, colour 0-1)
+     *   B x z w h d r g b               a ground box / prop (crate, pillar, cover)
+     *   # ...                           comment
+     * Returns false (-> procedural village) if the file is missing, empty or unparseable.
+     */
+    private boolean buildWorldFromFile(Context ctx, List<float[]> L, List<float[]> doors, List<float[]> houses) {
+        java.io.BufferedReader br = null;
+        try {
+            java.io.File dir = ctx.getExternalFilesDir(null);
+            if (dir == null) return false;
+            java.io.File f = new java.io.File(dir, "level.lvl");
+            if (!f.exists()) return false;
+            java.util.List<float[]> props = new java.util.ArrayList<float[]>();
+            java.util.List<float[]> hs = new java.util.ArrayList<float[]>();
+            br = new java.io.BufferedReader(new java.io.FileReader(f));
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.length() == 0 || line.charAt(0) == '#') continue;
+                String[] t = line.split("\\s+");
+                if (t[0].equals("H") && t.length >= 11) {
+                    // x z w d h roof door r g b
+                    hs.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pf(t[5]),
+                                       pf(t[6]), pf(t[7]), pf(t[8]), pf(t[9]), pf(t[10])});
+                } else if (t[0].equals("B") && t.length >= 9) {
+                    // cx cz w h d r g b  -> ground box centred at y = h/2
+                    float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
+                    props.add(new float[]{pf(t[1]), h * 0.5f, pf(t[2]), w, h, d, pf(t[6]), pf(t[7]), pf(t[8])});
+                }
+            }
+            if (hs.isEmpty() && props.isEmpty()) return false;
+            for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
+            numCover = Math.min(COVER_BOXES, props.size());
+            for (float[] hh : hs) {
+                int roof = (int) hh[5], door = (int) hh[6];
+                addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9]);
+                houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door});
+            }
+            return true;
+        } catch (Exception e) {
+            return false;                                           // any trouble -> fall back to procedural
+        } finally {
+            if (br != null) try { br.close(); } catch (Exception ignored) { }
+        }
+    }
+
+    private static float pf(String s) { try { return Float.parseFloat(s); } catch (Exception e) { return 0f; } }
 
     private static void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars

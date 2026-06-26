@@ -23,6 +23,7 @@ ACT="$PKG/.MainActivity"
 ADB="${ADB:-adb}"
 OUT="${FPS_OUT:-./fps-out}"
 SERIAL="${FPS_SERIAL:-}"        # optional: pin a device, e.g. FPS_SERIAL=emulator-5554
+LVLDIR="/sdcard/Android/data/$PKG/files"   # where the game reads level.lvl (no rebuild needed)
 
 adbc(){ if [ -n "$SERIAL" ]; then "$ADB" -s "$SERIAL" "$@"; else "$ADB" "$@"; fi; }
 die(){ echo "ERROR: $*" >&2; exit 1; }
@@ -98,6 +99,26 @@ cmd_install(){
 
 cmd_launch(){ need_device; adbc shell am start -n "$ACT" >/dev/null; echo "launched $ACT"; }
 cmd_stop(){   need_device; adbc shell am force-stop "$PKG"; echo "stopped $PKG"; }
+
+# Push a level made in level-editor.html to the device and relaunch — no rebuild.
+cmd_pushlevel(){
+  need_device
+  local f="${1:-level.lvl}"
+  [ -f "$f" ] || die "level file not found: $f  (export it from tools/editor/level-editor.html)"
+  adbc shell mkdir -p "$LVLDIR" >/dev/null 2>&1 || true
+  adbc push "$f" "$LVLDIR/level.lvl" >/dev/null
+  echo "pushed $f -> $LVLDIR/level.lvl"
+  adbc shell am force-stop "$PKG" >/dev/null 2>&1 || true
+  adbc shell am start -n "$ACT" >/dev/null
+  echo "relaunched — your level is live."
+}
+cmd_resetlevel(){
+  need_device
+  adbc shell rm -f "$LVLDIR/level.lvl" >/dev/null 2>&1 || true
+  adbc shell am force-stop "$PKG" >/dev/null 2>&1 || true
+  adbc shell am start -n "$ACT" >/dev/null
+  echo "level removed — back to the default village."
+}
 
 cmd_shot(){
   need_device; mkdir -p "$OUT"
@@ -215,6 +236,8 @@ SETUP / INFO
   doctor                 check adb, device, install state, screen geometry
   install [apk]          install/replace the APK (default: newest build, else ./AIGamesFPS.apk)
   launch | stop          start / force-stop the game
+  pushlevel [file]       push a level.lvl from level-editor.html and relaunch (no rebuild)
+  resetlevel             remove the custom level -> back to the default village
   size                   print resolution + all computed tap coordinates
 
 CAPTURE
@@ -248,6 +271,8 @@ main(){
     install)  cmd_install "$@";;
     launch)   cmd_launch "$@";;
     stop)     cmd_stop "$@";;
+    pushlevel|level) cmd_pushlevel "$@";;
+    resetlevel)      cmd_resetlevel "$@";;
     size|coords) cmd_size "$@";;
     shot)     cmd_shot "$@";;
     shots)    cmd_shots "$@";;

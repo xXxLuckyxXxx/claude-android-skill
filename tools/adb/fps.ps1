@@ -28,6 +28,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 $PKG = 'com.aigames.fpsprototype'
 $ACT = "$PKG/.MainActivity"
 $OUT = if ($env:FPS_OUT) { $env:FPS_OUT } else { './fps-out' }
+$LVLDIR = "/sdcard/Android/data/$PKG/files"   # where the game reads level.lvl (no rebuild needed)
 $script:Serial = $env:FPS_SERIAL
 $script:ADB = $null
 $script:W = 0; $script:H = 0; $script:US = 1.4
@@ -132,6 +133,25 @@ function Cmd-Install([string]$Apk) {
 
 function Cmd-Launch { Need-Device; Adb shell am start -n $ACT | Out-Null; Write-Host "launched $ACT" }
 function Cmd-Stop   { Need-Device; Adb shell am force-stop $PKG; Write-Host "stopped $PKG" }
+
+# Push a level made in level-editor.html to the device and relaunch - no rebuild.
+function Cmd-PushLevel([string]$File = 'level.lvl') {
+  Need-Device
+  if (-not (Test-Path $File)) { Die "level file not found: $File  (export it from tools/editor/level-editor.html)" }
+  Adb shell mkdir -p $LVLDIR 2>$null
+  Adb push $File "$LVLDIR/level.lvl" | Out-Null
+  Write-Host "pushed $File -> $LVLDIR/level.lvl"
+  Adb shell am force-stop $PKG 2>$null
+  Adb shell am start -n $ACT | Out-Null
+  Write-Host "relaunched - your level is live."
+}
+function Cmd-ResetLevel {
+  Need-Device
+  Adb shell rm -f "$LVLDIR/level.lvl" 2>$null
+  Adb shell am force-stop $PKG 2>$null
+  Adb shell am start -n $ACT | Out-Null
+  Write-Host "level removed - back to the default village."
+}
 
 function Cmd-Shot([string]$Name = 'shot') {
   Need-Device
@@ -255,6 +275,8 @@ SETUP / INFO
   doctor                 check adb, device, install state, screen geometry
   install [apk]          install/replace the APK (default: newest build, else .\AIGamesFPS.apk)
   launch | stop          start / force-stop the game
+  pushlevel [file]       push a level.lvl from level-editor.html and relaunch (no rebuild)
+  resetlevel             remove the custom level -> back to the default village
   size                   print resolution + all computed tap coordinates
 
 CAPTURE
@@ -288,6 +310,9 @@ switch ($Command) {
   'install'  { Cmd-Install $Rest[0] }
   'launch'   { Cmd-Launch }
   'stop'     { Cmd-Stop }
+  'pushlevel' { Cmd-PushLevel ($(if ($Rest[0]) { $Rest[0] } else { 'level.lvl' })) }
+  'level'     { Cmd-PushLevel ($(if ($Rest[0]) { $Rest[0] } else { 'level.lvl' })) }
+  'resetlevel' { Cmd-ResetLevel }
   'size'     { Cmd-Size }
   'coords'   { Cmd-Size }
   'shot'     { Cmd-Shot ($(if ($Rest[0]) { $Rest[0] } else { 'shot' })) }
