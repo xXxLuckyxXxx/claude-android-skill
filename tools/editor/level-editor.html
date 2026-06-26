@@ -447,7 +447,7 @@ function houseWindows3D(o,g){
   for(let wi=0;wi<4;wi++){ const W=walls[wi], doorWall=(o.door===wi);
     const cols=Math.max(1,Math.floor((W.span-0.6)/colDiv)), colGap=W.span/cols;
     for(let ci=0;ci<cols;ci++){ const t=-W.span/2+colGap*(ci+0.5);
-      for(let ri=0;ri<6;ri++){ const wy=1.15+ri*rowStep; if(wy+winH/2>o.h-0.25) continue;
+      for(let ri=0;ri<6;ri++){ const wy=1.5+ri*rowStep; if(wy+winH/2>o.h-0.25) continue;   // sill ~1 m off ground
         if(doorWall&&Math.abs(t)<1.5*Math.max(1,wsc)&&wy<3.0) continue;
         const pane=new THREE.Mesh(new THREE.PlaneGeometry(winW,winH),mat);
         if(W.ax===0) pane.position.set(t,wy,W.s*(o.d/2+0.06));

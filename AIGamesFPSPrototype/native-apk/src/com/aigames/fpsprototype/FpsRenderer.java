@@ -2957,7 +2957,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (k.equals("ground")     && t.length >= 5) { ground[0]=pf(t[2]); ground[1]=pf(t[3]); ground[2]=pf(t[4]); }
     }
 
-    private static void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
+    private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
         L.add(new float[]{-2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
@@ -3013,8 +3013,71 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                             doorW, doorH, dc[0], dc[1], dc[2]);
                 houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                         GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
+                if (rc.nextFloat() < 0.55f) {                      // a barrel / crate / planter / woodpile by a corner
+                    float sx = rc.nextBoolean() ? 1f : -1f, sz = rc.nextBoolean() ? 1f : -1f;
+                    addClutter(L, rc, cx + sx * (w * 0.5f + 0.5f), cz + sz * (d * 0.5f + 0.5f));
+                }
             }
         }
+        addAccessories(L, houses, rc);                             // lamp posts, benches, a market + well, scattered trees
+    }
+
+    /** Street furniture + greenery scattered through the procedural village (boxes = solid; trees = visual). */
+    private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
+        // lamp posts along the streets (skip the spawn corridor + plaza)
+        float[][] lampSpots = {{-12f,-12f},{12f,-12f},{-12f,12f},{12f,12f},{-20f,-4f},{20f,-4f},
+                               {-4f,-20f},{4f,-20f},{-20f,12f},{20f,12f},{-12f,-20f},{12f,20f}};
+        for (float[] s : lampSpots) {
+            if (s[0]*s[0] + s[1]*s[1] > 31f*31f) continue;
+            if (Math.abs(s[0]) < 3f && s[1] > 3f && s[1] < 13f) continue;
+            addLamp(L, s[0], s[1]);
+        }
+        addBench(L, -5.5f, 6.0f, true);  addBench(L, 5.5f, 6.0f, true);     // benches around the plaza
+        addBench(L, -6.0f, -5.0f, false); addBench(L, 6.0f, -5.0f, false);
+        addStall(L, -7.5f, 1.5f, 0.86f, 0.40f, 0.30f);                      // two market stalls (red + green awning)
+        addStall(L,  7.5f, 1.5f, 0.38f, 0.52f, 0.34f);
+        L.add(new float[]{-2.0f, 0.45f, -6.5f, 1.3f, 0.9f, 1.3f, 0.56f, 0.55f, 0.52f});   // stone well base
+        L.add(new float[]{-2.0f, 1.05f, -6.5f, 0.18f, 0.3f, 1.4f, 0.40f, 0.30f, 0.22f});  // well crossbeam
+        // scatter trees in the gaps (visual only, no collision) so the town sits in greenery
+        java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
+        for (int i = 0; i < 90 && trees.size() < 18; i++) {
+            float tx = (rc.nextFloat() - 0.5f) * 62f, tz = (rc.nextFloat() - 0.5f) * 62f;
+            if (tx*tx + tz*tz > 31f*31f) continue;
+            if (Math.abs(tx) < 3.5f && tz > 2f && tz < 13f) continue;       // keep the spawn lane clear
+            boolean clear = true;
+            for (float[] hh : houses) {
+                float ddx = tx - hh[0], ddz = tz - hh[1], rad = hh[2]*0.5f + 2.4f;
+                if (ddx*ddx + ddz*ddz < rad*rad) { clear = false; break; }
+            }
+            if (clear) trees.add(new float[]{tx, tz, 0.9f + rc.nextFloat() * 0.7f});
+        }
+        this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
+    }
+
+    private static void addClutter(List<float[]> L, Random r, float x, float z) {
+        int k = r.nextInt(4);
+        if (k == 0)      L.add(new float[]{x, 0.35f, z, 0.32f, 0.70f, 0.32f, 0.42f, 0.30f, 0.20f});                 // barrel
+        else if (k == 1) L.add(new float[]{x, 0.28f, z, 0.50f, 0.56f, 0.50f, 0.50f, 0.38f, 0.24f, r.nextInt(40)-20f}); // crate
+        else if (k == 2) {
+            L.add(new float[]{x, 0.22f, z, 0.55f, 0.42f, 0.50f, 0.48f, 0.45f, 0.42f});                             // planter box
+            L.add(new float[]{x, 0.52f, z, 0.50f, 0.20f, 0.45f, 0.30f, 0.45f, 0.28f});                             // greenery
+        } else           L.add(new float[]{x, 0.25f, z, 0.85f, 0.50f, 0.42f, 0.46f, 0.34f, 0.22f, r.nextInt(30)-15f}); // woodpile
+    }
+
+    private static void addLamp(List<float[]> L, float x, float z) {
+        L.add(new float[]{x, 1.45f, z, 0.12f, 2.90f, 0.12f, 0.24f, 0.24f, 0.26f});   // dark pole
+        L.add(new float[]{x, 2.95f, z, 0.28f, 0.30f, 0.28f, 0.98f, 0.88f, 0.55f});   // warm lamp head
+    }
+
+    private static void addBench(List<float[]> L, float x, float z, boolean faceSouth) {
+        float back = faceSouth ? -0.18f : 0.18f;
+        L.add(new float[]{x, 0.42f, z, 1.50f, 0.12f, 0.45f, 0.46f, 0.33f, 0.21f});            // seat
+        L.add(new float[]{x, 0.70f, z + back, 1.50f, 0.42f, 0.10f, 0.46f, 0.33f, 0.21f});     // backrest
+    }
+
+    private static void addStall(List<float[]> L, float x, float z, float ar, float ag, float ab) {
+        L.add(new float[]{x, 0.55f, z, 1.80f, 1.10f, 1.10f, 0.50f, 0.38f, 0.24f});   // wooden counter
+        L.add(new float[]{x, 1.35f, z, 2.10f, 0.14f, 1.40f, ar, ag, ab});            // awning
     }
 
     /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
@@ -3217,7 +3280,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int ci = 0; ci < cols; ci++) {
             float t = -span * 0.5f + colGap * (ci + 0.5f);          // offset along the wall
             for (int ri = 0; ri < 6; ri++) {
-                float wy = 1.15f + ri * rowStep;
+                float wy = 1.5f + ri * rowStep;                      // sill ~1 m off the ground (was too low)
                 if (wy + winH * 0.5f > h - 0.25f) continue;          // not above the eave
                 // doorway is 1.9 m wide x 2.3 m tall; skip wide enough that a pane never clips it.
                 if (doorWall && Math.abs(t) < 1.5f * Math.max(1f, wsc) && wy < 3.0f) continue;
