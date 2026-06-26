@@ -127,7 +127,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float us = 1.4f;          // global UI scale (text + buttons), grows with screen height
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
-    private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime;
+    private int uSunInt, uAmbient, uFogRange;
+    private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime, uSkyHorizon, uSkyZenith;
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
@@ -266,7 +267,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
     private int nearDoor = -1;
 
-    private static final float[] FOG = {0.72f, 0.80f, 0.90f};   // light blue haze to match the sunny sky horizon
+    // World look — defaults match the built-in sunny day; a level's SET lines override these.
+    private final float[] skyHorizon = {0.76f, 0.85f, 0.95f}, skyZenith = {0.16f, 0.41f, 0.74f};
+    private final float[] sunDir = {-0.35f, 0.55f, -0.62f}, fog = {0.72f, 0.80f, 0.90f}, ground = {1f, 1f, 1f};
+    private float sunInt = 1f, ambient = 1f, fogStart = 10f, fogEnd = 70f;
 
     public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
@@ -290,7 +294,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        GLES20.glClearColor(0.72f, 0.80f, 0.90f, 1f);
+        GLES20.glClearColor(fog[0], fog[1], fog[2], 1f);
 
         prog3 = buildProgram(VERT3_SRC, FRAG3_SRC);
         aPos = GLES20.glGetAttribLocation(prog3, "aPos");
@@ -305,6 +309,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uFogColor = GLES20.glGetUniformLocation(prog3, "uFogColor");
         uTime = GLES20.glGetUniformLocation(prog3, "uTime");
         uTex = GLES20.glGetUniformLocation(prog3, "uTex");
+        uSunInt = GLES20.glGetUniformLocation(prog3, "uSunInt");
+        uAmbient = GLES20.glGetUniformLocation(prog3, "uAmbient");
+        uFogRange = GLES20.glGetUniformLocation(prog3, "uFogRange");
 
         progSky = buildProgram(VERT_SKY_SRC, FRAG_SKY_SRC);
         aPSky = GLES20.glGetAttribLocation(progSky, "aP");
@@ -314,6 +321,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uSkySun = GLES20.glGetUniformLocation(progSky, "uSun");
         uSkyHalfFov = GLES20.glGetUniformLocation(progSky, "uHalfFov");
         uSkyTime = GLES20.glGetUniformLocation(progSky, "uTime");
+        uSkyHorizon = GLES20.glGetUniformLocation(progSky, "uHorizon");
+        uSkyZenith = GLES20.glGetUniformLocation(progSky, "uZenith");
 
         progVig = buildProgram(VERT_VIG_SRC, FRAG_VIG_SRC);
         aPVig = GLES20.glGetAttribLocation(progVig, "aP");
@@ -417,7 +426,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform3f(uSkyFwd, camFwd[0], camFwd[1], camFwd[2]);
         GLES20.glUniform3f(uSkyRight, camRight[0], camRight[1], camRight[2]);
         GLES20.glUniform3f(uSkyUp, camUp[0], camUp[1], camUp[2]);
-        GLES20.glUniform3f(uSkySun, -0.35f, 0.55f, -0.62f);   // sun a bit above the rooftops
+        GLES20.glUniform3f(uSkySun, sunDir[0], sunDir[1], sunDir[2]);
+        GLES20.glUniform3f(uSkyHorizon, skyHorizon[0], skyHorizon[1], skyHorizon[2]);
+        GLES20.glUniform3f(uSkyZenith, skyZenith[0], skyZenith[1], skyZenith[2]);
         float skyTanY = (float) Math.tan(Math.toRadians(fov) * 0.5);
         GLES20.glUniform2f(uSkyHalfFov, skyTanY * aspect, skyTanY);
         GLES20.glUniform1f(uSkyTime, timeAcc);
@@ -430,15 +441,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // Scene
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
         GLES20.glUseProgram(prog3);
-        GLES20.glUniform3f(uLightDir, -0.4f, 1.0f, -0.3f);
+        GLES20.glUniform3f(uLightDir, sunDir[0], sunDir[1], sunDir[2]);
         GLES20.glUniform3f(uCamPos, px, py, pz);
-        GLES20.glUniform3f(uFogColor, FOG[0], FOG[1], FOG[2]);
+        GLES20.glUniform3f(uFogColor, fog[0], fog[1], fog[2]);
+        GLES20.glUniform1f(uSunInt, sunInt);
+        GLES20.glUniform1f(uAmbient, ambient);
+        GLES20.glUniform2f(uFogRange, fogStart, fogEnd);
         GLES20.glUniform1f(uTime, timeAcc);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, terrainTex);
         Matrix.setIdentityM(model, 0);
-        drawWorld(terrain, terrainVerts, 0f, 1f, 1f, 1f);
+        drawWorld(terrain, terrainVerts, 0f, ground[0], ground[1], ground[2]);
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
         drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
@@ -2741,7 +2755,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 line = line.trim();
                 if (line.length() == 0 || line.charAt(0) == '#') continue;
                 String[] t = line.split("\\s+");
-                if (t[0].equals("H") && t.length >= 11) {
+                if (t[0].equals("SET") && t.length >= 2) {
+                    applySet(t);                                   // global world look (mutates fields immediately)
+                } else if (t[0].equals("H") && t.length >= 11) {
                     // base: x z w d h roof door r g b  | optional v2: rr rg rb pitch overhang windows winSize chimney
                     hs.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pf(t[5]),
                                        pf(t[6]), pf(t[7]), pf(t[8]), pf(t[9]), pf(t[10]),
@@ -2775,6 +2791,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static float pf(String s) { try { return Float.parseFloat(s); } catch (Exception e) { return 0f; } }
     private static float pfDef(String[] t, int i, float def) { return i < t.length ? pf(t[i]) : def; }
+
+    /** A "SET key v..." line from a level overrides the global world look. Unknown keys are ignored. */
+    private void applySet(String[] t) {
+        String k = t[1];
+        if      (k.equals("skyHorizon") && t.length >= 5) { skyHorizon[0]=pf(t[2]); skyHorizon[1]=pf(t[3]); skyHorizon[2]=pf(t[4]); }
+        else if (k.equals("skyZenith")  && t.length >= 5) { skyZenith[0]=pf(t[2]);  skyZenith[1]=pf(t[3]);  skyZenith[2]=pf(t[4]); }
+        else if (k.equals("sun")        && t.length >= 5) { sunDir[0]=pf(t[2]);     sunDir[1]=pf(t[3]);     sunDir[2]=pf(t[4]); }
+        else if (k.equals("sunIntensity") && t.length >= 3) sunInt = pf(t[2]);
+        else if (k.equals("ambient")      && t.length >= 3) ambient = pf(t[2]);
+        else if (k.equals("fog")        && t.length >= 5) { fog[0]=pf(t[2]); fog[1]=pf(t[3]); fog[2]=pf(t[4]); }
+        else if (k.equals("fogRange")   && t.length >= 4) { fogStart=pf(t[2]); fogEnd=pf(t[3]); }
+        else if (k.equals("ground")     && t.length >= 5) { ground[0]=pf(t[2]); ground[1]=pf(t[3]); ground[2]=pf(t[4]); }
+    }
 
     private static void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
@@ -3168,6 +3197,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
+        "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange;" +
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
@@ -3179,7 +3209,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         "    vec3 base=tex*uColor;" +
-        "    col=base*(vec3(0.16,0.18,0.24)+df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
+        "    col=base*(uAmbient*vec3(0.16,0.18,0.24)+uSunInt*df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
         "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30);" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
@@ -3194,7 +3224,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  } else {" +
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
         "  }" +
-        "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-10.0)/60.0,0.0,0.82);" +
+        "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
         "  gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0);" +
         "}";
@@ -3208,7 +3238,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
         "varying vec2 vP;" +
         "uniform vec3 uFwd; uniform vec3 uRight; uniform vec3 uUp; uniform vec3 uSun;" +
-        "uniform vec2 uHalfFov; uniform float uTime;" +
+        "uniform vec2 uHalfFov; uniform float uTime; uniform vec3 uHorizon; uniform vec3 uZenith;" +
         "float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }" +
         "float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f);" +
         "  float a=hash(i); float b=hash(i+vec2(1.0,0.0)); float c=hash(i+vec2(0.0,1.0)); float d=hash(i+vec2(1.0,1.0));" +
@@ -3218,7 +3248,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  vec3 dir=normalize(uFwd + vP.x*uHalfFov.x*uRight + vP.y*uHalfFov.y*uUp);" +
         "  vec3 sun=normalize(uSun); float h=dir.y;" +
         "  float t=clamp(h,0.0,1.0);" +
-        "  vec3 col=mix(vec3(0.76,0.85,0.95),vec3(0.16,0.41,0.74),pow(t,0.55));" +   // horizon -> zenith
+        "  vec3 col=mix(uHorizon,uZenith,pow(t,0.55));" +                            // horizon -> zenith (level-driven)
         "  col=mix(col,vec3(0.55,0.60,0.63),smoothstep(0.0,-0.18,h));" +             // haze just below horizon
         "  float sd=max(dot(dir,sun),0.0);" +
         "  float halo=pow(sd,5.0)*0.45 + pow(sd,180.0)*0.7;" +
