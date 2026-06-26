@@ -133,7 +133,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int prog2, aP2, uScale2, uOff2, uCol2;
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex;
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts;
@@ -362,6 +362,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts)
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
+        wallTex = uploadTexture(makeHouseBitmap());
 
         restart();
         state = ST_HUB;                 // app opens in the hub (PLAY to begin a run)
@@ -433,7 +434,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawShadows();
 
         GLES20.glUseProgram(prog3);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stucco facades
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
             Matrix.setIdentityM(model, 0);
@@ -2223,9 +2224,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // Facade colour palette: concrete, brick, steel-blue, sandstone, dark concrete.
-    private static final float[][] PALETTE = {
-        {0.62f, 0.60f, 0.56f}, {0.66f, 0.45f, 0.38f}, {0.50f, 0.55f, 0.62f},
-        {0.72f, 0.68f, 0.58f}, {0.46f, 0.50f, 0.52f},
+    private static final float[][] PALETTE = {     // light, warm house colours (tint the stucco texture)
+        {0.92f, 0.88f, 0.78f}, {0.86f, 0.74f, 0.60f}, {0.80f, 0.84f, 0.86f},
+        {0.90f, 0.80f, 0.72f}, {0.78f, 0.84f, 0.74f}, {0.95f, 0.92f, 0.86f},
     };
 
     /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
@@ -2677,10 +2678,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float cx = gs[ix], cz = gs[iz];
                 if (cx * cx + cz * cz > 33.5f * 33.5f) continue;   // stay on the flat core (disc)
                 if (cx == 0f && cz >= 0f) continue;                // open plaza + spawn corridor
-                float w = 2.8f + rc.nextFloat() * 1.4f;
-                float d = 2.8f + rc.nextFloat() * 1.4f;
-                boolean tower = cx * cx + cz * cz > 27f * 27f;     // outer ring -> taller houses
-                float h = tower ? 4.6f + rc.nextFloat() * 2.6f : 3.0f + rc.nextFloat() * 1.6f;
+                float w = 3.4f + rc.nextFloat() * 1.8f;            // wider footprints (house-like, not tower)
+                float d = 3.4f + rc.nextFloat() * 1.8f;
+                boolean tall = cx * cx + cz * cz > 27f * 27f;      // a few 2-storey houses further out
+                float h = tall ? 3.4f + rc.nextFloat() * 1.5f : 2.6f + rc.nextFloat() * 1.0f;
                 int doorSide = (Math.abs(cx) >= Math.abs(cz)) ? (cx < 0 ? 2 : 3) : (cz < 0 ? 0 : 1);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
@@ -2799,7 +2800,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static int wallWindows(float[] d, int o, float a, float b, float span, float h, int axis, int sign, boolean doorWall) {
-        float winW = 0.62f, winH = 0.82f, proud = 0.04f;
+        float winW = 0.85f, winH = 1.05f, proud = 0.05f;
         int cols = Math.max(1, (int) ((span - 0.6f) / 1.25f));
         int rows = Math.max(1, (int) ((h - 0.7f) / 1.35f));
         float colGap = span / cols;
@@ -2854,16 +2855,35 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 128;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFC2C6CE);                                    // light frame
+        c.drawColor(0xFFF2F0EA);                                    // bright white frame
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        float m = N * 0.13f;
-        p.setColor(0xFF22323F);                                     // dark glass
+        float m = N * 0.17f;
+        p.setColor(0xFF4E84B0);                                     // medium sky-blue glass
         c.drawRect(m, m, N - m, N - m, p);
-        p.setColor(0x5572A0C8);                                     // upper diagonal sheen
-        c.drawRect(m, m, N - m, N * 0.44f, p);
-        p.setColor(0xFFC2C6CE);                                     // cross mullion
-        c.drawRect(N * 0.5f - 3f, m, N * 0.5f + 3f, N - m, p);
-        c.drawRect(m, N * 0.5f - 3f, N - m, N * 0.5f + 3f, p);
+        p.setColor(0x88BFE2FF);                                     // bright upper sheen
+        c.drawRect(m, m, N - m, N * 0.48f, p);
+        p.setColor(0xFFF2F0EA);                                     // thick cross mullion
+        c.drawRect(N * 0.5f - 4f, m, N * 0.5f + 4f, N - m, p);
+        c.drawRect(m, N * 0.5f - 4f, N - m, N * 0.5f + 4f, p);
+        return b;
+    }
+
+    /** Light stucco/plaster facade so houses read as houses (tinted by the per-house colour). */
+    private static Bitmap makeHouseBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFEDE7DA);                                    // warm light plaster
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(55);
+        for (int k = 0; k < 2600; k++) {                            // fine stucco speckle
+            int v = rnd.nextInt(28);
+            p.setColor((0x2A << 24) | ((0xD6 - v) << 16) | ((0xD0 - v) << 8) | (0xC2 - v));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 2, y + 2, p);
+        }
+        p.setColor(0x14000000);                                     // faint horizontal coat lines
+        for (int row = 1; row < 6; row++) { float y = row * N / 6f; c.drawRect(0, y, N, y + 1.2f, p); }
         return b;
     }
 
