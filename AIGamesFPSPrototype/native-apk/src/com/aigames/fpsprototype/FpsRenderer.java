@@ -138,9 +138,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts;
     private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
+    private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
     private boolean hasCustomRoads;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
     // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize} per house, for the roof / window meshes
@@ -382,6 +383,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
         vegTex = uploadPalette(makeVegPalette());
+        if (treeList != null) placedTrees = makeBuffer(makePlacedTrees());   // level-placed trees
 
         roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
         windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData)
@@ -471,6 +473,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
         Matrix.setIdentityM(model, 0);
         drawWorld(vegetation, vegVerts, 0f, 1f, 1f, 1f);
+        if (placedTrees != null) drawWorld(placedTrees, placedTreeVerts, 0f, 1f, 1f, 1f);   // level-placed trees (same atlas)
 
         drawShadows();
 
@@ -480,6 +483,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float[] b = boxes[i];
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
+            if (b.length > 9 && b[9] != 0f) Matrix.rotateM(model, 0, b[9], 0f, 1f, 0f);   // props/fences carry a yaw
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
             float boost = (i == hitBox && hitTimer > 0f) ? 1.6f : 1f;
             drawWorld(cube, 36, 0f, b[6] * boost, b[7] * boost, b[8] * boost);
@@ -2339,6 +2343,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
+    /** Level-placed trees baked into one mesh (reuses the village tree model + foliage atlas). */
+    private float[] makePlacedTrees() {
+        float[] d = new float[treeList.length * 6000 + 256];
+        int o = 0;
+        Random r = new Random(303);
+        for (float[] tr : treeList) o = vTree(d, o, tr[0], terrainH(tr[0], tr[1]), tr[1], Math.max(0.4f, tr[2]), true, r);
+        placedTreeVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
     private float[] makeVegetation() {
         float[] d = new float[6000000];
         int o = 0;
@@ -2829,6 +2843,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             java.util.List<float[]> props = new java.util.ArrayList<float[]>();
             java.util.List<float[]> hs = new java.util.ArrayList<float[]>();
             java.util.List<float[]> roadList = new java.util.ArrayList<float[]>();
+            java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
             br = new java.io.BufferedReader(new java.io.FileReader(f));
             String line;
             while ((line = br.readLine()) != null) {
@@ -2846,17 +2861,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                        pfDef(t,16,2f),  pfDef(t,17,1f),                     // windows density, window size
                                        pfDef(t,18,-1f)});                                   // chimney (-1 = auto)
                 } else if (t[0].equals("B") && t.length >= 9) {
-                    // cx cz w h d r g b  -> ground box centred at y = h/2
+                    // cx cz w h d r g b [yawDeg]  -> ground box centred at y = h/2 (yaw = visual rotation)
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
-                    props.add(new float[]{pf(t[1]), h * 0.5f, pf(t[2]), w, h, d, pf(t[6]), pf(t[7]), pf(t[8])});
+                    props.add(new float[]{pf(t[1]), h * 0.5f, pf(t[2]), w, h, d, pf(t[6]), pf(t[7]), pf(t[8]), pfDef(t, 9, 0f)});
                 } else if (t[0].equals("R") && t.length >= 5) {
                     // R x1 z1 x2 z2 [width]  -> a street segment (visual only, no collision)
                     roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f)});
+                } else if (t[0].equals("T") && t.length >= 3) {
+                    // T x z [scale]  -> a placed tree
+                    trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f)});
+                } else if (t[0].equals("F") && t.length >= 5) {
+                    // F x1 z1 x2 z2 [r g b]  -> a fence: one thin box rotated along the segment
+                    float x1 = pf(t[1]), z1 = pf(t[2]), x2 = pf(t[3]), z2 = pf(t[4]);
+                    float ddx = x2 - x1, ddz = z2 - z1, len = (float) Math.sqrt(ddx * ddx + ddz * ddz);
+                    if (len >= 0.3f) {
+                        float yaw = (float) Math.toDegrees(Math.atan2(ddx, ddz));
+                        props.add(new float[]{(x1 + x2) * 0.5f, 0.6f, (z1 + z2) * 0.5f, 0.14f, 1.2f, len,
+                                pfDef(t, 5, 0.62f), pfDef(t, 6, 0.45f), pfDef(t, 7, 0.30f), yaw});
+                    }
                 }
             }
             this.roadSegs = roadList.isEmpty() ? null : roadList.toArray(new float[0][]);
             this.hasCustomRoads = this.roadSegs != null;
-            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty()) return false;
+            this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
+            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty()) return false;
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {
