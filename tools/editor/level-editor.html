@@ -406,7 +406,9 @@ function applyWorld(){
   if(!three) return;
   const bg=world.skyH.map((v,i)=>(v+world.skyZ[i])*0.5);
   three.scene.background=new THREE.Color(bg[0],bg[1],bg[2]);
-  if(three.scene.fog){ three.scene.fog.color.setRGB(world.fog[0],world.fog[1],world.fog[2]); three.scene.fog.near=world.fogStart; three.scene.fog.far=Math.max(world.fogStart+2,world.fogEnd); }
+  // only the fog COLOUR previews here; the editor camera orbits ~90 m out, so keep generous
+  // near/far (the game's small fogStart/fogEnd would swallow the whole village from this distance).
+  if(three.scene.fog){ three.scene.fog.color.setRGB(world.fog[0],world.fog[1],world.fog[2]); three.scene.fog.near=95; three.scene.fog.far=320; }
   const sv=sunVec(); if(three.sun){ three.sun.position.set(sv[0]*60,sv[1]*60,sv[2]*60); three.sun.intensity=1.05*world.sunInt; }
   if(three.hemi) three.hemi.intensity=0.75*world.ambient;
   if(three.disc) three.disc.material.color.setRGB(0.49*world.ground[0],0.60*world.ground[1],0.37*world.ground[2]);
