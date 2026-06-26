@@ -2417,30 +2417,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = vBouquet(d, o, x, terrainH(x, z), z, r, uStem, uCtr, flowerCells);
             n++;
         }
-        // hedges lining the streets (cheap round / low-hedge variants), capped
-        float[] hr = {-20f, -12f, -4f, 4f, 12f, 20f};
-        int hedge = 0;
-        hedges:
-        for (int ri = 0; ri < hr.length; ri++) {
-            float rc = hr[ri];
-            for (float pos = -28f; pos <= 28f; pos += 4.2f) {
-                float[][] cand = {{rc - 2.9f, pos}, {rc + 2.9f, pos}, {pos, rc - 2.9f}, {pos, rc + 2.9f}};
-                for (int ci = 0; ci < 4; ci++) {
-                    if (hedge >= 150 || o > d.length - 6000) break hedges;
-                    float bx = cand[ci][0], bz = cand[ci][1];
-                    if (inBuildingXZ(bx, bz, 0.3f) || onRoadXZ(bx, bz)) continue;
-                    o = vBush(d, o, bx, terrainH(bx, bz), bz, r.nextBoolean() ? 0 : 4, r, flowerCells);
-                    hedge++;
-                }
-            }
-        }
-        // feature bushes (all variants), scattered over the lawn + meadow
-        for (int n = 0, tries = 0; n < 75 && tries < 6000; tries++) {
+        // a few rounded feature bushes scattered on the lawns/yards (street trees already line the sidewalks,
+        // so no more street hedges — and only the rounded dome variants, not the blocky clump)
+        int[] roundBush = {0, 1, 2, 3};
+        for (int n = 0, tries = 0; n < 26 && tries < 6000; tries++) {
             if (o > d.length - 6000) break;
-            float a = r.nextFloat() * 6.2832f, rad = 3f + r.nextFloat() * 35f;
+            float a = r.nextFloat() * 6.2832f, rad = 4f + r.nextFloat() * 32f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
-            if (inBuildingXZ(x, z, 0.45f) || onRoadXZ(x, z)) continue;
-            o = vBush(d, o, x, terrainH(x, z), z, r.nextInt(6), r, flowerCells);
+            if (inBuildingXZ(x, z, 0.5f) || onStreetXZ(x, z)) continue;
+            o = vBush(d, o, x, terrainH(x, z), z, roundBush[r.nextInt(roundBush.length)], r, flowerCells);
             n++;
         }
         // detailed trees dotted around the meadow / arena edge
@@ -2718,10 +2703,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int W = 16, H = 4;
         Bitmap b = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         int[] c = {
-            0xFF2E6B1F, 0xFF3F8A24, 0xFF5CA836, 0xFF356B1C,   // grass dark/mid/light, stem
-            0xFFE03A3A, 0xFFF7D43A, 0xFFF4F0E6, 0xFFF06FB0,   // red, yellow, white, pink
-            0xFF9B4FE0, 0xFF4F7BF0, 0xFFF58A20, 0xFFF2C53A,   // purple, blue, orange, centre
-            0xFF2C5E1C, 0xFF4A9A2C, 0xFF6B4A2A, 0xFF3A7A22,   // 12 bush, 13 green, 14 trunk brown, 15 green
+            0xFF2F5A20, 0xFF3C6E26, 0xFF4C7E32, 0xFF335E1E,   // grass dark/mid/light, stem (muted, less lime)
+            0xFFC24A42, 0xFFE0C04A, 0xFFE8E2D2, 0xFFD080A0,   // red, yellow, white, pink (softer)
+            0xFF8A5FC0, 0xFF5273C0, 0xFFD98640, 0xFFE0BE48,   // purple, blue, orange, centre (softer)
+            0xFF2A5020, 0xFF3E6E2A, 0xFF6B4A2A, 0xFF356326,   // 12 bush, 13 green, 14 trunk brown, 15 green (muted)
         };
         for (int x = 0; x < W; x++)
             for (int y = 0; y < H; y++) b.setPixel(x, y, c[x]);
@@ -3302,14 +3287,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         java.util.List<float[]> winG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
-            int ds = (int) hh[5], dens = (int) hh[11];
-            float wsc = hh[12];
+            int ds = (int) hh[5], dens = (int) hh[11], storeys = Math.round(hh[23]);
+            float wsc = hh[12], foundH = hh[16];
             if (dens == 0) continue;                       // "none" -> this house has no windows
             int wstart = off[0] / 8;
-            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc);
-            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc);
-            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc);
-            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc);
+            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
             int wcount = off[0] / 8 - wstart;
             if (wcount > 0) winG.add(new float[]{wstart, wcount, hh[13], hh[14], hh[15]});  // glass tint
         }
@@ -3366,25 +3351,27 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
-    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc) {
-        // walls are 0.3 m thick (±0.15 from centre); push the pane past the outer face so it isn't buried.
+    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc, int storeys, float foundH) {
+        // One row of windows per FLOOR, centred in its storey -> the building visibly reads as having Etagen.
         wsc = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f);
-        float winW = 0.85f * wsc, winH = 1.05f * wsc, proud = 0.18f;
-        // density: 1 sparse, 2 normal (= previous), 3 dense.
-        float colDiv, rowStep, omit;
-        if (dens == 1)      { colDiv = 2.4f;  rowStep = 1.6f; omit = 0.15f; }
-        else if (dens >= 3) { colDiv = 1.25f; rowStep = 1.3f; omit = 0.06f; }
-        else                { colDiv = 1.7f;  rowStep = 1.5f; omit = 0.22f; }
+        if (storeys < 1) storeys = 1;
+        if (storeys > 8) storeys = 8;
+        float floorH = h / storeys;
+        float winW = 0.85f * wsc, winH = Math.min(1.05f * wsc, floorH * 0.62f), proud = 0.18f;
+        float colDiv, omit;                                          // density: 1 sparse, 2 normal, 3 dense
+        if (dens == 1)      { colDiv = 2.3f; omit = 0.10f; }
+        else if (dens >= 3) { colDiv = 1.25f; omit = 0.04f; }
+        else                { colDiv = 1.7f; omit = 0.10f; }
         int cols = Math.max(1, (int) ((span - 0.6f) / colDiv));
         float colGap = span / cols;
-        for (int ci = 0; ci < cols; ci++) {
-            float t = -span * 0.5f + colGap * (ci + 0.5f);          // offset along the wall
-            for (int ri = 0; ri < 6; ri++) {
-                float wy = 1.5f + ri * rowStep;                      // sill ~1 m off the ground (was too low)
-                if (wy + winH * 0.5f > h - 0.25f) continue;          // not above the eave
-                // doorway is 1.9 m wide x 2.3 m tall; skip wide enough that a pane never clips it.
-                if (doorWall && Math.abs(t) < 1.5f * Math.max(1f, wsc) && wy < 3.0f) continue;
-                if (rng.nextFloat() < omit) continue;                // drop a few so the grid looks lived-in, not stamped
+        for (int fi = 0; fi < storeys; fi++) {
+            float wy = floorH * (fi + 0.5f);                         // centre of this floor
+            if (wy + winH * 0.5f > h - 0.2f) continue;               // top floor clears the eave
+            if (wy - winH * 0.5f < foundH + 0.12f) wy = foundH + 0.12f + winH * 0.5f;   // clear the plinth
+            for (int ci = 0; ci < cols; ci++) {
+                float t = -span * 0.5f + colGap * (ci + 0.5f);       // offset along the wall
+                if (doorWall && fi == 0 && Math.abs(t) < 1.4f * Math.max(1f, wsc)) continue;   // ground-floor doorway
+                if (rng.nextFloat() < omit) continue;                // drop a few so it isn't stamped
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
                 if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
@@ -3455,16 +3442,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 128;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFF2F0EA);                                    // bright white frame
+        c.drawColor(0xFFF2F0EA);                                    // bright frame (tints lightly with the glass colour)
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        float m = N * 0.17f;
-        p.setColor(0xFFC6CED6);                                     // NEUTRAL light glass -> per-house uColor sets the true hue
-        c.drawRect(m, m, N - m, N - m, p);
-        p.setColor(0x55FFFFFF);                                     // soft neutral upper sheen
-        c.drawRect(m, m, N - m, N * 0.48f, p);
-        p.setColor(0xFFF2F0EA);                                     // thick cross mullion
-        c.drawRect(N * 0.5f - 4f, m, N * 0.5f + 4f, N - m, p);
-        c.drawRect(m, N * 0.5f - 4f, N - m, N * 0.5f + 4f, p);
+        float m = N * 0.17f, gl = m, gr = N - m, gt = m, gb = N - m, gw = gr - gl;
+        // a window with a ROOM behind it, not flat glass: light glass top, darker interior lower down
+        p.setColor(0xFFC6CED6); c.drawRect(gl, gt, gr, gb, p);      // neutral glass (per-house uColor sets the hue)
+        p.setColor(0x55FFFFFF); c.drawRect(gl, gt, gr, N * 0.42f, p);   // sky sheen on the upper panes
+        p.setColor(0x4D1A2230); c.drawRect(gl, N * 0.5f, gr, gb, p);    // dim interior depth (lower half)
+        p.setColor(0x884A3326); c.drawRect(gl, N * 0.78f, gr, gb, p);   // furniture/sill silhouette at the bottom
+        p.setColor(0x66FFD9A0); c.drawRect(gl + gw * 0.30f, N * 0.6f, gr - gw * 0.30f, N * 0.74f, p);  // warm lamp glow inside
+        p.setColor(0xCCEDE6D6);                                     // light curtains down the two sides
+        c.drawRect(gl, gt, gl + gw * 0.20f, gb, p);
+        c.drawRect(gr - gw * 0.20f, gt, gr, gb, p);
+        p.setColor(0xFFF2F0EA);                                     // frame border + cross mullion (window bars)
+        c.drawRect(N * 0.5f - 3f, gt, N * 0.5f + 3f, gb, p);
+        c.drawRect(gl, N * 0.5f - 3f, gr, N * 0.5f + 3f, p);
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(5f); c.drawRect(gl, gt, gr, gb, p);
         return b;
     }
 
