@@ -2477,10 +2477,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return false;
     }
 
+    private static final float[] STREETS = {-25f, -15f, -5f, 5f, 15f, 25f};   // road centrelines (10 m block pitch)
+    private static final float ROAD_HALF = 1.8f;     // asphalt half-width (4 m carriageway)
+    private static final float WALK_OUT = 2.9f;      // outer edge of the concrete sidewalk band
+    private static final float WALK_MID = 2.35f;     // centre of the sidewalk strip (where lamps/trees stand)
+
+    /** True on the asphalt carriageway (NOT the sidewalk) — keeps the traffic lane clear, allows kerbside furniture. */
     private static boolean onRoadXZ(float x, float z) {
-        float[] roads = {-28f, -20f, -12f, -4f, 4f, 12f, 20f, 28f};
-        for (int i = 0; i < roads.length; i++)
-            if (Math.abs(x - roads[i]) < 1.9f || Math.abs(z - roads[i]) < 1.9f) return true;
+        for (float r : STREETS)
+            if (Math.abs(x - r) < ROAD_HALF || Math.abs(z - r) < ROAD_HALF) return true;
+        return false;
+    }
+    /** True anywhere on a street footprint incl. its sidewalks — used to keep buildings off the streets. */
+    private static boolean onStreetXZ(float x, float z) {
+        for (float r : STREETS)
+            if (Math.abs(x - r) < WALK_OUT || Math.abs(z - r) < WALK_OUT) return true;
         return false;
     }
 
@@ -2801,25 +2812,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             p.setColor(0x66000000 | col);
             c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 9 + rnd.nextInt(48), p);
         }
-        float[] roads = {-28f, -20f, -12f, -4f, 4f, 12f, 20f, 28f};
-        for (int i = 0; i < roads.length; i++) {           // sidewalk borders (light concrete)
-            cityBand(c, p, roads[i], 2.7f, half, N, true, 0xFFA6A89C);
-            cityBand(c, p, roads[i], 2.7f, half, N, false, 0xFFA6A89C);
+        for (float r : STREETS) {                          // sidewalk slabs (light concrete)
+            cityBand(c, p, r, WALK_OUT, half, N, true, 0xFFB3B5A8);
+            cityBand(c, p, r, WALK_OUT, half, N, false, 0xFFB3B5A8);
         }
-        for (int i = 0; i < roads.length; i++) {           // asphalt
-            cityBand(c, p, roads[i], 1.7f, half, N, true, 0xFF34373A);
-            cityBand(c, p, roads[i], 1.7f, half, N, false, 0xFF34373A);
+        for (float r : STREETS) {                          // dark kerb line at the sidewalk/road edge
+            cityBand(c, p, r, ROAD_HALF + 0.12f, half, N, true, 0xFF82847A);
+            cityBand(c, p, r, ROAD_HALF + 0.12f, half, N, false, 0xFF82847A);
+        }
+        for (float r : STREETS) {                          // asphalt carriageway
+            cityBand(c, p, r, ROAD_HALF, half, N, true, 0xFF34373A);
+            cityBand(c, p, r, ROAD_HALF, half, N, false, 0xFF34373A);
         }
         p.setColor(0xFFD9C24E);                            // dashed centre lines
-        for (int i = 0; i < roads.length; i++) {
-            cityDashes(c, p, roads[i], half, N, true);
-            cityDashes(c, p, roads[i], half, N, false);
+        for (float r : STREETS) {
+            cityDashes(c, p, r, half, N, true);
+            cityDashes(c, p, r, half, N, false);
         }
         int[] bed = {0xE03A3A, 0xF7D43A, 0xF06FB0, 0x9B4FE0, 0x4F7BF0, 0xF58A20, 0xF4F0E6};
         for (int k = 0; k < 70; k++) {                     // painted flower beds on the lawn (off the roads)
             float wx = rnd.nextInt(N), wy = rnd.nextInt(N);
             float worldX = wx / N * (2f * half) - half, worldZ = wy / N * (2f * half) - half;
-            if (onRoadXZ(worldX, worldZ)) continue;
+            if (onStreetXZ(worldX, worldZ)) continue;
             int col = bed[rnd.nextInt(bed.length)];
             for (int j = 0; j < 9; j++) {
                 p.setColor(0xCC000000 | col);
@@ -2958,22 +2972,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
-        // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
-        L.add(new float[]{-2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
-        L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
-        L.add(new float[]{-3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
-        L.add(new float[]{ 3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
-        // Houses loosely placed on a grid (jittered, with gaps) so the village looks organic, not a raster.
+        // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two stone pillars
+        L.add(new float[]{-2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
+        L.add(new float[]{ 2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
+        L.add(new float[]{-2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
+        L.add(new float[]{ 2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
+        // Houses on a 10 m block grid, each set back behind the sidewalks so the streets + kerbs stay clear.
         Random rc = new Random(73);
-        float[] gs = {-32f, -24f, -16f, -8f, 0f, 8f, 16f, 24f, 32f};   // ~8 m blocks -> wide streets
+        float[] gs = {-30f, -20f, -10f, 0f, 10f, 20f, 30f};   // block centres; roads run between them at +/-5,15,25
         for (int ix = 0; ix < gs.length; ix++) {
             for (int iz = 0; iz < gs.length; iz++) {
                 float gx = gs[ix], gz = gs[iz];
-                if (gx * gx + gz * gz > 33.5f * 33.5f) continue;   // stay on the flat core (disc)
-                if (gx == 0f && gz >= 0f) continue;                // open plaza + spawn corridor
-                if (rc.nextFloat() < 0.16f) continue;              // random empty plot -> irregular spacing
-                float cx = gx + (rc.nextFloat() - 0.5f) * 2.0f;    // jitter off the grid (+/-1 m)
-                float cz = gz + (rc.nextFloat() - 0.5f) * 2.0f;
+                if (gx * gx + gz * gz > 31f * 31f) continue;       // stay on the flat core (disc)
+                if (gx == 0f && gz >= 0f && gz < 15f) continue;    // keep the spawn plaza (rows 0 & 10) open
+                if (isMarketLot(gx, gz)) continue;                 // reserved open lots for the market square
+                if (rc.nextFloat() < 0.10f) continue;              // random empty lot -> irregular spacing
 
                 // Pick a building archetype by where it sits: shops + townhouses near the centre,
                 // cottages in the mid ring, bigger flats/blocks on the outskirts -> a believable town gradient.
@@ -2985,25 +2998,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
                 float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
                 int storeys, winDens; boolean chimney, trim; float[] rf;
-                if (arch == 0) {                                   // cottage: low, wide, pitched
-                    w = 4.0f + rc.nextFloat() * 1.0f; d = 4.0f + rc.nextFloat() * 0.8f; h = 2.6f + rc.nextFloat() * 0.7f;
-                    storeys = 1; foundH = 0.22f + rc.nextFloat() * 0.12f; winDens = 2; chimney = true; trim = false;
+                if (arch == 0) {                                   // cottage: low, gabled
+                    w = 3.0f + rc.nextFloat() * 0.5f; d = 3.0f + rc.nextFloat() * 0.45f; h = 2.8f + rc.nextFloat() * 0.7f;
+                    storeys = 1; foundH = 0.22f + rc.nextFloat() * 0.10f; winDens = 2; chimney = true; trim = false;
                     rf = ROOFS[rc.nextFloat() < 0.7f ? 0 : 4];
-                } else if (arch == 1) {                            // townhouse: tall, narrow, steep roof, storeys
-                    w = 3.2f + rc.nextFloat() * 0.8f; d = 3.6f + rc.nextFloat() * 0.8f; h = 4.4f + rc.nextFloat() * 1.2f;
-                    storeys = 2 + (rc.nextFloat() < 0.5f ? 1 : 0); foundH = 0.28f + rc.nextFloat() * 0.1f; winDens = 3;
-                    chimney = true; trim = rc.nextFloat() < 0.4f; pitch = 1.4f + rc.nextFloat() * 0.5f;
+                } else if (arch == 1) {                            // townhouse: tall, narrow, terraced
+                    w = 2.8f + rc.nextFloat() * 0.5f; d = 3.0f + rc.nextFloat() * 0.4f; h = 4.8f + rc.nextFloat() * 1.4f;
+                    storeys = 2 + (rc.nextFloat() < 0.6f ? 1 : 0); foundH = 0.28f + rc.nextFloat() * 0.10f; winDens = 3;
+                    chimney = true; trim = rc.nextFloat() < 0.45f; pitch = 1.3f + rc.nextFloat() * 0.5f;
                     rf = ROOFS[rc.nextFloat() < 0.5f ? 0 : 1];
-                } else if (arch == 2) {                            // block / flats: big, flatter slate roof
-                    w = 4.5f + rc.nextFloat() * 1.0f; d = 4.5f + rc.nextFloat() * 1.0f; h = 5.0f + rc.nextFloat() * 1.5f;
-                    storeys = 2 + (rc.nextFloat() < 0.6f ? 1 : 0); foundH = 0.30f + rc.nextFloat() * 0.12f; winDens = 3;
+                } else if (arch == 2) {                            // apartment block: tall, flat slate roof
+                    w = 3.1f + rc.nextFloat() * 0.45f; d = 3.1f + rc.nextFloat() * 0.45f; h = 5.4f + rc.nextFloat() * 1.6f;
+                    storeys = 3 + (rc.nextFloat() < 0.5f ? 1 : 0); foundH = 0.30f + rc.nextFloat() * 0.10f; winDens = 3;
                     chimney = false; trim = rc.nextFloat() < 0.5f; pitch = 0.5f + rc.nextFloat() * 0.4f;
                     rf = ROOFS[1 + rc.nextInt(2)];                 // slate / charcoal
-                } else {                                           // shop: wide low front, big door + windows, awning band
-                    w = 5.0f + rc.nextFloat() * 1.0f; d = 4.0f + rc.nextFloat() * 0.6f; h = 3.0f + rc.nextFloat() * 0.8f;
-                    storeys = 1; foundH = 0.25f + rc.nextFloat() * 0.1f; winDens = 3; winSize = 1.2f; chimney = false;
-                    trim = true; doorW = 2.4f + rc.nextFloat() * 0.5f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
+                } else {                                           // shop: low front, big door + windows, awning band
+                    w = 3.2f + rc.nextFloat() * 0.4f; d = 3.0f + rc.nextFloat() * 0.4f; h = 3.2f + rc.nextFloat() * 0.7f;
+                    storeys = 1; foundH = 0.24f + rc.nextFloat() * 0.10f; winDens = 3; winSize = 1.2f; chimney = false;
+                    trim = true; doorW = 2.2f + rc.nextFloat() * 0.4f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
                 }
+                // set the house back from the streets: keep its footprint within +/- 2.0 m of the block centre
+                float cx = gx + clamp((rc.nextFloat() - 0.5f) * 0.8f, -Math.max(0f, 2.0f - w * 0.5f), Math.max(0f, 2.0f - w * 0.5f));
+                float cz = gz + clamp((rc.nextFloat() - 0.5f) * 0.8f, -Math.max(0f, 2.0f - d * 0.5f), Math.max(0f, 2.0f - d * 0.5f));
                 int doorSide = rc.nextInt(4);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 float[] dc = DOORS[rc.nextInt(DOORS.length)];
@@ -3013,60 +3029,64 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                             doorW, doorH, dc[0], dc[1], dc[2]);
                 houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                         GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
-                if (rc.nextFloat() < 0.55f) {                      // a barrel / crate / planter / woodpile by a corner
-                    float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.5f);
-                    float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.5f);
-                    if (!onRoadXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)) addClutter(L, rc, ax, az);
+                if (rc.nextFloat() < 0.45f) {                      // a barrel / crate / planter tucked against a wall
+                    float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.3f);
+                    float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.3f);
+                    if (!onStreetXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)) addClutter(L, rc, ax, az);
                 }
             }
         }
         addAccessories(L, houses, rc);                             // lamp posts, benches, a market + well, scattered trees
     }
 
-    /** Street furniture + greenery placed like a real town: benches against house fronts, and a market square
-     *  (stalls + well + lamps) gathered on the open lots — the dense streets have no room for kerbside lamps. */
+    /** Street furniture for the laid-out town: lamps + trees lining the sidewalks (now that the streets have
+     *  kerbs with room), benches on the sidewalk in front of houses, and a market square on the open lots. */
     private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
-        // 1. a bench against the front (door) wall of ~1 in 7 houses, facing the street (sensible curbside seat)
-        for (float[] h : houses) {
-            if (rc.nextFloat() >= 0.15f) continue;
-            int ds = (int) h[5]; float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f, bx, bz;
-            if (ds == 0)      { bx = cx; bz = cz + hd + 0.8f; }
-            else if (ds == 1) { bx = cx; bz = cz - hd - 0.8f; }
-            else if (ds == 2) { bx = cx + hw + 0.8f; bz = cz; }
-            else              { bx = cx - hw - 0.8f; bz = cz; }
-            if (Math.abs(bx) < 3f && bz > 2f && bz < 13f) continue;
-            if (!clearOfHouses(houses, bx, bz, 0.55f)) continue;
-            addBench(L, bx, bz, ds);
-        }
-        // 2. EMPTY plots (lots the procedural skip left open) become a market square: two stalls, a well and
-        //    lamps — all in the clear, never on a road or clipping a building (houses sit right on the narrow
-        //    streets, so there is no kerb to stand a lamp on; the street furniture gathers in the open lots).
-        float[] gs2 = {-24f, -16f, -8f, 8f, 16f, 24f};
-        int feat = 0;
-        for (float ox : gs2) for (float oz : gs2) {
-            if (ox * ox + oz * oz > 25f * 25f) continue;
-            if (Math.abs(ox) < 3f && oz > 2f && oz < 13f) continue;
-            if (!clearOfHouses(houses, ox, oz, 1.6f)) continue;     // nothing here -> an open lot
-            if (feat == 0)      addStall(L, ox, oz, 0.78f, 0.32f, 0.27f);   // red awning
-            else if (feat == 1) addStall(L, ox, oz, 0.34f, 0.46f, 0.32f);   // green awning
-            else if (feat == 2) addWell(L, ox, oz);
-            else                addLamp(L, ox, oz);                          // a lamp lighting the open lot
-            feat++;
-        }
-        // a couple more lamps in the open central plaza (off-road, clear)
-        for (float[] s : new float[][]{{-1.8f, -1.8f}, {1.8f, -1.8f}, {-1.8f, 1.8f}}) {
-            if (!onRoadXZ(s[0], s[1]) && clearOfHouses(houses, s[0], s[1], 0.7f)) addLamp(L, s[0], s[1]);
-        }
-        // 3. trees in the gaps (visual only, no collision) — never on a road or in the spawn lane
+        java.util.List<float[]> placed = new java.util.ArrayList<float[]>();   // prop positions, for spacing
         java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
-        for (int i = 0; i < 240 && trees.size() < 16; i++) {
-            float tx = (rc.nextFloat() - 0.5f) * 62f, tz = (rc.nextFloat() - 0.5f) * 62f;
-            if (tx*tx + tz*tz > 31f*31f) continue;
-            if (Math.abs(tx) < 3.5f && tz > 2f && tz < 13f) continue;
-            if (onRoadXZ(tx, tz) || !clearOfHouses(houses, tx, tz, 1.3f)) continue;
-            trees.add(new float[]{tx, tz, 0.9f + rc.nextFloat() * 0.7f});
+        // 1. lamps + street trees along the sidewalk strip of every street (kerbside, off the carriageway)
+        for (float r : STREETS) {
+            for (float t = -27f; t <= 27f; t += 6.5f) {
+                float[][] slots = {{r - WALK_MID, t}, {r + WALK_MID, t}, {t, r - WALK_MID}, {t, r + WALK_MID}};
+                for (float[] sl : slots) {
+                    float sx = sl[0], sz = sl[1];
+                    if (sx * sx + sz * sz > 30f * 30f) continue;
+                    if (Math.abs(sx) < 3.2f && sz > 1.5f && sz < 13f) continue;     // spawn lane
+                    if (onRoadXZ(sx, sz) || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
+                    boolean near = false;
+                    for (float[] pp : placed) if (Math.abs(pp[0] - sx) < 3f && Math.abs(pp[1] - sz) < 3f) { near = true; break; }
+                    if (near) continue;
+                    placed.add(new float[]{sx, sz});
+                    float pick = rc.nextFloat();
+                    if (pick < 0.28f)      addLamp(L, sx, sz);                       // a lamp every few slots
+                    else if (pick < 0.74f) trees.add(new float[]{sx, sz, 0.85f + rc.nextFloat() * 0.45f});  // street tree
+                    // else: leave a gap so it isn't a solid wall of furniture
+                }
+            }
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
+        // 2. a bench out on the sidewalk in front of ~1 in 6 houses, backed onto the front (door) wall
+        for (float[] h : houses) {
+            if (rc.nextFloat() >= 0.16f) continue;
+            int ds = (int) h[5]; float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f, bx, bz;
+            if (ds == 0)      { bx = cx; bz = cz + hd + 0.7f; }
+            else if (ds == 1) { bx = cx; bz = cz - hd - 0.7f; }
+            else if (ds == 2) { bx = cx + hw + 0.7f; bz = cz; }
+            else              { bx = cx - hw - 0.7f; bz = cz; }
+            if (Math.abs(bx) < 3.2f && bz > 1.5f && bz < 13f) continue;
+            if (onRoadXZ(bx, bz) || !clearOfHouses(houses, bx, bz, 0.5f)) continue;
+            addBench(L, bx, bz, ds);
+        }
+        // 3. the reserved open lots form a market square: two stalls flanking a well
+        addStall(L, MARKET_LOTS[0][0], MARKET_LOTS[0][1], 0.78f, 0.32f, 0.27f);   // red awning
+        addWell (L, MARKET_LOTS[1][0], MARKET_LOTS[1][1]);
+        addStall(L, MARKET_LOTS[2][0], MARKET_LOTS[2][1], 0.34f, 0.46f, 0.32f);   // green awning
+    }
+
+    private static final float[][] MARKET_LOTS = {{-10f, -20f}, {0f, -20f}, {10f, -20f}};
+    private static boolean isMarketLot(float gx, float gz) {
+        for (float[] mlt : MARKET_LOTS) if (mlt[0] == gx && mlt[1] == gz) return true;
+        return false;
     }
 
     /** True if (x,z) is well clear of every house footprint (plus margin) — used to keep props off buildings. */
