@@ -135,9 +135,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts;
-    private java.util.List<float[]> houseRects;   // {cx,cz,w,d,h} per house, for the roof / window meshes
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts;
+    private float[] trimData;                      // window-sill boxes, built alongside the window mesh
+    private java.util.List<float[]> houseRects;   // {cx,cz,w,d,h,doorSide} per house, for the roof / window meshes
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -359,7 +360,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         vegTex = uploadPalette(makeVegPalette());
 
         roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
-        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts)
+        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData)
+        trimMesh = makeBuffer(trimData);             // window sills
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
         wallTex = uploadTexture(makeHouseBitmap());
@@ -449,6 +451,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawWorld(roofMesh, roofVerts, 0f, 1f, 1f, 1f);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
         drawWorld(windowMesh, windowVerts, 0f, 1f, 1f, 1f);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stone window sills
+        drawWorld(trimMesh, trimVerts, 0f, 0.95f, 0.93f, 0.86f);
 
         drawDoors();
         drawEnemies();
@@ -2786,24 +2790,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return o;
     }
 
-    /** Baked window quads on every wall (one draw call), skipping the central ground-floor doorway. */
+    /** Baked window panes + sill ledges on every wall (one draw call each); skips the doorway. */
     private float[] makeWindowMesh() {
-        float[] d = new float[600000];
-        int o = 0;
+        float[] wd = new float[600000];
+        float[] td = new float[800000];
+        int[] off = {0, 0};
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
             int ds = (int) hh[5];
-            o = wallWindows(d, o, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0);
-            o = wallWindows(d, o, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1);
-            o = wallWindows(d, o, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2);
-            o = wallWindows(d, o, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3);
+            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0);
+            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1);
+            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2);
+            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3);
         }
-        windowVerts = o / 8;
-        return java.util.Arrays.copyOf(d, o);
+        windowVerts = off[0] / 8;
+        trimVerts = off[1] / 8;
+        trimData = java.util.Arrays.copyOf(td, off[1]);
+        return java.util.Arrays.copyOf(wd, off[0]);
     }
 
-    private static int wallWindows(float[] d, int o, float a, float b, float span, float h, int axis, int sign, boolean doorWall) {
-        // walls are 0.3 m thick (±0.15 from centre); push the pane just past the outer face so it isn't buried.
+    // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
+    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall) {
+        // walls are 0.3 m thick (±0.15 from centre); push the pane past the outer face so it isn't buried.
         float winW = 0.85f, winH = 1.05f, proud = 0.18f;
         int cols = Math.max(1, (int) ((span - 0.6f) / 1.25f));
         int rows = Math.max(1, (int) ((h - 0.7f) / 1.35f));
@@ -2813,22 +2821,48 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (int ri = 0; ri < rows; ri++) {
                 float wy = 1.15f + ri * 1.35f;
                 if (wy + winH * 0.5f > h - 0.25f) continue;          // not above the eave
-                if (doorWall && Math.abs(t) < 1.15f && wy < 2.45f) continue;   // clear of the doorway
-                if (axis == 0) {
-                    float zf = b + sign * proud, x0 = a + t - winW * 0.5f, x1 = a + t + winW * 0.5f;
-                    float y0 = wy - winH * 0.5f, y1 = wy + winH * 0.5f;
-                    o = put(d, o, x0, y0, zf, 0, 0, sign, 0, 1); o = put(d, o, x1, y0, zf, 0, 0, sign, 1, 1);
-                    o = put(d, o, x1, y1, zf, 0, 0, sign, 1, 0); o = put(d, o, x0, y0, zf, 0, 0, sign, 0, 1);
-                    o = put(d, o, x1, y1, zf, 0, 0, sign, 1, 0); o = put(d, o, x0, y1, zf, 0, 0, sign, 0, 0);
-                } else {
-                    float xf = a + sign * proud, z0 = b + t - winW * 0.5f, z1 = b + t + winW * 0.5f;
-                    float y0 = wy - winH * 0.5f, y1 = wy + winH * 0.5f;
-                    o = put(d, o, xf, y0, z0, sign, 0, 0, 0, 1); o = put(d, o, xf, y0, z1, sign, 0, 0, 1, 1);
-                    o = put(d, o, xf, y1, z1, sign, 0, 0, 1, 0); o = put(d, o, xf, y0, z0, sign, 0, 0, 0, 1);
-                    o = put(d, o, xf, y1, z1, sign, 0, 0, 1, 0); o = put(d, o, xf, y1, z0, sign, 0, 0, 0, 0);
-                }
+                // doorway is 1.9 m wide x 2.3 m tall; skip wide enough that a 0.85 m pane never clips it.
+                if (doorWall && Math.abs(t) < 1.5f && wy < 3.0f) continue;
+                off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
+                float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
+                if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
+                else           off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
             }
         }
+    }
+
+    private static int windowQuad(float[] d, int o, float a, float b, float t, float wy, float winW, float winH, int axis, int sign, float proud) {
+        float y0 = wy - winH * 0.5f, y1 = wy + winH * 0.5f;
+        if (axis == 0) {
+            float zf = b + sign * proud, x0 = a + t - winW * 0.5f, x1 = a + t + winW * 0.5f;
+            o = put(d, o, x0, y0, zf, 0, 0, sign, 0, 1); o = put(d, o, x1, y0, zf, 0, 0, sign, 1, 1);
+            o = put(d, o, x1, y1, zf, 0, 0, sign, 1, 0); o = put(d, o, x0, y0, zf, 0, 0, sign, 0, 1);
+            o = put(d, o, x1, y1, zf, 0, 0, sign, 1, 0); o = put(d, o, x0, y1, zf, 0, 0, sign, 0, 0);
+        } else {
+            float xf = a + sign * proud, z0 = b + t - winW * 0.5f, z1 = b + t + winW * 0.5f;
+            o = put(d, o, xf, y0, z0, sign, 0, 0, 0, 1); o = put(d, o, xf, y0, z1, sign, 0, 0, 1, 1);
+            o = put(d, o, xf, y1, z1, sign, 0, 0, 1, 0); o = put(d, o, xf, y0, z0, sign, 0, 0, 0, 1);
+            o = put(d, o, xf, y1, z1, sign, 0, 0, 1, 0); o = put(d, o, xf, y1, z0, sign, 0, 0, 0, 0);
+        }
+        return o;
+    }
+
+    /** A solid box (6 faces) centred at (cx,cy,cz) with the given half-extents — used for window sills. */
+    private static int box6(float[] d, int o, float cx, float cy, float cz, float hx, float hy, float hz) {
+        o = boxQuad(d, o, cx + hx, cy - hy, cz - hz, cx + hx, cy - hy, cz + hz, cx + hx, cy + hy, cz + hz, cx + hx, cy + hy, cz - hz, 1, 0, 0);
+        o = boxQuad(d, o, cx - hx, cy - hy, cz + hz, cx - hx, cy - hy, cz - hz, cx - hx, cy + hy, cz - hz, cx - hx, cy + hy, cz + hz, -1, 0, 0);
+        o = boxQuad(d, o, cx - hx, cy + hy, cz - hz, cx + hx, cy + hy, cz - hz, cx + hx, cy + hy, cz + hz, cx - hx, cy + hy, cz + hz, 0, 1, 0);
+        o = boxQuad(d, o, cx - hx, cy - hy, cz + hz, cx + hx, cy - hy, cz + hz, cx + hx, cy - hy, cz - hz, cx - hx, cy - hy, cz - hz, 0, -1, 0);
+        o = boxQuad(d, o, cx - hx, cy - hy, cz + hz, cx + hx, cy - hy, cz + hz, cx + hx, cy + hy, cz + hz, cx - hx, cy + hy, cz + hz, 0, 0, 1);
+        o = boxQuad(d, o, cx + hx, cy - hy, cz - hz, cx - hx, cy - hy, cz - hz, cx - hx, cy + hy, cz - hz, cx + hx, cy + hy, cz - hz, 0, 0, -1);
+        return o;
+    }
+
+    private static int boxQuad(float[] d, int o, float ax, float ay, float az, float bx, float by, float bz,
+                               float cx, float cy, float cz, float dx, float dy, float dz, float nx, float ny, float nz) {
+        o = put(d, o, ax, ay, az, nx, ny, nz, 0, 0); o = put(d, o, bx, by, bz, nx, ny, nz, 1, 0);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, 1, 1); o = put(d, o, ax, ay, az, nx, ny, nz, 0, 0);
+        o = put(d, o, cx, cy, cz, nx, ny, nz, 1, 1); o = put(d, o, dx, dy, dz, nx, ny, nz, 0, 1);
         return o;
     }
 
