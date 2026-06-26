@@ -2228,9 +2228,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // Facade colour palette: concrete, brick, steel-blue, sandstone, dark concrete.
-    private static final float[][] PALETTE = {     // light, warm house colours (tint the stucco texture)
-        {0.92f, 0.88f, 0.78f}, {0.86f, 0.74f, 0.60f}, {0.80f, 0.84f, 0.86f},
-        {0.90f, 0.80f, 0.72f}, {0.78f, 0.84f, 0.74f}, {0.95f, 0.92f, 0.86f},
+    private static final float[][] PALETTE = {     // varied house colours (tint the light stucco texture)
+        {0.93f, 0.88f, 0.74f},   // warm cream
+        {0.88f, 0.60f, 0.40f},   // terracotta / ochre
+        {0.58f, 0.72f, 0.88f},   // sky blue
+        {0.66f, 0.82f, 0.62f},   // sage green
+        {0.92f, 0.70f, 0.72f},   // dusty pink
+        {0.96f, 0.94f, 0.90f},   // off-white
+        {0.86f, 0.78f, 0.48f},   // mustard yellow
+        {0.74f, 0.68f, 0.82f},   // lavender
+        {0.78f, 0.84f, 0.84f},   // pale grey-blue
+        {0.94f, 0.76f, 0.50f},   // sandy orange
     };
 
     /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
@@ -2795,13 +2803,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] wd = new float[600000];
         float[] td = new float[800000];
         int[] off = {0, 0};
+        Random rng = new Random(202);   // irregular per-house omission so no two facades match
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
             int ds = (int) hh[5];
-            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0);
-            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1);
-            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2);
-            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3);
+            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng);
+            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng);
+            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng);
+            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng);
         }
         windowVerts = off[0] / 8;
         trimVerts = off[1] / 8;
@@ -2810,19 +2819,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
-    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall) {
+    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng) {
         // walls are 0.3 m thick (±0.15 from centre); push the pane past the outer face so it isn't buried.
         float winW = 0.85f, winH = 1.05f, proud = 0.18f;
-        int cols = Math.max(1, (int) ((span - 0.6f) / 1.25f));
-        int rows = Math.max(1, (int) ((h - 0.7f) / 1.35f));
+        // sparser grid than before — a wide 2-storey wall gets ~2x2, a small cottage just 1.
+        int cols = Math.max(1, (int) ((span - 0.6f) / 1.7f));
+        int rows = Math.max(1, (int) ((h - 0.6f) / 1.5f));
         float colGap = span / cols;
         for (int ci = 0; ci < cols; ci++) {
             float t = -span * 0.5f + colGap * (ci + 0.5f);          // offset along the wall
             for (int ri = 0; ri < rows; ri++) {
-                float wy = 1.15f + ri * 1.35f;
+                float wy = 1.15f + ri * 1.5f;
                 if (wy + winH * 0.5f > h - 0.25f) continue;          // not above the eave
                 // doorway is 1.9 m wide x 2.3 m tall; skip wide enough that a 0.85 m pane never clips it.
                 if (doorWall && Math.abs(t) < 1.5f && wy < 3.0f) continue;
+                if (rng.nextFloat() < 0.22f) continue;               // drop ~1 in 5 so the grid looks lived-in, not stamped
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
                 if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
