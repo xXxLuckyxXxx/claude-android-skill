@@ -16,7 +16,9 @@ public class InputState {
     private boolean jumpRequested;       // one-shot jump
     private boolean interactRequested;   // one-shot door interact
     private boolean doorInRange;         // published by the renderer: a door is within reach
-    private boolean gameOver;
+    private boolean menuMode;            // published by the renderer: a menu (hub/summary) is open
+    private boolean menuTapRequested;    // one-shot menu tap, in screen pixels
+    private float menuTapX, menuTapY;
 
     public synchronized void setMove(float x, float y) { moveX = x; moveY = y; }
     public synchronized void addLook(float dx, float dy) { lookDX += dx; lookDY += dy; }
@@ -76,7 +78,20 @@ public class InputState {
         return i;
     }
 
-    // Published by the renderer; read by the view (tap-anywhere-to-restart).
-    public synchronized void setGameOver(boolean v) { gameOver = v; }
-    public synchronized boolean isGameOver() { return gameOver; }
+    // Published by the renderer; read by the view to route taps to the menu instead of gameplay.
+    public synchronized void setMenuMode(boolean v) { menuMode = v; }
+    public synchronized boolean isMenuMode() { return menuMode; }
+
+    /** One-shot menu tap at screen pixels. */
+    public synchronized void requestMenuTap(float x, float y) {
+        menuTapRequested = true; menuTapX = x; menuTapY = y;
+    }
+
+    /** Writes the pending menu tap into out[0]=x, out[1]=y; returns true exactly once per tap. */
+    public synchronized boolean consumeMenuTap(float[] out) {
+        if (!menuTapRequested) return false;
+        out[0] = menuTapX; out[1] = menuTapY;
+        menuTapRequested = false;
+        return true;
+    }
 }
