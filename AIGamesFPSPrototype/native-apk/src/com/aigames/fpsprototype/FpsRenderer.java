@@ -3014,43 +3014,66 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                         GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
                 if (rc.nextFloat() < 0.55f) {                      // a barrel / crate / planter / woodpile by a corner
-                    float sx = rc.nextBoolean() ? 1f : -1f, sz = rc.nextBoolean() ? 1f : -1f;
-                    addClutter(L, rc, cx + sx * (w * 0.5f + 0.5f), cz + sz * (d * 0.5f + 0.5f));
+                    float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.5f);
+                    float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.5f);
+                    if (!onRoadXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)) addClutter(L, rc, ax, az);
                 }
             }
         }
         addAccessories(L, houses, rc);                             // lamp posts, benches, a market + well, scattered trees
     }
 
-    /** Street furniture + greenery scattered through the procedural village (boxes = solid; trees = visual). */
+    /** Street furniture + greenery placed like a real town: benches against house fronts, and a market square
+     *  (stalls + well + lamps) gathered on the open lots — the dense streets have no room for kerbside lamps. */
     private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
-        // lamp posts along the streets (skip the spawn corridor + plaza)
-        float[][] lampSpots = {{-12f,-12f},{12f,-12f},{-12f,12f},{12f,12f},{-20f,-4f},{20f,-4f},
-                               {-4f,-20f},{4f,-20f},{-20f,12f},{20f,12f},{-12f,-20f},{12f,20f}};
-        for (float[] s : lampSpots) {
-            if (s[0]*s[0] + s[1]*s[1] > 31f*31f) continue;
-            if (Math.abs(s[0]) < 3f && s[1] > 3f && s[1] < 13f) continue;
-            addLamp(L, s[0], s[1]);
+        // 1. a bench against the front (door) wall of ~1 in 7 houses, facing the street (sensible curbside seat)
+        for (float[] h : houses) {
+            if (rc.nextFloat() >= 0.15f) continue;
+            int ds = (int) h[5]; float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f, bx, bz;
+            if (ds == 0)      { bx = cx; bz = cz + hd + 0.8f; }
+            else if (ds == 1) { bx = cx; bz = cz - hd - 0.8f; }
+            else if (ds == 2) { bx = cx + hw + 0.8f; bz = cz; }
+            else              { bx = cx - hw - 0.8f; bz = cz; }
+            if (Math.abs(bx) < 3f && bz > 2f && bz < 13f) continue;
+            if (!clearOfHouses(houses, bx, bz, 0.55f)) continue;
+            addBench(L, bx, bz, ds);
         }
-        addBench(L, -5.5f, 6.0f, true);  addBench(L, 5.5f, 6.0f, true);     // benches around the plaza
-        addBench(L, -6.0f, -5.0f, false); addBench(L, 6.0f, -5.0f, false);
-        addStall(L, -7.5f, 1.5f, 0.86f, 0.40f, 0.30f);                      // two market stalls (red + green awning)
-        addStall(L,  7.5f, 1.5f, 0.38f, 0.52f, 0.34f);
-        addWell(L, -2.0f, -6.5f);                                          // a roofed stone well
-        // scatter trees in the gaps (visual only, no collision) so the town sits in greenery
+        // 2. EMPTY plots (lots the procedural skip left open) become a market square: two stalls, a well and
+        //    lamps — all in the clear, never on a road or clipping a building (houses sit right on the narrow
+        //    streets, so there is no kerb to stand a lamp on; the street furniture gathers in the open lots).
+        float[] gs2 = {-24f, -16f, -8f, 8f, 16f, 24f};
+        int feat = 0;
+        for (float ox : gs2) for (float oz : gs2) {
+            if (ox * ox + oz * oz > 25f * 25f) continue;
+            if (Math.abs(ox) < 3f && oz > 2f && oz < 13f) continue;
+            if (!clearOfHouses(houses, ox, oz, 1.6f)) continue;     // nothing here -> an open lot
+            if (feat == 0)      addStall(L, ox, oz, 0.78f, 0.32f, 0.27f);   // red awning
+            else if (feat == 1) addStall(L, ox, oz, 0.34f, 0.46f, 0.32f);   // green awning
+            else if (feat == 2) addWell(L, ox, oz);
+            else                addLamp(L, ox, oz);                          // a lamp lighting the open lot
+            feat++;
+        }
+        // a couple more lamps in the open central plaza (off-road, clear)
+        for (float[] s : new float[][]{{-1.8f, -1.8f}, {1.8f, -1.8f}, {-1.8f, 1.8f}}) {
+            if (!onRoadXZ(s[0], s[1]) && clearOfHouses(houses, s[0], s[1], 0.7f)) addLamp(L, s[0], s[1]);
+        }
+        // 3. trees in the gaps (visual only, no collision) — never on a road or in the spawn lane
         java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
-        for (int i = 0; i < 90 && trees.size() < 18; i++) {
+        for (int i = 0; i < 240 && trees.size() < 16; i++) {
             float tx = (rc.nextFloat() - 0.5f) * 62f, tz = (rc.nextFloat() - 0.5f) * 62f;
             if (tx*tx + tz*tz > 31f*31f) continue;
-            if (Math.abs(tx) < 3.5f && tz > 2f && tz < 13f) continue;       // keep the spawn lane clear
-            boolean clear = true;
-            for (float[] hh : houses) {
-                float ddx = tx - hh[0], ddz = tz - hh[1], rad = hh[2]*0.5f + 2.4f;
-                if (ddx*ddx + ddz*ddz < rad*rad) { clear = false; break; }
-            }
-            if (clear) trees.add(new float[]{tx, tz, 0.9f + rc.nextFloat() * 0.7f});
+            if (Math.abs(tx) < 3.5f && tz > 2f && tz < 13f) continue;
+            if (onRoadXZ(tx, tz) || !clearOfHouses(houses, tx, tz, 1.3f)) continue;
+            trees.add(new float[]{tx, tz, 0.9f + rc.nextFloat() * 0.7f});
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
+    }
+
+    /** True if (x,z) is well clear of every house footprint (plus margin) — used to keep props off buildings. */
+    private static boolean clearOfHouses(List<float[]> houses, float x, float z, float margin) {
+        for (float[] h : houses)
+            if (Math.abs(x - h[0]) < h[2] * 0.5f + margin && Math.abs(z - h[1]) < h[3] * 0.5f + margin) return false;
+        return true;
     }
 
     private static void addClutter(List<float[]> L, Random r, float x, float z) {
@@ -3099,13 +3122,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // A park bench: two solid end frames, a slatted seat and a two-rail backrest.
-    private static void addBench(List<float[]> L, float x, float z, boolean faceSouth) {
-        float back = faceSouth ? -0.18f : 0.18f;
-        L.add(new float[]{x - 0.62f, 0.24f, z, 0.10f, 0.48f, 0.50f, 0.34f, 0.25f, 0.16f, 0f});  // left end frame
-        L.add(new float[]{x + 0.62f, 0.24f, z, 0.10f, 0.48f, 0.50f, 0.34f, 0.25f, 0.16f, 0f});  // right end frame
-        L.add(new float[]{x, 0.46f, z, 1.45f, 0.09f, 0.48f, 0.48f, 0.34f, 0.22f, 0f});          // seat
-        L.add(new float[]{x, 0.68f, z + back, 1.45f, 0.10f, 0.06f, 0.48f, 0.34f, 0.22f, 0f});   // lower back rail
-        L.add(new float[]{x, 0.88f, z + back, 1.45f, 0.10f, 0.06f, 0.48f, 0.34f, 0.22f, 0f});   // upper back rail
+    private static void addBench(List<float[]> L, float x, float z, int dir) {
+        boolean ax = (dir == 0 || dir == 1);                    // bench length runs along X for +z/-z fronts
+        float ex = ax ? 0.62f : 0f, ez = ax ? 0f : 0.62f;       // end-frame offset along the length
+        float esx = ax ? 0.10f : 0.50f, esz = ax ? 0.50f : 0.10f;
+        L.add(new float[]{x - ex, 0.24f, z - ez, esx, 0.48f, esz, 0.34f, 0.25f, 0.16f, 0f});    // end frames
+        L.add(new float[]{x + ex, 0.24f, z + ez, esx, 0.48f, esz, 0.34f, 0.25f, 0.16f, 0f});
+        L.add(new float[]{x, 0.46f, z, ax ? 1.45f : 0.48f, 0.09f, ax ? 0.48f : 1.45f, 0.48f, 0.34f, 0.22f, 0f});  // seat
+        float bX = 0f, bZ = 0f;                                 // backrest sits behind the seat (toward the wall)
+        if (dir == 0) bZ = -0.18f; else if (dir == 1) bZ = 0.18f; else if (dir == 2) bX = -0.18f; else bX = 0.18f;
+        float rw = ax ? 1.45f : 0.06f, rd = ax ? 0.06f : 1.45f;
+        L.add(new float[]{x + bX, 0.68f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});       // back rails
+        L.add(new float[]{x + bX, 0.88f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});
     }
 
     // A market stall: a wooden counter with four posts and a striped awning roof (awning overhead -> no collision).
