@@ -108,11 +108,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final int MAX_ENEMIES = 7;
     private static final float ENEMY_SPEED = 1.7f;     // base m/s
     private static final float ENEMY_FULL_HP = 100f;
-    private static final float SPAWN_DIST = 30f;
+    private static final float SPAWN_DIST = 42f;
     private static final float REACH_DIST = 1.5f;
     private static final float ENEMY_DMG = 20f;
     private static final float MAX_HP = 100f;
-    private static final float ARENA_LIMIT = 23f;
+    private static final float ARENA_LIMIT = 36f;
 
     private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
 
@@ -133,10 +133,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int prog2, aP2, uScale2, uOff2, uCol2;
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts;
+    private java.util.List<float[]> houseRects;   // {cx,cz,w,d,h} per house, for the roof / window meshes
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -272,9 +273,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         ArrayList<float[]> bl = new ArrayList<float[]>();
         ArrayList<float[]> dl = new ArrayList<float[]>();
-        buildWorldInto(bl, dl);
+        ArrayList<float[]> hl = new ArrayList<float[]>();
+        buildWorldInto(bl, dl, hl);
         this.boxes = bl.toArray(new float[0][]);
         this.doorData = dl.toArray(new float[0][]);
+        this.houseRects = hl;
         this.doorOpen = new float[doorData.length];
         this.doorTarget = new float[doorData.length];
     }
@@ -344,16 +347,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         metalTex = uploadTexture(makeMetalBitmap());
         fontTex = uploadFontTexture(makeFontAtlas());
 
-        float[] terr = makeTerrain(56, 80f);
+        float[] terr = makeTerrain(100, 140f);
         terrain = makeBuffer(terr);
         terrainVerts = terr.length / 8;
         terrainTex = uploadTexture(makeTerrainBitmap());
 
-        cityGround = makeBuffer(makeFlatQuad(21f, 0.02f));
+        cityGround = makeBuffer(makeFlatQuad(35f, 0.02f));
         cityTex = uploadTexture(makeCityBitmap());
 
         vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
         vegTex = uploadPalette(makeVegPalette());
+
+        roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
+        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts)
+        roofTex = uploadTexture(makeRoofBitmap());
+        winTex = uploadTexture(makeWindowBitmap());
 
         restart();
         state = ST_HUB;                 // app opens in the hub (PLAY to begin a run)
@@ -434,6 +442,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float boost = (i == hitBox && hitTimer > 0f) ? 1.6f : 1f;
             drawWorld(cube, 36, 0f, b[6] * boost, b[7] * boost, b[8] * boost);
         }
+
+        Matrix.setIdentityM(model, 0);                         // pitched roofs + windows (baked, world-space)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);
+        drawWorld(roofMesh, roofVerts, 0f, 1f, 1f, 1f);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
+        drawWorld(windowMesh, windowVerts, 0f, 1f, 1f, 1f);
 
         drawDoors();
         drawEnemies();
@@ -2172,7 +2186,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Rolling-hills height field: flat over the city core, hillier outskirts toward the edges. */
     private static float terrainH(float x, float z) {
         float r = (float) Math.sqrt(x * x + z * z);
-        float amp = smoothstep(21f, 40f, r);
+        float amp = smoothstep(35f, 60f, r);
         float h = 1.6f * (float) Math.sin(x * 0.16f) * (float) Math.cos(z * 0.14f)
                 + 0.9f * (float) Math.sin(x * 0.06f + 1.3f)
                 + 0.8f * (float) Math.cos(z * 0.075f + 2.1f)
@@ -2222,14 +2236,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Scatter grass tufts, flowers and bushes over the flat core + surrounding meadow,
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
     private float[] makeVegetation() {
-        float[] d = new float[2400000];
+        float[] d = new float[6000000];
         int o = 0;
         Random r = new Random(404);
         float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
         int[] flowerCells = {4, 5, 6, 7, 8, 9, 10};
 
-        for (int n = 0, tries = 0; n < 360 && tries < 5000; tries++) {     // grass tufts
-            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
+        for (int n = 0, tries = 0; n < 900 && tries < 12000; tries++) {     // grass tufts
+            if (o > d.length - 9000) break;
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 40f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.2f) || onRoadXZ(x, z)) continue;
             float by = terrainH(x, z);
@@ -2242,30 +2257,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
             n++;
         }
-        for (int n = 0, tries = 0; n < 190 && tries < 5000; tries++) {     // flowers (5 varied types)
-            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 28f;
+        for (int n = 0, tries = 0; n < 450 && tries < 9000; tries++) {     // flowers (5 varied types)
+            if (o > d.length - 9000) break;
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 40f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.25f) || onRoadXZ(x, z)) continue;
             o = vFlower(d, o, x, terrainH(x, z), z, r.nextInt(5), r, uStem, uCtr, flowerCells);
             n++;
         }
-        for (int n = 0, tries = 0; n < 12 && tries < 1500; tries++) {      // bouquets (gathered bunches)
-            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 26f;
+        for (int n = 0, tries = 0; n < 28 && tries < 3000; tries++) {      // bouquets (gathered bunches)
+            if (o > d.length - 9000) break;
+            float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 38f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.35f) || onRoadXZ(x, z)) continue;
             o = vBouquet(d, o, x, terrainH(x, z), z, r, uStem, uCtr, flowerCells);
             n++;
         }
         // hedges lining the streets (cheap round / low-hedge variants), capped
-        float[] hr = {-12f, -4f, 4f, 12f};
+        float[] hr = {-20f, -12f, -4f, 4f, 12f, 20f};
         int hedge = 0;
         hedges:
         for (int ri = 0; ri < hr.length; ri++) {
             float rc = hr[ri];
-            for (float pos = -16f; pos <= 16f; pos += 4.2f) {
+            for (float pos = -28f; pos <= 28f; pos += 4.2f) {
                 float[][] cand = {{rc - 2.9f, pos}, {rc + 2.9f, pos}, {pos, rc - 2.9f}, {pos, rc + 2.9f}};
                 for (int ci = 0; ci < 4; ci++) {
-                    if (hedge >= 64 || o > d.length - 6000) break hedges;
+                    if (hedge >= 150 || o > d.length - 6000) break hedges;
                     float bx = cand[ci][0], bz = cand[ci][1];
                     if (inBuildingXZ(bx, bz, 0.3f) || onRoadXZ(bx, bz)) continue;
                     o = vBush(d, o, bx, terrainH(bx, bz), bz, r.nextBoolean() ? 0 : 4, r, flowerCells);
@@ -2274,25 +2291,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
         }
         // feature bushes (all variants), scattered over the lawn + meadow
-        for (int n = 0, tries = 0; n < 30 && tries < 2500; tries++) {
+        for (int n = 0, tries = 0; n < 75 && tries < 6000; tries++) {
             if (o > d.length - 6000) break;
-            float a = r.nextFloat() * 6.2832f, rad = 3f + r.nextFloat() * 25f;
+            float a = r.nextFloat() * 6.2832f, rad = 3f + r.nextFloat() * 35f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.45f) || onRoadXZ(x, z)) continue;
             o = vBush(d, o, x, terrainH(x, z), z, r.nextInt(6), r, flowerCells);
             n++;
         }
         // detailed trees dotted around the meadow / arena edge
-        for (int n = 0, tries = 0; n < 22 && tries < 1500; tries++) {
+        for (int n = 0, tries = 0; n < 55 && tries < 4000; tries++) {
             if (o > d.length - 9000) break;
-            float a = r.nextFloat() * 6.2832f, rad = 16f + r.nextFloat() * 8f;
+            float a = r.nextFloat() * 6.2832f, rad = 20f + r.nextFloat() * 18f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.6f) || onRoadXZ(x, z)) continue;
             o = vTree(d, o, x, terrainH(x, z), z, 1.0f + r.nextFloat() * 0.5f, true, r);
             n++;
         }
         // forest ring around the level — hides the map edge / horizon
-        float[] ringR = {25f, 28.5f, 32f, 35.5f, 38.5f};
+        float[] ringR = {44f, 48f, 52f, 56f, 60f};
         for (int ri = 0; ri < ringR.length; ri++) {
             int count = (int) (ringR[ri] * 1.7f);
             for (int i = 0; i < count; i++) {
@@ -2317,7 +2334,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static boolean onRoadXZ(float x, float z) {
-        float[] roads = {-20f, -12f, -4f, 4f, 12f, 20f};
+        float[] roads = {-28f, -20f, -12f, -4f, 4f, 12f, 20f, 28f};
         for (int i = 0; i < roads.length; i++)
             if (Math.abs(x - roads[i]) < 1.9f || Math.abs(z - roads[i]) < 1.9f) return true;
         return false;
@@ -2583,8 +2600,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Top-down city ground: concrete blocks, asphalt streets with sidewalk borders + lane dashes. */
     private static Bitmap makeCityBitmap() {
-        int N = 1024;
-        float half = 21f;
+        int N = 1536;
+        float half = 35f;
         Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
         c.drawColor(0xFF3C6E24);                           // lawn / grass base
@@ -2596,7 +2613,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             p.setColor(0x66000000 | col);
             c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 9 + rnd.nextInt(48), p);
         }
-        float[] roads = {-20f, -12f, -4f, 4f, 12f, 20f};
+        float[] roads = {-28f, -20f, -12f, -4f, 4f, 12f, 20f, 28f};
         for (int i = 0; i < roads.length; i++) {           // sidewalk borders (light concrete)
             cityBand(c, p, roads[i], 2.7f, half, N, true, 0xFFA6A89C);
             cityBand(c, p, roads[i], 2.7f, half, N, false, 0xFFA6A89C);
@@ -2646,27 +2663,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    private static void buildWorldInto(List<float[]> L, List<float[]> doors) {
+    private static void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
         L.add(new float[]{-2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{-3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
         L.add(new float[]{ 3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
-        // city blocks on a grid; keep them in the flat core and clear of the plaza / spawn lane
+        // city blocks on a bigger grid (~3x the houses); keep them on the flat core, clear of the plaza/spawn lane
         Random rc = new Random(101);
-        float[] gs = {-16f, -8f, 0f, 8f, 16f};                     // blocks spaced 8 m -> wide streets
+        float[] gs = {-32f, -24f, -16f, -8f, 0f, 8f, 16f, 24f, 32f};   // blocks spaced 8 m -> wide streets
         for (int ix = 0; ix < gs.length; ix++) {
             for (int iz = 0; iz < gs.length; iz++) {
                 float cx = gs[ix], cz = gs[iz];
-                if (cx * cx + cz * cz > 18.5f * 18.5f) continue;   // stay on the flat core
+                if (cx * cx + cz * cz > 33.5f * 33.5f) continue;   // stay on the flat core (disc)
                 if (cx == 0f && cz >= 0f) continue;                // open plaza + spawn corridor
-                float w = 2.8f + rc.nextFloat() * 1.3f;
-                float d = 2.8f + rc.nextFloat() * 1.3f;
-                boolean tower = cx * cx + cz * cz > 170f;          // outer ring -> high-rise
-                float h = tower ? 5.5f + rc.nextFloat() * 2.5f : 3.0f + rc.nextFloat() * 1.6f;
+                float w = 2.8f + rc.nextFloat() * 1.4f;
+                float d = 2.8f + rc.nextFloat() * 1.4f;
+                boolean tower = cx * cx + cz * cz > 27f * 27f;     // outer ring -> taller houses
+                float h = tower ? 4.6f + rc.nextFloat() * 2.6f : 3.0f + rc.nextFloat() * 1.6f;
                 int doorSide = (Math.abs(cx) >= Math.abs(cz)) ? (cx < 0 ? 2 : 3) : (cz < 0 ? 0 : 1);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
+                houses.add(new float[]{cx, cz, w, d, h, doorSide});
             }
         }
     }
@@ -2688,15 +2706,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
         doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
                 0.46f, 0.30f, 0.17f});
-        if (roofStyle == 1) {                              // parapet wall around the roof edge
-            float py = h + 0.30f + 0.25f, ph = 0.5f;
-            L.add(new float[]{cx, py, cz + d * 0.5f, w, ph, t, r * 0.85f, g * 0.85f, b * 0.9f});
-            L.add(new float[]{cx, py, cz - d * 0.5f, w, ph, t, r * 0.85f, g * 0.85f, b * 0.9f});
-            L.add(new float[]{cx + w * 0.5f, py, cz, t, ph, d, r * 0.85f, g * 0.85f, b * 0.9f});
-            L.add(new float[]{cx - w * 0.5f, py, cz, t, ph, d, r * 0.85f, g * 0.85f, b * 0.9f});
-        } else if (roofStyle == 2) {                       // rooftop HVAC block + antenna
-            L.add(new float[]{cx + w * 0.16f, h + 0.65f, cz, w * 0.42f, 0.7f, d * 0.42f, r * 0.8f, g * 0.8f, b * 0.85f});
-            L.add(new float[]{cx - w * 0.26f, h + 0.95f, cz - d * 0.2f, 0.08f, 1.3f, 0.08f, 0.30f, 0.30f, 0.34f});
+        if (roofStyle != 0) {                              // brick chimney poking above the gable roof
+            L.add(new float[]{cx + w * 0.28f, h + 1.05f, cz - d * 0.28f, 0.34f, 1.5f, 0.34f, 0.55f, 0.30f, 0.22f});
         }
     }
 
@@ -2718,6 +2729,142 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             L.add(new float[]{cx, h * 0.5f, cz + (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b});
             L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, sx, h - doorH, doorW, r, g, b}); // lintel
         }
+    }
+
+    // --- gable roofs + windows (better-modelled houses) ---
+
+    /** Baked pitched gable roof over every house (one draw call). */
+    private float[] makeRoofMesh() {
+        float[] d = new float[houseRects.size() * 6 * 3 * 8 + 64];
+        int o = 0;
+        for (float[] hh : houseRects) o = roofPrism(d, o, hh[0], hh[1], hh[2], hh[3], hh[4]);
+        roofVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    /** A closed gable roof: two sloped slabs + two triangular gable ends, ridge along the longer axis. */
+    private static int roofPrism(float[] d, int o, float cx, float cz, float w, float dd, float h) {
+        float ov = 0.32f, baseY = h + 0.30f;
+        float rh = clamp(0.5f * Math.min(w, dd), 0.8f, 1.7f);
+        float ridgeY = baseY + rh;
+        if (w >= dd) {                                   // ridge along X
+            float hw = w * 0.5f + ov, hd = dd * 0.5f + ov;
+            float[] R1 = {cx - hw, ridgeY, cz},     R2 = {cx + hw, ridgeY, cz};
+            float[] E1 = {cx - hw, baseY, cz + hd}, E2 = {cx + hw, baseY, cz + hd};
+            float[] F1 = {cx - hw, baseY, cz - hd}, F2 = {cx + hw, baseY, cz - hd};
+            float inv = 1f / (float) Math.sqrt(hd * hd + rh * rh);
+            o = tri(d, o, R1, E1, E2, 0f, hd * inv, rh * inv);
+            o = tri(d, o, R1, E2, R2, 0f, hd * inv, rh * inv);
+            o = tri(d, o, R1, R2, F2, 0f, hd * inv, -rh * inv);
+            o = tri(d, o, R1, F2, F1, 0f, hd * inv, -rh * inv);
+            o = tri(d, o, R2, E2, F2, 1f, 0f, 0f);
+            o = tri(d, o, R1, F1, E1, -1f, 0f, 0f);
+        } else {                                         // ridge along Z
+            float hw = w * 0.5f + ov, hd = dd * 0.5f + ov;
+            float[] R1 = {cx, ridgeY, cz - hd},     R2 = {cx, ridgeY, cz + hd};
+            float[] E1 = {cx + hw, baseY, cz - hd}, E2 = {cx + hw, baseY, cz + hd};
+            float[] F1 = {cx - hw, baseY, cz - hd}, F2 = {cx - hw, baseY, cz + hd};
+            float inv = 1f / (float) Math.sqrt(hw * hw + rh * rh);
+            o = tri(d, o, R1, E1, E2, hw * inv, rh * inv, 0f);
+            o = tri(d, o, R1, E2, R2, hw * inv, rh * inv, 0f);
+            o = tri(d, o, R1, R2, F2, -hw * inv, rh * inv, 0f);
+            o = tri(d, o, R1, F2, F1, -hw * inv, rh * inv, 0f);
+            o = tri(d, o, R2, E2, F2, 0f, 0f, 1f);
+            o = tri(d, o, R1, F1, E1, 0f, 0f, -1f);
+        }
+        return o;
+    }
+
+    private static int tri(float[] d, int o, float[] a, float[] b, float[] c, float nx, float ny, float nz) {
+        o = put(d, o, a[0], a[1], a[2], nx, ny, nz, a[0] * 0.35f, a[2] * 0.35f);
+        o = put(d, o, b[0], b[1], b[2], nx, ny, nz, b[0] * 0.35f, b[2] * 0.35f);
+        o = put(d, o, c[0], c[1], c[2], nx, ny, nz, c[0] * 0.35f, c[2] * 0.35f);
+        return o;
+    }
+
+    /** Baked window quads on every wall (one draw call), skipping the central ground-floor doorway. */
+    private float[] makeWindowMesh() {
+        float[] d = new float[600000];
+        int o = 0;
+        for (float[] hh : houseRects) {
+            float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
+            int ds = (int) hh[5];
+            o = wallWindows(d, o, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0);
+            o = wallWindows(d, o, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1);
+            o = wallWindows(d, o, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2);
+            o = wallWindows(d, o, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3);
+        }
+        windowVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    private static int wallWindows(float[] d, int o, float a, float b, float span, float h, int axis, int sign, boolean doorWall) {
+        float winW = 0.62f, winH = 0.82f, proud = 0.04f;
+        int cols = Math.max(1, (int) ((span - 0.6f) / 1.25f));
+        int rows = Math.max(1, (int) ((h - 0.7f) / 1.35f));
+        float colGap = span / cols;
+        for (int ci = 0; ci < cols; ci++) {
+            float t = -span * 0.5f + colGap * (ci + 0.5f);          // offset along the wall
+            for (int ri = 0; ri < rows; ri++) {
+                float wy = 1.15f + ri * 1.35f;
+                if (wy + winH * 0.5f > h - 0.25f) continue;          // not above the eave
+                if (doorWall && Math.abs(t) < 1.15f && wy < 2.45f) continue;   // clear of the doorway
+                if (axis == 0) {
+                    float zf = b + sign * proud, x0 = a + t - winW * 0.5f, x1 = a + t + winW * 0.5f;
+                    float y0 = wy - winH * 0.5f, y1 = wy + winH * 0.5f;
+                    o = put(d, o, x0, y0, zf, 0, 0, sign, 0, 1); o = put(d, o, x1, y0, zf, 0, 0, sign, 1, 1);
+                    o = put(d, o, x1, y1, zf, 0, 0, sign, 1, 0); o = put(d, o, x0, y0, zf, 0, 0, sign, 0, 1);
+                    o = put(d, o, x1, y1, zf, 0, 0, sign, 1, 0); o = put(d, o, x0, y1, zf, 0, 0, sign, 0, 0);
+                } else {
+                    float xf = a + sign * proud, z0 = b + t - winW * 0.5f, z1 = b + t + winW * 0.5f;
+                    float y0 = wy - winH * 0.5f, y1 = wy + winH * 0.5f;
+                    o = put(d, o, xf, y0, z0, sign, 0, 0, 0, 1); o = put(d, o, xf, y0, z1, sign, 0, 0, 1, 1);
+                    o = put(d, o, xf, y1, z1, sign, 0, 0, 1, 0); o = put(d, o, xf, y0, z0, sign, 0, 0, 0, 1);
+                    o = put(d, o, xf, y1, z1, sign, 0, 0, 1, 0); o = put(d, o, xf, y1, z0, sign, 0, 0, 0, 0);
+                }
+            }
+        }
+        return o;
+    }
+
+    private static Bitmap makeRoofBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFB14E2A);                                    // terracotta base
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(77);
+        for (int k = 0; k < 1500; k++) {                            // tile grain
+            int v = rnd.nextInt(48);
+            p.setColor((0x33 << 24) | ((0x90 + v) << 16) | ((0x3C + v / 2) << 8) | (0x20 + v / 3));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 2, y + 2, p);
+        }
+        p.setColor(0x66351505);                                     // horizontal tile rows
+        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y, N, y + 2.5f, p); }
+        p.setColor(0x33000000);                                     // staggered vertical seams
+        for (int row = 0; row < 12; row++) {
+            float y = row * N / 12f, off = (row % 2) * (N / 16f);
+            for (int col = 0; col <= 8; col++) { float x = col * N / 8f + off; c.drawRect(x, y, x + 1.5f, y + N / 12f, p); }
+        }
+        return b;
+    }
+
+    private static Bitmap makeWindowBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFC2C6CE);                                    // light frame
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        float m = N * 0.13f;
+        p.setColor(0xFF22323F);                                     // dark glass
+        c.drawRect(m, m, N - m, N - m, p);
+        p.setColor(0x5572A0C8);                                     // upper diagonal sheen
+        c.drawRect(m, m, N - m, N * 0.44f, p);
+        p.setColor(0xFFC2C6CE);                                     // cross mullion
+        c.drawRect(N * 0.5f - 3f, m, N * 0.5f + 3f, N - m, p);
+        c.drawRect(m, N * 0.5f - 3f, N - m, N * 0.5f + 3f, p);
+        return b;
     }
 
     private static Bitmap makeTerrainBitmap() {
