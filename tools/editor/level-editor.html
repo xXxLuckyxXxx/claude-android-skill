@@ -271,8 +271,10 @@ function fillHouse(o){ if(o.type!=='house')return o;
 const snap=v=>document.getElementById('snap').checked?Math.round(v*2)/2:Math.round(v*1000)/1000;
 
 // ---------- undo ----------
-function strip(k,v){ return k==='__m3'?undefined:v; }   // skip the THREE.js back-ref (circular) when cloning
-function pushUndo(){ undoStack.push(JSON.stringify(objs,strip)); if(undoStack.length>40) undoStack.shift(); }
+// Strip the THREE.js mesh back-ref BEFORE stringify — a replacer is too late (JSON calls the
+// object's toJSON first, and THREE.Object3D.toJSON walks the whole scene graph -> stack overflow).
+function noMesh(o){ const c={}; for(const k in o) if(k!=='__m3') c[k]=o[k]; return c; }
+function pushUndo(){ undoStack.push(JSON.stringify(objs.map(noMesh))); if(undoStack.length>40) undoStack.shift(); }
 function undo(){ if(!undoStack.length) return; objs=JSON.parse(undoStack.pop()); sel=null; refresh(); }
 
 // ---------- view-agnostic refresh ----------
@@ -561,7 +563,7 @@ pRoadW.oninput=()=>{ if(sel&&sel.type==='road'){ sel.width=parseFloat(pRoadW.val
 document.getElementById('roadDel').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.querySelectorAll('.door4 button').forEach(b=>b.onclick=()=>{ if(sel){ pushUndo(); sel.door=+b.dataset.door; live(); } });
 document.getElementById('delBtn').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
-document.getElementById('dupBtn').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(sel,strip)); o.x+=2; o.z+=2; objs.push(o); if(mode==='3d'&&three) updateObj3D(o); select(o);} };
+document.getElementById('dupBtn').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(noMesh(sel))); o.x+=2; o.z+=2; objs.push(o); if(mode==='3d'&&three) updateObj3D(o); select(o);} };
 const sw=document.getElementById('sw');
 PALETTE.forEach((c,i)=>{ const d=document.createElement('div'); d.style.background=rgb(c); d.title='Palette '+(i+1); d.onclick=()=>{ if(sel){ pushUndo(); sel.c=c.slice(); live(); } }; sw.appendChild(d); });
 

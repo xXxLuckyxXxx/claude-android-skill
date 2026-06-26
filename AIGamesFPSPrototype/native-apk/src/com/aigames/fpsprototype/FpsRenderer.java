@@ -105,7 +105,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                              "ADRENALINE", "MOVE SPEED", "DOUBLE JUMP", "GREED"};
 
     // Enemies / survival.
-    private static final int MAX_ENEMIES = 10;         // more of the horde on the field at once
+    private static final int MAX_ENEMIES = 12;         // more of the horde on the field at once
+    private static final float LEASH_DIST = 46f;       // a zombie further than this (and out of view) is pulled back near you
+    private final float[] spawnTmp = new float[2];
     private static final float ENEMY_SPEED = 1.85f;    // base m/s
     private static final float ENEMY_FULL_HP = 100f;
     private static final float SPAWN_DIST = 38f;        // spawn a touch closer so they reach you sooner
@@ -519,12 +521,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         float speed = ENEMY_SPEED * Math.min(2.2f, 1f + 0.03f * (wave - 1));   // faster every wave
         float dmgMul = Math.min(1.8f, 1f + 0.025f * (wave - 1));                // and they hit harder
+        float sinYaw = (float) Math.sin(yaw), cosYaw = (float) Math.cos(yaw);
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enHurt[i] > 0f) enHurt[i] -= dt;
             if (!enAlive[i]) continue;
             float dx = px - enX[i], dz = pz - enZ[i];
             float d = (float) Math.sqrt(dx * dx + dz * dz);
             enFace[i] = (float) Math.atan2(dx, dz);
+            // Leash: a non-boss zombie that has drifted far AND is out of your forward view gets quietly
+            // teleported to just around a corner near you — keeps the action coming, you never see it move.
+            if (enBoss[i] == 0 && d > LEASH_DIST) {
+                float facing = -dx * sinYaw + dz * cosYaw;     // forward · (enemy - player); high = dead ahead
+                if (facing < d * 0.74f && spawnPointNear(spawnTmp)) { enX[i] = spawnTmp[0]; enZ[i] = spawnTmp[1]; continue; }
+            }
             if (d < REACH_DIST * enScale[i]) {
                 enAlive[i] = false;
                 playerHP -= ENEMY_DMG * dmgMul * (enBoss[i] > 0 ? 2.5f : 1f);
@@ -564,7 +573,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Start wave w: size grows over time; every 5th is a mini-boss, every 10th a boss. */
     private void beginWave(int w) {
         wave = w;
-        int size = Math.max(3, Math.round(4 + (w - 1) * 1.6f));
+        int size = Math.max(4, Math.round(5 + (w - 1) * 1.8f));
         waveToSpawn = size;
         waveRemaining = size;
         bossPending = (w % 10 == 0) ? 2 : (w % 5 == 0 ? 1 : 0);
@@ -582,15 +591,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         waveBanner = 2.4f;
         sfx.swap();
         wave++;
-        waveBreak = 3.0f;
+        waveBreak = 1.8f;
+    }
+
+    /** A point ~13-24 m from the player, biased to the REAR arc (out of the forward view) and on
+     *  valid ground (inside the arena, not inside a building) — zombies appear "around the corner". */
+    private boolean spawnPointNear(float[] out) {
+        for (int tries = 0; tries < 28; tries++) {
+            float rel = (float) Math.toRadians(95 + rng.nextFloat() * 170);   // 95..265° off the facing = behind/side
+            float ang = yaw + rel;
+            float dist = 13f + rng.nextFloat() * 11f;
+            float x = px + (float) Math.sin(ang) * dist;
+            float z = pz - (float) Math.cos(ang) * dist;
+            if (x * x + z * z > 34f * 34f) continue;                          // stay on the flat core
+            if (Math.abs(x) > ARENA_LIMIT || Math.abs(z) > ARENA_LIMIT) continue;
+            if (inBuildingXZ(x, z, 0.7f)) continue;                           // not inside a building
+            out[0] = x; out[1] = z; return true;
+        }
+        return false;
     }
 
     private void spawnEnemy() {
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (!enAlive[i]) {
-                float a = rng.nextFloat() * 6.2832f;
-                enX[i] = (float) Math.cos(a) * SPAWN_DIST;
-                enZ[i] = (float) Math.sin(a) * SPAWN_DIST;
+                if (spawnPointNear(spawnTmp)) { enX[i] = spawnTmp[0]; enZ[i] = spawnTmp[1]; }
+                else { float a = rng.nextFloat() * 6.2832f;          // fallback: ring around the PLAYER, not the map
+                       enX[i] = px + (float) Math.cos(a) * 20f; enZ[i] = pz + (float) Math.sin(a) * 20f; }
                 enFace[i] = 0f;
                 enPhase[i] = rng.nextFloat() * 6.2832f;
                 enHurt[i] = 0f;
