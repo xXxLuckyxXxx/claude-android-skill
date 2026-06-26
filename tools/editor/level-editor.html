@@ -91,6 +91,12 @@
       <div class="row hOnly"><label>Dach</label>
         <select id="pRoof"><option value="0">flach</option><option value="1">Mauer</option><option value="2">Aufbau</option></select>
       </div>
+      <div class="row hOnly"><label>Dachfarbe</label><input type="color" id="pRoofCol" style="width:78px;padding:2px"></div>
+      <div class="row hOnly"><label>Dachneigung</label><input type="range" id="pPitch" min="0" max="4" step="0.1" style="flex:1"><label style="width:auto;color:var(--mut)"><input type="checkbox" id="pPitchAuto"> auto</label></div>
+      <div class="row hOnly"><label>Überstand</label><input type="range" id="pOver" min="0" max="1" step="0.05" style="flex:1"><label style="width:auto;color:var(--mut)"><input type="checkbox" id="pOverAuto"> auto</label></div>
+      <div class="row hOnly"><label>Fenster</label><select id="pWin"><option value="0">keine</option><option value="1">wenig</option><option value="2">normal</option><option value="3">viele</option></select></div>
+      <div class="row hOnly"><label>Fenstergröße</label><input type="range" id="pWinSize" min="0.5" max="1.6" step="0.05" style="flex:1"></div>
+      <div class="row hOnly"><label>Schornstein</label><select id="pChim"><option value="-1">auto</option><option value="1">an</option><option value="0">aus</option></select></div>
       <div class="row hOnly"><label>Tür</label>
         <div class="door4">
           <span class="c"></span><button data-door="1">N</button><span class="c"></span>
@@ -184,7 +190,12 @@ function parse(text){
   for(const raw of text.split(/\r?\n/)){
     const s=raw.trim(); if(!s||s[0]==='#') continue;
     const t=s.split(/\s+/), n=t.slice(1).map(Number);
-    if(t[0]==='H'&&n.length>=10) out.push({type:'house',x:n[0],z:n[1],w:n[2],d:n[3],h:n[4],roof:n[5]|0,door:n[6]|0,c:[n[7],n[8],n[9]]});
+    if(t[0]==='H'&&n.length>=10){
+      const rc = (n.length>12 && n[10]>=0) ? [n[10],n[11],n[12]] : [0.69,0.31,0.16];
+      out.push(fillHouse({type:'house',x:n[0],z:n[1],w:n[2],d:n[3],h:n[4],roof:n[5]|0,door:n[6]|0,c:[n[7],n[8],n[9]],
+        roofC:rc, pitch:(n.length>13?n[13]:-1), overhang:(n.length>14?n[14]:-1),
+        win:(n.length>15?n[15]|0:2), winSize:(n.length>16?n[16]:1), chim:(n.length>17?n[17]|0:-1)}));
+    }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]]});
   }
   return out;
@@ -193,14 +204,20 @@ function serialize(){
   let s='# AIGames level v1 - edited in level-editor.html\n# H x z w d h roof door r g b   |   B cx cz w h d r g b\n';
   const f=v=>(Math.round(v*1000)/1000).toString();
   for(const o of objs) if(o.type==='box') s+=`B ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.h)} ${f(o.d)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
-  for(const o of objs) if(o.type==='house') s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
+  for(const o of objs) if(o.type==='house'){ const rc=o.roofC||[0.69,0.31,0.16];
+    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0}\n`; }
   return s;
 }
 function newObj(kind,wx,wz){
-  if(kind==='house') return {type:'house',x:wx,z:wz,w:4.2,d:4.0,h:3.0,roof:1,door:0,c:PALETTE[(Math.random()*PALETTE.length)|0].slice()};
+  if(kind==='house') return {type:'house',x:wx,z:wz,w:4.2,d:4.0,h:3.0,roof:1,door:0,c:PALETTE[(Math.random()*PALETTE.length)|0].slice(),
+    roofC:[0.69,0.31,0.16], pitch:-1, overhang:-1, win:2, winSize:1, chim:-1};
   if(kind==='crate') return {type:'box',x:wx,z:wz,w:1.5,h:1.5,d:1.5,roof:0,door:0,c:CRATE.slice()};
   return {type:'box',x:wx,z:wz,w:1.2,h:3.0,d:1.2,roof:0,door:0,c:PILLAR.slice()};   // pillar
 }
+function fillHouse(o){ if(o.type!=='house')return o;
+  if(!o.roofC) o.roofC=[0.69,0.31,0.16];
+  if(o.pitch==null)o.pitch=-1; if(o.overhang==null)o.overhang=-1;
+  if(o.win==null)o.win=2; if(o.winSize==null)o.winSize=1; if(o.chim==null)o.chim=-1; return o; }
 const snap=v=>document.getElementById('snap').checked?Math.round(v*2)/2:Math.round(v*1000)/1000;
 
 // ---------- undo ----------
@@ -274,6 +291,18 @@ function init3D(){
   // spawn marker
   const sp=new THREE.Mesh(new THREE.CircleGeometry(1.4,24), new THREE.MeshBasicMaterial({color:0x37d67a}));
   sp.rotation.x=-Math.PI/2; sp.position.set(0,0.02,9); scene.add(sp);
+  // decorative roads (the game draws the real streets) + forest ring (context only)
+  const roadM=new THREE.MeshLambertMaterial({color:0x9c968a});
+  for(const r of [-28,-20,-12,-4,4,12,20,28]){
+    const hz=new THREE.Mesh(new THREE.PlaneGeometry(DISC*2,1.5),roadM); hz.rotation.x=-Math.PI/2; hz.position.set(0,0.01,r); hz.userData.skip=true; scene.add(hz);
+    const vt=new THREE.Mesh(new THREE.PlaneGeometry(1.5,DISC*2),roadM); vt.rotation.x=-Math.PI/2; vt.position.set(r,0.01,0); vt.userData.skip=true; scene.add(vt);
+  }
+  const trunkG=new THREE.CylinderGeometry(0.25,0.32,1.4,5), leafG=new THREE.ConeGeometry(1.5,3.2,7);
+  const trunkM=new THREE.MeshLambertMaterial({color:0x6b4a2b}), leafM=new THREE.MeshLambertMaterial({color:0x3f6b35});
+  for(let i=0;i<46;i++){ const a=i/46*6.2832, rr=EDGE+5+((i*7)%5), tx=Math.cos(a)*rr, tz=Math.sin(a)*rr;
+    const tr=new THREE.Mesh(trunkG,trunkM); tr.position.set(tx,0.7,tz); tr.userData.skip=true; scene.add(tr);
+    const lf=new THREE.Mesh(leafG,leafM); lf.position.set(tx,2.5,tz); lf.userData.skip=true; scene.add(lf);
+  }
   const group=new THREE.Group(); scene.add(group);
   three={renderer,scene,camera,group,ray:new THREE.Raycaster(),ground:new THREE.Plane(new THREE.Vector3(0,1,0),0),
          cam:{r:90,theta:Math.PI*0.5,phi:0.82,tx:0,tz:0}, hl:null, raf:0};
@@ -283,12 +312,39 @@ function col(c){ return new THREE.Color(c[0],c[1],c[2]); }
 function disposeObj(o){ o.traverse(n=>{ if(n.geometry)n.geometry.dispose(); if(n.material)n.material.dispose(); }); }
 function clearGroup(g){ while(g.children.length){ const c=g.children.pop(); disposeObj(c); } }
 function gableRoof(o){
-  const ridgeX=o.w>=o.d, span=ridgeX?o.d:o.w, len=ridgeX?o.w:o.d, peak=Math.min(1.7,span*0.42);
-  const shape=new THREE.Shape(); shape.moveTo(-span/2-0.15,0); shape.lineTo(span/2+0.15,0); shape.lineTo(0,peak); shape.closePath();
-  const geo=new THREE.ExtrudeGeometry(shape,{depth:len+0.3,bevelEnabled:false}); geo.translate(0,0,-(len+0.3)/2);
-  const m=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({color:0xb14e2a})); m.position.y=o.h;
+  const ridgeX=o.w>=o.d, span=ridgeX?o.d:o.w, len=ridgeX?o.w:o.d;
+  const ov = o.overhang>=0?o.overhang:0.32;
+  const peak = o.pitch>=0?Math.max(0.05,o.pitch):clamp(0.5*Math.min(o.w,o.d),0.8,1.7);
+  const shape=new THREE.Shape(); shape.moveTo(-span/2-ov,0); shape.lineTo(span/2+ov,0); shape.lineTo(0,peak); shape.closePath();
+  const geo=new THREE.ExtrudeGeometry(shape,{depth:len+2*ov,bevelEnabled:false}); geo.translate(0,0,-(len+2*ov)/2);
+  const m=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({color:col(o.roofC||[0.69,0.31,0.16])})); m.position.y=o.h+0.3;
   if(ridgeX) m.rotation.y=Math.PI/2;
   return m;
+}
+function houseWindows3D(o,g){
+  if(o.win===0) return;
+  const wsc=clamp(o.winSize||1,0.5,1.6), winW=0.85*wsc, winH=1.05*wsc;
+  let colDiv,rowStep; if(o.win===1){colDiv=2.4;rowStep=1.6;} else if(o.win>=3){colDiv=1.25;rowStep=1.3;} else {colDiv=1.7;rowStep=1.5;}
+  const mat=new THREE.MeshLambertMaterial({color:0xbfe0f5,side:THREE.DoubleSide});
+  const walls=[{ax:0,s:1,span:o.w},{ax:0,s:-1,span:o.w},{ax:1,s:1,span:o.d},{ax:1,s:-1,span:o.d}];  // +z -z +x -x = door 0..3
+  for(let wi=0;wi<4;wi++){ const W=walls[wi], doorWall=(o.door===wi);
+    const cols=Math.max(1,Math.floor((W.span-0.6)/colDiv)), colGap=W.span/cols;
+    for(let ci=0;ci<cols;ci++){ const t=-W.span/2+colGap*(ci+0.5);
+      for(let ri=0;ri<6;ri++){ const wy=1.15+ri*rowStep; if(wy+winH/2>o.h-0.25) continue;
+        if(doorWall&&Math.abs(t)<1.5*Math.max(1,wsc)&&wy<3.0) continue;
+        const pane=new THREE.Mesh(new THREE.PlaneGeometry(winW,winH),mat);
+        if(W.ax===0) pane.position.set(t,wy,W.s*(o.d/2+0.03));
+        else { pane.position.set(W.s*(o.w/2+0.03),wy,t); pane.rotation.y=Math.PI/2; }
+        pane.userData.skip=true; g.add(pane);
+      }
+    }
+  }
+}
+function chimney3D(o,g){
+  const on = o.chim===1 || (o.chim===-1 && o.roof!==0);
+  if(!on) return;
+  const m=new THREE.Mesh(new THREE.BoxGeometry(0.34,1.5,0.34),new THREE.MeshLambertMaterial({color:0x8c4d38}));
+  m.position.set(o.w*0.28,o.h+1.05,-o.d*0.28); m.userData.skip=true; g.add(m);
 }
 function mesh3D(o){
   if(o.type==='house'){
@@ -302,6 +358,7 @@ function mesh3D(o){
     else if(o.door===2){ dm.position.set(o.w/2,dy,0); }
     else { dm.position.set(-o.w/2,dy,0); }
     g.add(dm);
+    houseWindows3D(o,g); chimney3D(o,g);
     return g;
   }
   const m=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); m.position.set(o.x,o.h/2,o.z); return m;
@@ -368,6 +425,11 @@ function refreshPanel(){
   document.querySelectorAll('.hOnly').forEach(e=>e.style.display=isH?'flex':'none');
   document.getElementById('pType').textContent=isH?'Haus':'Prop (Kiste/Säule)';
   pX.value=sel.x; pZ.value=sel.z; pW.value=sel.w; pD.value=sel.d; pH.value=sel.h; pRoof.value=sel.roof; pCol.value=hex(sel.c);
+  if(isH){ fillHouse(sel);
+    pRoofCol.value=hex(sel.roofC); pWin.value=sel.win; pWinSize.value=sel.winSize; pChim.value=sel.chim;
+    pPitchAuto.checked=sel.pitch<0; pPitch.value=sel.pitch<0?1.2:sel.pitch; pPitch.disabled=pPitchAuto.checked;
+    pOverAuto.checked=sel.overhang<0; pOver.value=sel.overhang<0?0.32:sel.overhang; pOver.disabled=pOverAuto.checked;
+  }
   document.querySelectorAll('#sw div').forEach((d,i)=>d.classList.toggle('on',i<PALETTE.length&&hex(PALETTE[i])===hex(sel.c)));
   document.querySelectorAll('.door4 button').forEach(b=>b.style.outline=(+b.dataset.door===sel.door)?'2px solid #39d4ff':'none');
   const r=Math.hypot(sel.x,sel.z); let w='';
@@ -386,6 +448,18 @@ const bind=(id,key)=>{ const el=document.getElementById(id);
 pRoof.onchange=()=>{ if(sel){ pushUndo(); sel.roof=+pRoof.value; refresh(); } };
 pCol.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pCol.oninput=()=>{ if(sel){ sel.c=hex2c(pCol.value); refresh(); } };
+pRoofCol.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pRoofCol.oninput=()=>{ if(sel){ sel.roofC=hex2c(pRoofCol.value); refresh(); } };
+pPitch.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pPitch.oninput=()=>{ if(sel&&!pPitchAuto.checked){ sel.pitch=parseFloat(pPitch.value); refresh(); } };
+pPitchAuto.onchange=()=>{ if(sel){ pushUndo(); sel.pitch=pPitchAuto.checked?-1:parseFloat(pPitch.value); refreshPanel(); refresh(); } };
+pOver.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pOver.oninput=()=>{ if(sel&&!pOverAuto.checked){ sel.overhang=parseFloat(pOver.value); refresh(); } };
+pOverAuto.onchange=()=>{ if(sel){ pushUndo(); sel.overhang=pOverAuto.checked?-1:parseFloat(pOver.value); refreshPanel(); refresh(); } };
+pWin.onchange=()=>{ if(sel){ pushUndo(); sel.win=+pWin.value; refresh(); } };
+pWinSize.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pWinSize.oninput=()=>{ if(sel){ sel.winSize=parseFloat(pWinSize.value); refresh(); } };
+pChim.onchange=()=>{ if(sel){ pushUndo(); sel.chim=+pChim.value; refresh(); } };
 document.querySelectorAll('.door4 button').forEach(b=>b.onclick=()=>{ if(sel){ pushUndo(); sel.door=+b.dataset.door; refresh(); } });
 document.getElementById('delBtn').onclick=()=>{ if(sel){ pushUndo(); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.getElementById('dupBtn').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(sel,strip)); o.x+=2; o.z+=2; objs.push(o); select(o);} };

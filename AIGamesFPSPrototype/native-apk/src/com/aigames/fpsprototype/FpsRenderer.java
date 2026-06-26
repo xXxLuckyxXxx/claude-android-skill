@@ -138,7 +138,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
-    private java.util.List<float[]> houseRects;   // {cx,cz,w,d,h,doorSide} per house, for the roof / window meshes
+    // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize} per house, for the roof / window meshes
+    private java.util.List<float[]> houseRects;
+    private float[][] roofGroups;                  // per-house roof colour groups: {firstVert, vertCount, r,g,b}
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -459,8 +461,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         Matrix.setIdentityM(model, 0);                         // pitched roofs + windows (baked, world-space)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);
-        drawWorld(roofMesh, roofVerts, 0f, 1f, 1f, 1f);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);    // neutral-grey shingle; per-house colour via uColor
+        if (roofGroups != null) {
+            for (float[] gp : roofGroups) drawWorldRange(roofMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+        } else {
+            drawWorld(roofMesh, roofVerts, 0f, 0.69f, 0.31f, 0.16f);
+        }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
         drawWorld(windowMesh, windowVerts, 0f, 1f, 1f, 1f);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stone window sills
@@ -793,6 +799,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
         submit(buf, count, mvp, model, mode, r, g, b);
+    }
+
+    /** Like drawWorld but draws only [first, first+count) vertices — lets one baked mesh hold many colours. */
+    private void drawWorldRange(FloatBuffer buf, int first, int count, float mode, float r, float g, float b) {
+        Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
+        Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+        GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0);
+        GLES20.glUniformMatrix4fv(uModel, 1, false, model, 0);
+        GLES20.glUniform1f(uMode, mode);
+        GLES20.glUniform3f(uColor, r, g, b);
+        buf.position(0); GLES20.glEnableVertexAttribArray(aPos);    GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, STRIDE, buf);
+        buf.position(3); GLES20.glEnableVertexAttribArray(aNormal); GLES20.glVertexAttribPointer(aNormal, 3, GLES20.GL_FLOAT, false, STRIDE, buf);
+        buf.position(6); GLES20.glEnableVertexAttribArray(aUV);     GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, STRIDE, buf);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, first, count);
     }
 
     private void submit(FloatBuffer buf, int count, float[] mvpM, float[] modelM,
@@ -2722,9 +2742,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (line.length() == 0 || line.charAt(0) == '#') continue;
                 String[] t = line.split("\\s+");
                 if (t[0].equals("H") && t.length >= 11) {
-                    // x z w d h roof door r g b
+                    // base: x z w d h roof door r g b  | optional v2: rr rg rb pitch overhang windows winSize chimney
                     hs.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pf(t[5]),
-                                       pf(t[6]), pf(t[7]), pf(t[8]), pf(t[9]), pf(t[10])});
+                                       pf(t[6]), pf(t[7]), pf(t[8]), pf(t[9]), pf(t[10]),
+                                       pfDef(t,11,-1f), pfDef(t,12,-1f), pfDef(t,13,-1f),   // roof colour
+                                       pfDef(t,14,-1f), pfDef(t,15,-1f),                    // pitch, overhang
+                                       pfDef(t,16,2f),  pfDef(t,17,1f),                     // windows density, window size
+                                       pfDef(t,18,-1f)});                                   // chimney (-1 = auto)
                 } else if (t[0].equals("B") && t.length >= 9) {
                     // cx cz w h d r g b  -> ground box centred at y = h/2
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
@@ -2735,9 +2759,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {
-                int roof = (int) hh[5], door = (int) hh[6];
-                addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9]);
-                houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door});
+                int roof = (int) hh[5], door = (int) hh[6], chim = (int) hh[17];
+                float rr = hh[10], rg = hh[11], rb = hh[12];
+                if (rr < 0f) { rr = 0.69f; rg = 0.31f; rb = 0.16f; }     // default terracotta roof
+                addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim);
+                houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16]});
             }
             return true;
         } catch (Exception e) {
@@ -2748,6 +2774,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static float pf(String s) { try { return Float.parseFloat(s); } catch (Exception e) { return 0f; } }
+    private static float pfDef(String[] t, int i, float def) { return i < t.length ? pf(t[i]) : def; }
 
     private static void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two pillars
@@ -2773,7 +2800,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 int doorSide = rc.nextInt(4);                      // doors face varied directions
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
-                houses.add(new float[]{cx, cz, w, d, h, doorSide});
+                houses.add(new float[]{cx, cz, w, d, h, doorSide, 0.69f, 0.31f, 0.16f, -1f, -1f, 2f, 1f});
             }
         }
     }
@@ -2782,6 +2809,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  roof style: 0 = flat, 1 = parapet wall, 2 = rooftop unit + antenna. Records an openable door. */
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b) {
+        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, -1);   // -1 chimney = auto (roofStyle!=0)
+    }
+
+    private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
+                                    int doorSide, int roofStyle, float r, float g, float b, int chimney) {
         float t = 0.3f, doorW = 1.9f, doorH = 2.3f;
         addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b);   // +z
         addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b);   // -z
@@ -2795,7 +2827,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
         doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
                 0.46f, 0.30f, 0.17f});
-        if (roofStyle != 0) {                              // brick chimney poking above the gable roof
+        boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
+        if (chim) {                                        // brick chimney poking above the gable roof
             L.add(new float[]{cx + w * 0.28f, h + 1.05f, cz - d * 0.28f, 0.34f, 1.5f, 0.34f, 0.55f, 0.30f, 0.22f});
         }
     }
@@ -2825,16 +2858,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Baked pitched gable roof over every house (one draw call). */
     private float[] makeRoofMesh() {
         float[] d = new float[houseRects.size() * 6 * 3 * 8 + 64];
-        int o = 0;
-        for (float[] hh : houseRects) o = roofPrism(d, o, hh[0], hh[1], hh[2], hh[3], hh[4]);
+        int o = 0, gi = 0;
+        roofGroups = new float[houseRects.size()][];
+        for (float[] hh : houseRects) {
+            int start = o / 8;
+            o = roofPrism(d, o, hh[0], hh[1], hh[2], hh[3], hh[4], hh[9], hh[10]);     // cx cz w d h pitch overhang
+            roofGroups[gi++] = new float[]{start, o / 8 - start, hh[6], hh[7], hh[8]}; // firstVert, count, roof rgb
+        }
         roofVerts = o / 8;
         return java.util.Arrays.copyOf(d, o);
     }
 
     /** A closed gable roof: two sloped slabs + two triangular gable ends, ridge along the longer axis. */
-    private static int roofPrism(float[] d, int o, float cx, float cz, float w, float dd, float h) {
-        float ov = 0.32f, baseY = h + 0.30f;
-        float rh = clamp(0.5f * Math.min(w, dd), 0.8f, 1.7f);
+    private static int roofPrism(float[] d, int o, float cx, float cz, float w, float dd, float h, float pitch, float overhang) {
+        float ov = overhang < 0f ? 0.32f : overhang, baseY = h + 0.30f;
+        float rh = pitch < 0f ? clamp(0.5f * Math.min(w, dd), 0.8f, 1.7f) : Math.max(0.05f, pitch);
         float ridgeY = baseY + rh;
         if (w >= dd) {                                   // ridge along X
             float hw = w * 0.5f + ov, hd = dd * 0.5f + ov;
@@ -2873,17 +2911,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Baked window panes + sill ledges on every wall (one draw call each); skips the doorway. */
     private float[] makeWindowMesh() {
-        float[] wd = new float[600000];
-        float[] td = new float[800000];
+        float[] wd = new float[1200000];   // headroom for dense windows on a large custom village
+        float[] td = new float[1600000];
         int[] off = {0, 0};
         Random rng = new Random(202);   // irregular per-house omission so no two facades match
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
-            int ds = (int) hh[5];
-            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng);
-            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng);
-            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng);
-            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng);
+            int ds = (int) hh[5], dens = (int) hh[11];
+            float wsc = hh[12];
+            if (dens == 0) continue;                       // "none" -> this house has no windows
+            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc);
+            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc);
+            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc);
+            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc);
         }
         windowVerts = off[0] / 8;
         trimVerts = off[1] / 8;
@@ -2892,21 +2932,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
-    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng) {
+    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc) {
         // walls are 0.3 m thick (±0.15 from centre); push the pane past the outer face so it isn't buried.
-        float winW = 0.85f, winH = 1.05f, proud = 0.18f;
-        // sparser grid than before — a wide 2-storey wall gets ~2x2, a small cottage just 1.
-        int cols = Math.max(1, (int) ((span - 0.6f) / 1.7f));
-        int rows = Math.max(1, (int) ((h - 0.6f) / 1.5f));
+        wsc = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f);
+        float winW = 0.85f * wsc, winH = 1.05f * wsc, proud = 0.18f;
+        // density: 1 sparse, 2 normal (= previous), 3 dense.
+        float colDiv, rowStep, omit;
+        if (dens == 1)      { colDiv = 2.4f;  rowStep = 1.6f; omit = 0.15f; }
+        else if (dens >= 3) { colDiv = 1.25f; rowStep = 1.3f; omit = 0.06f; }
+        else                { colDiv = 1.7f;  rowStep = 1.5f; omit = 0.22f; }
+        int cols = Math.max(1, (int) ((span - 0.6f) / colDiv));
         float colGap = span / cols;
         for (int ci = 0; ci < cols; ci++) {
             float t = -span * 0.5f + colGap * (ci + 0.5f);          // offset along the wall
-            for (int ri = 0; ri < rows; ri++) {
-                float wy = 1.15f + ri * 1.5f;
+            for (int ri = 0; ri < 6; ri++) {
+                float wy = 1.15f + ri * rowStep;
                 if (wy + winH * 0.5f > h - 0.25f) continue;          // not above the eave
-                // doorway is 1.9 m wide x 2.3 m tall; skip wide enough that a 0.85 m pane never clips it.
-                if (doorWall && Math.abs(t) < 1.5f && wy < 3.0f) continue;
-                if (rng.nextFloat() < 0.22f) continue;               // drop ~1 in 5 so the grid looks lived-in, not stamped
+                // doorway is 1.9 m wide x 2.3 m tall; skip wide enough that a pane never clips it.
+                if (doorWall && Math.abs(t) < 1.5f * Math.max(1f, wsc) && wy < 3.0f) continue;
+                if (rng.nextFloat() < omit) continue;                // drop a few so the grid looks lived-in, not stamped
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
                 if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
@@ -2954,16 +2998,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 256;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFB14E2A);                                    // terracotta base
+        c.drawColor(0xFFEDEDED);                                    // near-white grey base -> uColor sets the hue
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(77);
-        for (int k = 0; k < 1500; k++) {                            // tile grain
-            int v = rnd.nextInt(48);
-            p.setColor((0x33 << 24) | ((0x90 + v) << 16) | ((0x3C + v / 2) << 8) | (0x20 + v / 3));
+        for (int k = 0; k < 1500; k++) {                            // neutral tile grain (no hue)
+            int v = rnd.nextInt(40), s = 0xC4 + v;
+            p.setColor((0x33 << 24) | (s << 16) | (s << 8) | s);
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
-        p.setColor(0x66351505);                                     // horizontal tile rows
+        p.setColor(0x55000000);                                     // horizontal tile rows
         for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y, N, y + 2.5f, p); }
         p.setColor(0x33000000);                                     // staggered vertical seams
         for (int row = 0; row < 12; row++) {
