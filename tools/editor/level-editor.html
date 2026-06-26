@@ -107,6 +107,14 @@
           <span class="c"></span><button data-door="0">S</button><span class="c"></span>
         </div>
       </div>
+      <div class="row hOnly"><label>Glasfarbe</label><input type="color" id="pGlass" style="width:78px;padding:2px"></div>
+      <div class="row hOnly"><label>Türfarbe</label><input type="color" id="pDoorCol" style="width:78px;padding:2px"></div>
+      <div class="row hOnly"><label>Türbreite</label><input type="range" id="pDoorW" min="0.8" max="3" step="0.1" style="flex:1"></div>
+      <div class="row hOnly"><label>Türhöhe</label><input type="range" id="pDoorH" min="1.6" max="3.2" step="0.1" style="flex:1"></div>
+      <div class="row hOnly"><label>Sockelhöhe</label><input type="range" id="pFoundH" min="0" max="1.2" step="0.05" style="flex:1"></div>
+      <div class="row hOnly"><label>Sockelfarbe</label><input type="color" id="pFoundCol" style="width:78px;padding:2px"></div>
+      <div class="row hOnly"><label>Zierband</label><input type="color" id="pTrimCol" style="width:78px;padding:2px"><label style="width:auto;color:var(--mut)"><input type="checkbox" id="pTrimOn"> an</label></div>
+      <div class="row hOnly"><label>Stockwerke</label><input type="range" id="pStoreys" min="1" max="6" step="1" style="flex:1"><span id="pStoreysV" style="width:auto;color:var(--mut)"></span></div>
       <div class="row" style="align-items:flex-start"><label>Farbe</label><div class="sw" id="sw"></div></div>
       <div class="row"><label>&nbsp;</label><input type="color" id="pCol" style="width:78px;padding:2px"></div>
       <div class="row bOnly"><label>Drehung</label><input type="range" id="pYaw" min="0" max="360" step="5" style="flex:1"></div>
@@ -245,7 +253,14 @@ function parse(text){
       const rc = (n.length>12 && n[10]>=0) ? [n[10],n[11],n[12]] : [0.69,0.31,0.16];
       out.push(fillHouse({type:'house',x:n[0],z:n[1],w:n[2],d:n[3],h:n[4],roof:n[5]|0,door:n[6]|0,c:[n[7],n[8],n[9]],
         roofC:rc, pitch:(n.length>13?n[13]:-1), overhang:(n.length>14?n[14]:-1),
-        win:(n.length>15?n[15]|0:2), winSize:(n.length>16?n[16]:1), chim:(n.length>17?n[17]|0:-1)}));
+        win:(n.length>15?n[15]|0:2), winSize:(n.length>16?n[16]:1), chim:(n.length>17?n[17]|0:-1),
+        glass:(n.length>20&&n[18]>=0)?[n[18],n[19],n[20]]:[0.60,0.76,0.94],   // v4 per-house detail
+        doorW:(n.length>21?n[21]:1.9), doorH:(n.length>22?n[22]:2.3),
+        doorC:(n.length>25)?[n[23],n[24],n[25]]:[0.46,0.30,0.17],
+        foundH:(n.length>26?n[26]:0.30),
+        foundC:(n.length>29)?[n[27],n[28],n[29]]:[0.42,0.40,0.40],
+        trimOn:(n.length>32&&n[30]>=0), trimC:(n.length>32&&n[30]>=0)?[n[30],n[31],n[32]]:[0.95,0.93,0.86],
+        storeys:(n.length>33?(n[33]|0):1)}));
     }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]],yaw:(n.length>8?n[8]:0)});
     else if(t[0]==='R'&&n.length>=4) out.push({type:'road',x1:n[0],z1:n[1],x2:n[2],z2:n[3],width:(n.length>4?n[4]:3.4)});
@@ -255,7 +270,7 @@ function parse(text){
   return out;
 }
 function serialize(){
-  let s='# AIGames level v2 - edited in level-editor.html\n# SET world look | B props | H houses (x z w d h roof door r g b rr rg rb pitch overhang windows winSize chimney)\n';
+  let s='# AIGames level v4 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys\n';
   const f=v=>(Math.round(v*1000)/1000).toString();
   const sv=sunVec();
   s+=`SET skyHorizon ${f(world.skyH[0])} ${f(world.skyH[1])} ${f(world.skyH[2])}\n`;
@@ -269,13 +284,14 @@ function serialize(){
   for(const o of objs) if(o.type==='box') s+=`B ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.h)} ${f(o.d)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(o.yaw||0)}\n`;
   for(const o of objs) if(o.type==='tree') s+=`T ${f(o.x)} ${f(o.z)} ${f(o.scale)}\n`;
   for(const o of objs) if(o.type==='fence') s+=`F ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
-  for(const o of objs) if(o.type==='house'){ const rc=o.roofC||[0.69,0.31,0.16];
-    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0}\n`; }
+  for(const o of objs) if(o.type==='house'){ fillHouse(o); const rc=o.roofC||[0.69,0.31,0.16];
+    const trim = o.trimOn ? `${f(o.trimC[0])} ${f(o.trimC[1])} ${f(o.trimC[2])}` : '-1 -1 -1';
+    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0}\n`; }
   return s;
 }
 function newObj(kind,wx,wz){
-  if(kind==='house') return {type:'house',x:wx,z:wz,w:4.2,d:4.0,h:3.0,roof:1,door:0,c:PALETTE[(Math.random()*PALETTE.length)|0].slice(),
-    roofC:[0.69,0.31,0.16], pitch:-1, overhang:-1, win:2, winSize:1, chim:-1};
+  if(kind==='house') return fillHouse({type:'house',x:wx,z:wz,w:4.2,d:4.0,h:3.0,roof:1,door:0,c:PALETTE[(Math.random()*PALETTE.length)|0].slice(),
+    roofC:[0.69,0.31,0.16], pitch:-1, overhang:-1, win:2, winSize:1, chim:-1});
   if(kind==='crate') return {type:'box',x:wx,z:wz,w:1.5,h:1.5,d:1.5,roof:0,door:0,c:CRATE.slice(),yaw:0};
   if(kind==='road') return {type:'road',x1:wx,z1:wz,x2:wx,z2:wz,width:3.4};
   if(kind==='tree') return {type:'tree',x:wx,z:wz,scale:1.1};
@@ -287,7 +303,14 @@ function segDist(px,pz,x1,z1,x2,z2){ const dx=x2-x1,dz=z2-z1,l2=dx*dx+dz*dz; if(
 function fillHouse(o){ if(o.type!=='house')return o;
   if(!o.roofC) o.roofC=[0.69,0.31,0.16];
   if(o.pitch==null)o.pitch=-1; if(o.overhang==null)o.overhang=-1;
-  if(o.win==null)o.win=2; if(o.winSize==null)o.winSize=1; if(o.chim==null)o.chim=-1; return o; }
+  if(o.win==null)o.win=2; if(o.winSize==null)o.winSize=1; if(o.chim==null)o.chim=-1;
+  if(!o.glass) o.glass=[0.60,0.76,0.94];                       // window-glass tint
+  if(o.doorW==null)o.doorW=1.9; if(o.doorH==null)o.doorH=2.3;  // door size
+  if(!o.doorC) o.doorC=[0.46,0.30,0.17];                       // door colour
+  if(o.foundH==null)o.foundH=0.30; if(!o.foundC) o.foundC=[0.42,0.40,0.40];  // foundation plinth
+  if(o.trimOn==null)o.trimOn=false; if(!o.trimC) o.trimC=[0.95,0.93,0.86];   // eave trim band
+  if(o.storeys==null)o.storeys=1;                              // storey divider lines
+  return o; }
 const snap=v=>document.getElementById('snap').checked?Math.round(v*2)/2:Math.round(v*1000)/1000;
 
 // ---------- undo ----------
@@ -418,7 +441,8 @@ function houseWindows3D(o,g){
   if(o.win===0) return;
   const wsc=clamp(o.winSize||1,0.5,1.6), winW=0.85*wsc, winH=1.05*wsc;
   let colDiv,rowStep; if(o.win===1){colDiv=2.4;rowStep=1.6;} else if(o.win>=3){colDiv=1.25;rowStep=1.3;} else {colDiv=1.7;rowStep=1.5;}
-  const mat=new THREE.MeshLambertMaterial({color:0xbfe0f5,side:THREE.DoubleSide});
+  const gl=o.glass||[0.60,0.76,0.94];                          // per-house glass tint (matches game)
+  const mat=new THREE.MeshLambertMaterial({color:new THREE.Color(Math.min(1,gl[0]*1.15),Math.min(1,gl[1]*1.15),Math.min(1,gl[2]*1.15)),side:THREE.DoubleSide});
   const walls=[{ax:0,s:1,span:o.w},{ax:0,s:-1,span:o.w},{ax:1,s:1,span:o.d},{ax:1,s:-1,span:o.d}];  // +z -z +x -x = door 0..3
   for(let wi=0;wi<4;wi++){ const W=walls[wi], doorWall=(o.door===wi);
     const cols=Math.max(1,Math.floor((W.span-0.6)/colDiv)), colGap=W.span/cols;
@@ -438,6 +462,19 @@ function chimney3D(o,g){
   if(!on) return;
   const m=new THREE.Mesh(new THREE.BoxGeometry(0.34,2.2,0.34),new THREE.MeshLambertMaterial({color:0x8c4d38}));
   m.position.set(o.w*0.28,o.h+1.5,-o.d*0.28); m.userData.skip=true; g.add(m);
+}
+// Perimeter ring (four thin boxes wrapping the walls) — mirrors the game's bandRing, never a solid slab.
+function bandRing3D(g,cy,w,dd,halfH,proud,color){
+  const perp=0.15+proud, mat=new THREE.MeshLambertMaterial({color:col(color)});
+  const mk=(px,pz,sx,sz)=>{ const m=new THREE.Mesh(new THREE.BoxGeometry(sx,halfH*2,sz),mat); m.position.set(px,cy,pz); m.userData.skip=true; g.add(m); };
+  mk(0, dd/2,(w/2+proud)*2,perp*2); mk(0,-dd/2,(w/2+proud)*2,perp*2);
+  mk( w/2,0,perp*2,(dd/2+proud)*2); mk(-w/2,0,perp*2,(dd/2+proud)*2);
+}
+function houseBands3D(o,g){
+  if(o.foundH>0.01) bandRing3D(g,o.foundH/2,o.w,o.d,o.foundH/2,0.07,o.foundC||[0.42,0.40,0.40]);
+  if(o.trimOn) bandRing3D(g,Math.max(0.2,o.h-0.14),o.w,o.d,0.11,0.05,o.trimC||[0.95,0.93,0.86]);
+  const st=Math.max(1,Math.min(8,o.storeys|0));
+  if(st>=2){ const bc=o.trimOn?o.trimC:[0.86,0.83,0.77]; for(let k=1;k<st;k++) bandRing3D(g,o.h*k/st,o.w,o.d,0.06,0.04,bc); }
 }
 function mesh3D(o){
   if(o.type==='road'){ const dx=o.x2-o.x1, dz=o.z2-o.z1, len=Math.hypot(dx,dz)||0.01;
@@ -460,14 +497,15 @@ function mesh3D(o){
     const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); body.position.y=o.h/2; g.add(body);
     const cap=new THREE.Mesh(new THREE.BoxGeometry(o.w+0.3,0.3,o.d+0.3),new THREE.MeshLambertMaterial({color:col([o.c[0]*0.9,o.c[1]*0.9,o.c[2]*0.95])})); cap.position.y=o.h+0.15; g.add(cap);  // eave band (matches game)
     g.add(gableRoof(o));
-    const dw=Math.min(o.w,o.d)*0.34, dm=new THREE.Mesh(new THREE.BoxGeometry(0.12,Math.min(2.2,o.h*0.8),dw),new THREE.MeshLambertMaterial({color:0x764d2b}));
-    const dy=Math.min(2.2,o.h*0.8)/2;
+    const ddw=clamp(o.doorW||1.9,0.8,Math.min(o.w,o.d)-0.6), ddh=clamp(o.doorH||2.3,1.6,o.h-0.3);
+    const dm=new THREE.Mesh(new THREE.BoxGeometry(0.12,ddh,ddw),new THREE.MeshLambertMaterial({color:col(o.doorC||[0.46,0.30,0.17])}));
+    const dy=ddh/2;
     if(o.door===0){ dm.position.set(0,dy,o.d/2-0.02); dm.rotation.y=Math.PI/2; }
     else if(o.door===1){ dm.position.set(0,dy,-o.d/2+0.02); dm.rotation.y=Math.PI/2; }
     else if(o.door===2){ dm.position.set(o.w/2-0.02,dy,0); }
     else { dm.position.set(-o.w/2+0.02,dy,0); }
     g.add(dm);
-    houseWindows3D(o,g); chimney3D(o,g);
+    houseBands3D(o,g); houseWindows3D(o,g); chimney3D(o,g);
     return g;
   }
   const m=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); m.position.set(o.x,o.h/2,o.z); if(o.yaw) m.rotation.y=o.yaw*Math.PI/180; return m;
@@ -570,6 +608,10 @@ function refreshPanel(){
     pRoofCol.value=hex(sel.roofC); pWin.value=sel.win; pWinSize.value=sel.winSize; pChim.value=sel.chim;
     pPitchAuto.checked=sel.pitch<0; pPitch.value=sel.pitch<0?1.2:sel.pitch; pPitch.disabled=pPitchAuto.checked;
     pOverAuto.checked=sel.overhang<0; pOver.value=sel.overhang<0?0.32:sel.overhang; pOver.disabled=pOverAuto.checked;
+    pGlass.value=hex(sel.glass); pDoorCol.value=hex(sel.doorC); pDoorW.value=sel.doorW; pDoorH.value=sel.doorH;
+    pFoundH.value=sel.foundH; pFoundCol.value=hex(sel.foundC);
+    pTrimOn.checked=sel.trimOn; pTrimCol.value=hex(sel.trimC); pTrimCol.disabled=!sel.trimOn;
+    pStoreys.value=sel.storeys; document.getElementById('pStoreysV').textContent=sel.storeys;
   }
   document.querySelectorAll('#sw div').forEach((d,i)=>d.classList.toggle('on',i<PALETTE.length&&hex(PALETTE[i])===hex(sel.c)));
   document.querySelectorAll('.door4 button').forEach(b=>b.style.outline=(+b.dataset.door===sel.door)?'2px solid #39d4ff':'none');
@@ -601,6 +643,18 @@ pWin.onchange=()=>{ if(sel){ pushUndo(); sel.win=+pWin.value; live(); } };
 pWinSize.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pWinSize.oninput=()=>{ if(sel){ sel.winSize=parseFloat(pWinSize.value); live(); } };
 pChim.onchange=()=>{ if(sel){ pushUndo(); sel.chim=+pChim.value; live(); } };
+// Etappe D per-house detail bindings (colour pickers + ranges, house-only)
+const hColBind=(id,key)=>{ const el=document.getElementById(id); el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+  el.oninput=()=>{ if(sel&&sel.type==='house'){ sel[key]=hex2c(el.value); live(); } }; };
+hColBind('pGlass','glass'); hColBind('pDoorCol','doorC'); hColBind('pFoundCol','foundC');
+const hNumBind=(id,key)=>{ const el=document.getElementById(id); el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+  el.oninput=()=>{ if(sel&&sel.type==='house'){ sel[key]=parseFloat(el.value); live(); } }; };
+hNumBind('pDoorW','doorW'); hNumBind('pDoorH','doorH'); hNumBind('pFoundH','foundH');
+pTrimCol.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pTrimCol.oninput=()=>{ if(sel&&sel.type==='house'){ sel.trimC=hex2c(pTrimCol.value); live(); } };
+pTrimOn.onchange=()=>{ if(sel&&sel.type==='house'){ pushUndo(); sel.trimOn=pTrimOn.checked; refreshPanel(); live(); } };
+pStoreys.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pStoreys.oninput=()=>{ if(sel&&sel.type==='house'){ sel.storeys=+pStoreys.value; document.getElementById('pStoreysV').textContent=sel.storeys; live(); } };
 pRoadW.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pRoadW.oninput=()=>{ if(sel&&sel.type==='road'){ sel.width=parseFloat(pRoadW.value); live(); } };
 pYaw.addEventListener('focus',()=>{ if(sel) pushUndo(); });

@@ -138,15 +138,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts;
     private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
     private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
     private boolean hasCustomRoads;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
-    // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize} per house, for the roof / window meshes
+    // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize,
+    //  glassR,glassG,glassB, foundH,foundR,foundG,foundB, trimR,trimG,trimB, storeys} per house (roof/window/band meshes)
     private java.util.List<float[]> houseRects;
     private float[][] roofGroups;                  // per-house roof colour groups: {firstVert, vertCount, r,g,b}
+    private float[][] winGroups;                   // per-house window glass-tint groups: {firstVert, vertCount, r,g,b}
+    private float[][] bandGroups;                  // foundation / trim / storey-band colour groups: {firstVert, vertCount, r,g,b}
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -386,8 +389,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (treeList != null) placedTrees = makeBuffer(makePlacedTrees());   // level-placed trees
 
         roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
-        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData)
+        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData + winGroups)
         trimMesh = makeBuffer(trimData);             // window sills
+        bandMesh = makeBuffer(makeBandMesh());       // per-house foundation / trim / storey bands (sets bandVerts)
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
         wallTex = uploadTexture(makeHouseBitmap());
@@ -497,9 +501,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(roofMesh, roofVerts, 0f, 0.69f, 0.31f, 0.16f);
         }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
-        drawWorld(windowMesh, windowVerts, 0f, 1f, 1f, 1f);
+        if (winGroups != null) {                               // per-house glass tint
+            for (float[] gp : winGroups) drawWorldRange(windowMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+        } else {
+            drawWorld(windowMesh, windowVerts, 0f, 1f, 1f, 1f);
+        }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stone window sills
         drawWorld(trimMesh, trimVerts, 0f, 0.95f, 0.93f, 0.86f);
+        if (bandGroups != null) {                              // per-house foundation / trim / storey bands
+            for (float[] gp : bandGroups) drawWorldRange(bandMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+        }
 
         drawDoors();
         drawEnemies();
@@ -2853,13 +2864,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (t[0].equals("SET") && t.length >= 2) {
                     applySet(t);                                   // global world look (mutates fields immediately)
                 } else if (t[0].equals("H") && t.length >= 11) {
-                    // base: x z w d h roof door r g b  | optional v2: rr rg rb pitch overhang windows winSize chimney
+                    // base: x z w d h roof door r g b  | v2: rr rg rb pitch overhang windows winSize chimney
+                    // | v4 (per-house detail): glassR glassG glassB  doorW doorH  doorR doorG doorB
+                    //                          foundH foundR foundG foundB  trimR trimG trimB  storeys
                     hs.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pf(t[5]),
                                        pf(t[6]), pf(t[7]), pf(t[8]), pf(t[9]), pf(t[10]),
-                                       pfDef(t,11,-1f), pfDef(t,12,-1f), pfDef(t,13,-1f),   // roof colour
-                                       pfDef(t,14,-1f), pfDef(t,15,-1f),                    // pitch, overhang
-                                       pfDef(t,16,2f),  pfDef(t,17,1f),                     // windows density, window size
-                                       pfDef(t,18,-1f)});                                   // chimney (-1 = auto)
+                                       pfDef(t,11,-1f), pfDef(t,12,-1f), pfDef(t,13,-1f),   // [10-12] roof colour
+                                       pfDef(t,14,-1f), pfDef(t,15,-1f),                    // [13-14] pitch, overhang
+                                       pfDef(t,16,2f),  pfDef(t,17,1f),                     // [15-16] windows density, window size
+                                       pfDef(t,18,-1f),                                     // [17] chimney (-1 = auto)
+                                       pfDef(t,19,-1f), pfDef(t,20,-1f), pfDef(t,21,-1f),   // [18-20] glass tint (-1 = default)
+                                       pfDef(t,22,1.9f), pfDef(t,23,2.3f),                  // [21-22] door width, height
+                                       pfDef(t,24,0.46f), pfDef(t,25,0.30f), pfDef(t,26,0.17f), // [23-25] door colour
+                                       pfDef(t,27,0.30f),                                   // [26] foundation height (0 = none)
+                                       pfDef(t,28,0.42f), pfDef(t,29,0.40f), pfDef(t,30,0.40f), // [27-29] foundation colour
+                                       pfDef(t,31,-1f), pfDef(t,32,-1f), pfDef(t,33,-1f),   // [30-32] trim band colour (-1 = none)
+                                       pfDef(t,34,1f)});                                    // [33] storeys (1 = no dividers)
                 } else if (t[0].equals("B") && t.length >= 9) {
                     // cx cz w h d r g b [yawDeg]  -> ground box centred at y = h/2 (yaw = visual rotation)
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
@@ -2891,8 +2911,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 int roof = (int) hh[5], door = (int) hh[6], chim = (int) hh[17];
                 float rr = hh[10], rg = hh[11], rb = hh[12];
                 if (rr < 0f) { rr = 0.69f; rg = 0.31f; rb = 0.16f; }     // default terracotta roof
-                addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim);
-                houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16]});
+                float gr = hh[18], gg = hh[19], gb = hh[20];
+                if (gr < 0f) { gr = 0.60f; gg = 0.76f; gb = 0.94f; }     // default soft-blue glass
+                addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
+                            hh[21], hh[22], hh[23], hh[24], hh[25]);      // doorW doorH doorR doorG doorB
+                houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
+                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33]});
             }
             return true;
         } catch (Exception e) {
@@ -2942,7 +2966,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 int doorSide = rc.nextInt(4);                      // doors face varied directions
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
-                houses.add(new float[]{cx, cz, w, d, h, doorSide, 0.69f, 0.31f, 0.16f, -1f, -1f, 2f, 1f});
+                houses.add(new float[]{cx, cz, w, d, h, doorSide, 0.69f, 0.31f, 0.16f, -1f, -1f, 2f, 1f,
+                        0.60f, 0.76f, 0.94f, 0.30f, 0.42f, 0.40f, 0.40f, -1f, -1f, -1f, 1f}); // glass, plinth, no trim, 1 storey
             }
         }
     }
@@ -2956,7 +2981,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b, int chimney) {
-        float t = 0.3f, doorW = 1.9f, doorH = 2.3f;
+        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney,
+                    1.9f, 2.3f, 0.46f, 0.30f, 0.17f);   // default door size + brown leaf
+    }
+
+    private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
+                                    int doorSide, int roofStyle, float r, float g, float b, int chimney,
+                                    float doorW, float doorH, float dr, float dg, float db) {
+        float t = 0.3f;
+        doorW = clamp(doorW, 0.8f, Math.min(w, d) - 0.6f);     // keep the gap inside the wall
+        doorH = clamp(doorH, 1.6f, h - 0.3f);                  // keep the lintel under the eave
         addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b);   // +z
         addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b);   // -z
         addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b);  // +x
@@ -2968,7 +3002,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (doorSide == 2) { dcx = cx + w * 0.5f; dcz = cz; axis = 1; }
         else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
         doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
-                0.46f, 0.30f, 0.17f});
+                dr, dg, db});
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
             L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f});
@@ -3057,20 +3091,70 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] td = new float[1600000];
         int[] off = {0, 0};
         Random rng = new Random(202);   // irregular per-house omission so no two facades match
+        java.util.List<float[]> winG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
             int ds = (int) hh[5], dens = (int) hh[11];
             float wsc = hh[12];
             if (dens == 0) continue;                       // "none" -> this house has no windows
+            int wstart = off[0] / 8;
             wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc);
             wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc);
             wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc);
             wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc);
+            int wcount = off[0] / 8 - wstart;
+            if (wcount > 0) winG.add(new float[]{wstart, wcount, hh[13], hh[14], hh[15]});  // glass tint
         }
+        winGroups = winG.toArray(new float[0][]);
         windowVerts = off[0] / 8;
         trimVerts = off[1] / 8;
         trimData = java.util.Arrays.copyOf(td, off[1]);
         return java.util.Arrays.copyOf(wd, off[0]);
+    }
+
+    /** Per-house foundation plinth, eave trim band and storey divider bands (baked, world-space, no collision).
+     *  Each band is a perimeter ring hugging the four walls (never a solid slab) so house interiors stay clear. */
+    private float[] makeBandMesh() {
+        float[] d = new float[houseRects.size() * 40 * 36 * 8 + 1024];
+        int o = 0;
+        java.util.List<float[]> bandG = new java.util.ArrayList<float[]>();
+        for (float[] hh : houseRects) {
+            float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
+            float foundH = hh[16];
+            float tr = hh[20], tg = hh[21], tb = hh[22];
+            int storeys = Math.round(hh[23]);
+            if (storeys < 1) storeys = 1;
+            if (storeys > 8) storeys = 8;
+            if (foundH > 0.01f) {                              // stone plinth poking proud of the walls
+                int s = o / 8;
+                o = bandRing(d, o, cx, foundH * 0.5f, cz, w, dd, foundH * 0.5f, 0.07f);
+                bandG.add(new float[]{s, o / 8 - s, hh[17], hh[18], hh[19]});
+            }
+            if (tr >= 0f) {                                    // painted eave trim band just under the roof
+                int s = o / 8;
+                o = bandRing(d, o, cx, Math.max(0.2f, h - 0.14f), cz, w, dd, 0.11f, 0.05f);
+                bandG.add(new float[]{s, o / 8 - s, tr, tg, tb});
+            }
+            if (storeys >= 2) {                                // horizontal storey divider lines
+                int s = o / 8;
+                for (int k = 1; k < storeys; k++) o = bandRing(d, o, cx, h * k / (float) storeys, cz, w, dd, 0.06f, 0.04f);
+                float br = tr >= 0f ? tr : 0.86f, bg = tr >= 0f ? tg : 0.83f, bb = tr >= 0f ? tb : 0.77f;
+                bandG.add(new float[]{s, o / 8 - s, br, bg, bb});
+            }
+        }
+        bandGroups = bandG.isEmpty() ? null : bandG.toArray(new float[0][]);
+        bandVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    /** Four thin boxes wrapping the 0.30 m walls of a w x dd house at height cy, sticking `proud` past each face. */
+    private static int bandRing(float[] d, int o, float cx, float cy, float cz, float w, float dd, float halfH, float proud) {
+        float hw = w * 0.5f, hd = dd * 0.5f, perp = 0.15f + proud;
+        o = box6(d, o, cx, cy, cz + hd, hw + proud, halfH, perp);    // +z face
+        o = box6(d, o, cx, cy, cz - hd, hw + proud, halfH, perp);    // -z face
+        o = box6(d, o, cx + hw, cy, cz, perp, halfH, hd + proud);    // +x face
+        o = box6(d, o, cx - hw, cy, cz, perp, halfH, hd + proud);    // -x face
+        return o;
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
@@ -3166,9 +3250,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         c.drawColor(0xFFF2F0EA);                                    // bright white frame
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         float m = N * 0.17f;
-        p.setColor(0xFF4E84B0);                                     // medium sky-blue glass
+        p.setColor(0xFFC6CED6);                                     // NEUTRAL light glass -> per-house uColor sets the true hue
         c.drawRect(m, m, N - m, N - m, p);
-        p.setColor(0x88BFE2FF);                                     // bright upper sheen
+        p.setColor(0x55FFFFFF);                                     // soft neutral upper sheen
         c.drawRect(m, m, N - m, N * 0.48f, p);
         p.setColor(0xFFF2F0EA);                                     // thick cross mullion
         c.drawRect(N * 0.5f - 4f, m, N * 0.5f + 4f, N - m, p);
