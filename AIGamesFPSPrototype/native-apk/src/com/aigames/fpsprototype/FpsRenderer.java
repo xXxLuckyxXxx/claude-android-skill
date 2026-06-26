@@ -2670,19 +2670,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{ 2.5f, 0.75f, 4f, 1.5f, 1.5f, 1.5f, 1.05f, 0.70f, 0.40f});
         L.add(new float[]{-3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
         L.add(new float[]{ 3.0f, 1.5f, -1f, 1.2f, 3.0f, 1.2f, 0.85f, 0.88f, 0.95f});
-        // city blocks on a bigger grid (~3x the houses); keep them on the flat core, clear of the plaza/spawn lane
-        Random rc = new Random(101);
-        float[] gs = {-32f, -24f, -16f, -8f, 0f, 8f, 16f, 24f, 32f};   // blocks spaced 8 m -> wide streets
+        // Houses loosely placed on a grid (jittered, with gaps) so the village looks organic, not a raster.
+        Random rc = new Random(73);
+        float[] gs = {-32f, -24f, -16f, -8f, 0f, 8f, 16f, 24f, 32f};   // ~8 m blocks -> wide streets
         for (int ix = 0; ix < gs.length; ix++) {
             for (int iz = 0; iz < gs.length; iz++) {
-                float cx = gs[ix], cz = gs[iz];
-                if (cx * cx + cz * cz > 33.5f * 33.5f) continue;   // stay on the flat core (disc)
-                if (cx == 0f && cz >= 0f) continue;                // open plaza + spawn corridor
-                float w = 3.4f + rc.nextFloat() * 1.8f;            // wider footprints (house-like, not tower)
-                float d = 3.4f + rc.nextFloat() * 1.8f;
-                boolean tall = cx * cx + cz * cz > 27f * 27f;      // a few 2-storey houses further out
-                float h = tall ? 3.4f + rc.nextFloat() * 1.5f : 2.6f + rc.nextFloat() * 1.0f;
-                int doorSide = (Math.abs(cx) >= Math.abs(cz)) ? (cx < 0 ? 2 : 3) : (cz < 0 ? 0 : 1);
+                float gx = gs[ix], gz = gs[iz];
+                if (gx * gx + gz * gz > 33.5f * 33.5f) continue;   // stay on the flat core (disc)
+                if (gx == 0f && gz >= 0f) continue;                // open plaza + spawn corridor
+                if (rc.nextFloat() < 0.16f) continue;              // random empty plot -> irregular spacing
+                float cx = gx + (rc.nextFloat() - 0.5f) * 2.0f;    // jitter off the grid (+/-1 m)
+                float cz = gz + (rc.nextFloat() - 0.5f) * 2.0f;
+                float w = 3.4f + rc.nextFloat() * 1.7f;            // varied house footprints
+                float d = 3.4f + rc.nextFloat() * 1.7f;
+                boolean tall = gx * gx + gz * gz > 27f * 27f;      // a few 2-storey houses further out
+                float h = tall ? 3.4f + rc.nextFloat() * 1.5f : 2.6f + rc.nextFloat() * 1.1f;
+                int doorSide = rc.nextInt(4);                      // doors face varied directions
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
                 houses.add(new float[]{cx, cz, w, d, h, doorSide});
@@ -2800,7 +2803,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static int wallWindows(float[] d, int o, float a, float b, float span, float h, int axis, int sign, boolean doorWall) {
-        float winW = 0.85f, winH = 1.05f, proud = 0.05f;
+        // walls are 0.3 m thick (±0.15 from centre); push the pane just past the outer face so it isn't buried.
+        float winW = 0.85f, winH = 1.05f, proud = 0.18f;
         int cols = Math.max(1, (int) ((span - 0.6f) / 1.25f));
         int rows = Math.max(1, (int) ((h - 0.7f) / 1.35f));
         float colGap = span / cols;
