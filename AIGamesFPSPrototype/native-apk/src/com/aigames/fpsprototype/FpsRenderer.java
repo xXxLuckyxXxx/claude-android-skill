@@ -3036,8 +3036,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addBench(L, -6.0f, -5.0f, false); addBench(L, 6.0f, -5.0f, false);
         addStall(L, -7.5f, 1.5f, 0.86f, 0.40f, 0.30f);                      // two market stalls (red + green awning)
         addStall(L,  7.5f, 1.5f, 0.38f, 0.52f, 0.34f);
-        L.add(new float[]{-2.0f, 0.45f, -6.5f, 1.3f, 0.9f, 1.3f, 0.56f, 0.55f, 0.52f});   // stone well base
-        L.add(new float[]{-2.0f, 1.05f, -6.5f, 0.18f, 0.3f, 1.4f, 0.40f, 0.30f, 0.22f});  // well crossbeam
+        addWell(L, -2.0f, -6.5f);                                          // a roofed stone well
         // scatter trees in the gaps (visual only, no collision) so the town sits in greenery
         java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
         for (int i = 0; i < 90 && trees.size() < 18; i++) {
@@ -3056,28 +3055,81 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static void addClutter(List<float[]> L, Random r, float x, float z) {
         int k = r.nextInt(4);
-        if (k == 0)      L.add(new float[]{x, 0.35f, z, 0.32f, 0.70f, 0.32f, 0.42f, 0.30f, 0.20f});                 // barrel
-        else if (k == 1) L.add(new float[]{x, 0.28f, z, 0.50f, 0.56f, 0.50f, 0.50f, 0.38f, 0.24f, r.nextInt(40)-20f}); // crate
-        else if (k == 2) {
-            L.add(new float[]{x, 0.22f, z, 0.55f, 0.42f, 0.50f, 0.48f, 0.45f, 0.42f});                             // planter box
-            L.add(new float[]{x, 0.52f, z, 0.50f, 0.20f, 0.45f, 0.30f, 0.45f, 0.28f});                             // greenery
-        } else           L.add(new float[]{x, 0.25f, z, 0.85f, 0.50f, 0.42f, 0.46f, 0.34f, 0.22f, r.nextInt(30)-15f}); // woodpile
+        if (k == 0)      addBarrel(L, x, z);
+        else if (k == 1) addCrate(L, r, x, z);
+        else if (k == 2) addPlanter(L, x, z);
+        else             addWoodpile(L, r, x, z);
     }
 
+    // A wooden barrel: a square + a 45°-rotated twin make a round-ish 8-sided body, plus two iron hoops + a lid.
+    private static void addBarrel(List<float[]> L, float x, float z) {
+        L.add(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.46f, 0.33f, 0.21f, 0f});
+        L.add(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.44f, 0.31f, 0.19f, 45f});
+        L.add(new float[]{x, 0.25f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f});   // lower hoop
+        L.add(new float[]{x, 0.60f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f});   // upper hoop
+        L.add(new float[]{x, 0.78f, z, 0.34f, 0.05f, 0.34f, 0.40f, 0.28f, 0.18f, 0f});   // lid
+    }
+
+    private static void addCrate(List<float[]> L, Random r, float x, float z) {
+        float yaw = r.nextInt(40) - 20f;
+        L.add(new float[]{x, 0.28f, z, 0.54f, 0.54f, 0.54f, 0.52f, 0.40f, 0.26f, yaw});  // body
+        L.add(new float[]{x, 0.56f, z, 0.58f, 0.06f, 0.58f, 0.40f, 0.30f, 0.20f, yaw});  // top rim
+    }
+
+    private static void addPlanter(List<float[]> L, float x, float z) {
+        L.add(new float[]{x, 0.24f, z, 0.56f, 0.44f, 0.50f, 0.50f, 0.47f, 0.43f, 0f});   // stone box
+        L.add(new float[]{x, 0.46f, z, 0.62f, 0.07f, 0.56f, 0.57f, 0.54f, 0.50f, 0f});   // rim
+        L.add(new float[]{x, 0.60f, z, 0.50f, 0.22f, 0.44f, 0.30f, 0.45f, 0.28f, 0f});   // greenery
+    }
+
+    private static void addWoodpile(List<float[]> L, Random r, float x, float z) {
+        float yaw = r.nextInt(30) - 15f;
+        L.add(new float[]{x, 0.16f, z, 0.95f, 0.20f, 0.24f, 0.50f, 0.36f, 0.22f, yaw});
+        L.add(new float[]{x, 0.37f, z, 0.95f, 0.20f, 0.24f, 0.46f, 0.33f, 0.20f, yaw});
+        L.add(new float[]{x, 0.30f, z + 0.26f, 0.95f, 0.20f, 0.24f, 0.48f, 0.35f, 0.21f, yaw});
+    }
+
+    // A street lamp: stone base, slim post, a glowing lantern head with a little cap (head + cap sit overhead -> no collision).
     private static void addLamp(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 1.45f, z, 0.12f, 2.90f, 0.12f, 0.24f, 0.24f, 0.26f});   // dark pole
-        L.add(new float[]{x, 2.95f, z, 0.28f, 0.30f, 0.28f, 0.98f, 0.88f, 0.55f});   // warm lamp head
+        L.add(new float[]{x, 0.13f, z, 0.34f, 0.26f, 0.34f, 0.20f, 0.20f, 0.22f, 0f});   // base
+        L.add(new float[]{x, 1.55f, z, 0.12f, 2.60f, 0.12f, 0.23f, 0.23f, 0.26f, 0f});   // post
+        L.add(new float[]{x, 2.92f, z, 0.30f, 0.10f, 0.30f, 0.20f, 0.20f, 0.22f, 0f});   // collar
+        L.add(new float[]{x, 3.14f, z, 0.26f, 0.34f, 0.26f, 0.99f, 0.90f, 0.62f, 0f});   // warm lantern glass
+        L.add(new float[]{x, 3.38f, z, 0.36f, 0.12f, 0.36f, 0.19f, 0.19f, 0.21f, 0f});   // cap
     }
 
+    // A park bench: two solid end frames, a slatted seat and a two-rail backrest.
     private static void addBench(List<float[]> L, float x, float z, boolean faceSouth) {
         float back = faceSouth ? -0.18f : 0.18f;
-        L.add(new float[]{x, 0.42f, z, 1.50f, 0.12f, 0.45f, 0.46f, 0.33f, 0.21f});            // seat
-        L.add(new float[]{x, 0.70f, z + back, 1.50f, 0.42f, 0.10f, 0.46f, 0.33f, 0.21f});     // backrest
+        L.add(new float[]{x - 0.62f, 0.24f, z, 0.10f, 0.48f, 0.50f, 0.34f, 0.25f, 0.16f, 0f});  // left end frame
+        L.add(new float[]{x + 0.62f, 0.24f, z, 0.10f, 0.48f, 0.50f, 0.34f, 0.25f, 0.16f, 0f});  // right end frame
+        L.add(new float[]{x, 0.46f, z, 1.45f, 0.09f, 0.48f, 0.48f, 0.34f, 0.22f, 0f});          // seat
+        L.add(new float[]{x, 0.68f, z + back, 1.45f, 0.10f, 0.06f, 0.48f, 0.34f, 0.22f, 0f});   // lower back rail
+        L.add(new float[]{x, 0.88f, z + back, 1.45f, 0.10f, 0.06f, 0.48f, 0.34f, 0.22f, 0f});   // upper back rail
     }
 
+    // A market stall: a wooden counter with four posts and a striped awning roof (awning overhead -> no collision).
     private static void addStall(List<float[]> L, float x, float z, float ar, float ag, float ab) {
-        L.add(new float[]{x, 0.55f, z, 1.80f, 1.10f, 1.10f, 0.50f, 0.38f, 0.24f});   // wooden counter
-        L.add(new float[]{x, 1.35f, z, 2.10f, 0.14f, 1.40f, ar, ag, ab});            // awning
+        L.add(new float[]{x, 0.55f, z, 1.90f, 1.00f, 1.00f, 0.50f, 0.38f, 0.24f, 0f});   // counter
+        L.add(new float[]{x, 1.08f, z, 2.00f, 0.08f, 1.10f, 0.42f, 0.32f, 0.20f, 0f});   // counter top
+        L.add(new float[]{x - 0.9f, 1.55f, z + 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});  // posts
+        L.add(new float[]{x + 0.9f, 1.55f, z + 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
+        L.add(new float[]{x - 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
+        L.add(new float[]{x + 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
+        L.add(new float[]{x, 2.18f, z, 2.10f, 0.10f, 1.30f, ar, ag, ab, 0f});            // awning
+        L.add(new float[]{x, 2.30f, z, 0.55f, 0.12f, 1.30f, ar * 1.12f, ag * 1.12f, ab * 1.12f, 0f});  // awning crest
+    }
+
+    // A roofed stone well: a square stone kerb ring, two posts and a little gable roof (roof overhead -> no collision).
+    private static void addWell(List<float[]> L, float x, float z) {
+        L.add(new float[]{x, 0.40f, z + 0.55f, 1.20f, 0.80f, 0.18f, 0.55f, 0.54f, 0.51f, 0f});  // kerb +z
+        L.add(new float[]{x, 0.40f, z - 0.55f, 1.20f, 0.80f, 0.18f, 0.55f, 0.54f, 0.51f, 0f});  // kerb -z
+        L.add(new float[]{x + 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f});  // kerb +x
+        L.add(new float[]{x - 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f});  // kerb -x
+        L.add(new float[]{x - 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f});  // post
+        L.add(new float[]{x + 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f});  // post
+        L.add(new float[]{x, 1.95f, z, 0.10f, 0.10f, 0.70f, 0.30f, 0.24f, 0.20f, 0f});          // crossbeam
+        L.add(new float[]{x, 2.25f, z, 1.50f, 0.12f, 0.95f, 0.34f, 0.27f, 0.22f, 0f});          // roof
     }
 
     /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
