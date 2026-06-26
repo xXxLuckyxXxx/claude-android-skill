@@ -211,9 +211,9 @@ H 32.063 -8.816 4.201 4.451 3.569 2 2 0.660 0.820 0.620
 H 31.992 0.587 4.608 4.408 4.631 2 2 0.580 0.720 0.880
 H 31.431 8.042 3.454 3.870 4.047 1 3 0.930 0.880 0.740`;
 
-const PALETTE = [
-  [0.93,0.88,0.74],[0.88,0.60,0.40],[0.58,0.72,0.88],[0.66,0.82,0.62],[0.92,0.70,0.72],
-  [0.96,0.94,0.90],[0.86,0.78,0.48],[0.74,0.68,0.82],[0.78,0.84,0.84],[0.94,0.76,0.50],
+const PALETTE = [   // muted, realistic facade tints (match the game)
+  [0.85,0.82,0.76],[0.79,0.75,0.67],[0.74,0.72,0.69],[0.81,0.74,0.62],[0.70,0.67,0.62],
+  [0.76,0.71,0.64],[0.69,0.70,0.66],[0.83,0.79,0.73],[0.71,0.65,0.59],[0.75,0.76,0.76],
 ];
 const CRATE=[1.05,0.70,0.40], PILLAR=[0.85,0.88,0.95];
 const VIEW=52, CANVAS=820, SCALE=CANVAS/(2*VIEW), DISC=33.5, EDGE=35;
@@ -254,7 +254,7 @@ function parse(text){
       out.push(fillHouse({type:'house',x:n[0],z:n[1],w:n[2],d:n[3],h:n[4],roof:n[5]|0,door:n[6]|0,c:[n[7],n[8],n[9]],
         roofC:rc, pitch:(n.length>13?n[13]:-1), overhang:(n.length>14?n[14]:-1),
         win:(n.length>15?n[15]|0:2), winSize:(n.length>16?n[16]:1), chim:(n.length>17?n[17]|0:-1),
-        glass:(n.length>20&&n[18]>=0)?[n[18],n[19],n[20]]:[0.60,0.76,0.94],   // v4 per-house detail
+        glass:(n.length>20&&n[18]>=0)?[n[18],n[19],n[20]]:[0.50,0.57,0.66],   // v4 per-house detail
         doorW:(n.length>21?n[21]:1.9), doorH:(n.length>22?n[22]:2.3),
         doorC:(n.length>25)?[n[23],n[24],n[25]]:[0.46,0.30,0.17],
         foundH:(n.length>26?n[26]:0.30),
@@ -304,7 +304,7 @@ function fillHouse(o){ if(o.type!=='house')return o;
   if(!o.roofC) o.roofC=[0.69,0.31,0.16];
   if(o.pitch==null)o.pitch=-1; if(o.overhang==null)o.overhang=-1;
   if(o.win==null)o.win=2; if(o.winSize==null)o.winSize=1; if(o.chim==null)o.chim=-1;
-  if(!o.glass) o.glass=[0.60,0.76,0.94];                       // window-glass tint
+  if(!o.glass) o.glass=[0.50,0.57,0.66];                       // window-glass tint
   if(o.doorW==null)o.doorW=1.9; if(o.doorH==null)o.doorH=2.3;  // door size
   if(!o.doorC) o.doorC=[0.46,0.30,0.17];                       // door colour
   if(o.foundH==null)o.foundH=0.30; if(!o.foundC) o.foundC=[0.42,0.40,0.40];  // foundation plinth
@@ -441,7 +441,7 @@ function houseWindows3D(o,g){
   if(o.win===0) return;
   const wsc=clamp(o.winSize||1,0.5,1.6), winW=0.85*wsc, winH=1.05*wsc;
   let colDiv,rowStep; if(o.win===1){colDiv=2.4;rowStep=1.6;} else if(o.win>=3){colDiv=1.25;rowStep=1.3;} else {colDiv=1.7;rowStep=1.5;}
-  const gl=o.glass||[0.60,0.76,0.94];                          // per-house glass tint (matches game)
+  const gl=o.glass||[0.50,0.57,0.66];                          // per-house glass tint (matches game)
   const mat=new THREE.MeshLambertMaterial({color:new THREE.Color(Math.min(1,gl[0]*1.15),Math.min(1,gl[1]*1.15),Math.min(1,gl[2]*1.15)),side:THREE.DoubleSide});
   const walls=[{ax:0,s:1,span:o.w},{ax:0,s:-1,span:o.w},{ax:1,s:1,span:o.d},{ax:1,s:-1,span:o.d}];  // +z -z +x -x = door 0..3
   for(let wi=0;wi<4;wi++){ const W=walls[wi], doorWall=(o.door===wi);
