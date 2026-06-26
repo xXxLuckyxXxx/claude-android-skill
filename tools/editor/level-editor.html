@@ -56,6 +56,7 @@
     <button data-tool="house">🏠 Haus</button>
     <button data-tool="crate">📦 Kiste</button>
     <button data-tool="pillar">🏛 Säule</button>
+    <button data-tool="road">🛣 Straße</button>
     <button data-tool="delete">🗑 Löschen</button>
   </div>
   <div class="sp"></div>
@@ -108,6 +109,12 @@
       <div class="row"><label>&nbsp;</label><input type="color" id="pCol" style="width:78px;padding:2px"></div>
       <div class="row"><button id="dupBtn">Duplizieren</button><button id="delBtn" class="warn">Löschen</button></div>
       <div id="warnBox" class="warn" style="margin-top:6px"></div>
+    </div>
+    <div id="roadProps" hidden>
+      <div class="row"><label>Typ</label><span class="muted">Straße</span></div>
+      <div class="row"><label>Breite</label><input type="range" id="pRoadW" min="1.5" max="8" step="0.2" style="flex:1"></div>
+      <div class="row"><button id="roadDel" class="warn">Löschen</button></div>
+      <div class="muted">Mit dem 🛣-Werkzeug ziehen = neue Straße. Verschieben: löschen & neu ziehen.</div>
     </div>
     <hr style="border-color:var(--line);margin:14px 0">
     <div class="muted" id="stats"></div>
@@ -227,6 +234,7 @@ function parse(text){
         win:(n.length>15?n[15]|0:2), winSize:(n.length>16?n[16]:1), chim:(n.length>17?n[17]|0:-1)}));
     }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]]});
+    else if(t[0]==='R'&&n.length>=4) out.push({type:'road',x1:n[0],z1:n[1],x2:n[2],z2:n[3],width:(n.length>4?n[4]:3.4)});
   }
   return out;
 }
@@ -241,6 +249,7 @@ function serialize(){
   s+=`SET fog ${f(world.fog[0])} ${f(world.fog[1])} ${f(world.fog[2])}\n`;
   s+=`SET fogRange ${f(world.fogStart)} ${f(world.fogEnd)}\n`;
   s+=`SET ground ${f(world.ground[0])} ${f(world.ground[1])} ${f(world.ground[2])}\n`;
+  for(const o of objs) if(o.type==='road') s+=`R ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.width)}\n`;
   for(const o of objs) if(o.type==='box') s+=`B ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.h)} ${f(o.d)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
   for(const o of objs) if(o.type==='house'){ const rc=o.roofC||[0.69,0.31,0.16];
     s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0}\n`; }
@@ -250,8 +259,11 @@ function newObj(kind,wx,wz){
   if(kind==='house') return {type:'house',x:wx,z:wz,w:4.2,d:4.0,h:3.0,roof:1,door:0,c:PALETTE[(Math.random()*PALETTE.length)|0].slice(),
     roofC:[0.69,0.31,0.16], pitch:-1, overhang:-1, win:2, winSize:1, chim:-1};
   if(kind==='crate') return {type:'box',x:wx,z:wz,w:1.5,h:1.5,d:1.5,roof:0,door:0,c:CRATE.slice()};
+  if(kind==='road') return {type:'road',x1:wx,z1:wz,x2:wx,z2:wz,width:3.4};
   return {type:'box',x:wx,z:wz,w:1.2,h:3.0,d:1.2,roof:0,door:0,c:PILLAR.slice()};   // pillar
 }
+function segDist(px,pz,x1,z1,x2,z2){ const dx=x2-x1,dz=z2-z1,l2=dx*dx+dz*dz; if(l2<1e-6) return Math.hypot(px-x1,pz-z1);
+  let t=((px-x1)*dx+(pz-z1)*dz)/l2; t=Math.max(0,Math.min(1,t)); return Math.hypot(px-(x1+t*dx),pz-(z1+t*dz)); }
 function fillHouse(o){ if(o.type!=='house')return o;
   if(!o.roofC) o.roofC=[0.69,0.31,0.16];
   if(o.pitch==null)o.pitch=-1; if(o.overhang==null)o.overhang=-1;
@@ -281,6 +293,12 @@ function draw(){
   for(const o of objs) draw2DObj(o,o===sel);
 }
 function draw2DObj(o,on){
+  if(o.type==='road'){ ctx.save(); ctx.lineCap='round';
+    if(on){ ctx.lineWidth=o.width*SCALE+7; ctx.strokeStyle='#39d4ff'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); }
+    ctx.lineWidth=o.width*SCALE; ctx.strokeStyle='#3a3d40'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke();
+    ctx.lineWidth=Math.max(1,o.width*SCALE*0.09); ctx.strokeStyle='#e8c23a'; ctx.setLineDash([7,9]); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore(); return;
+  }
   const x=w2s(o.x),y=w2s(o.z),w=o.w*SCALE,d=o.d*SCALE;
   ctx.save(); ctx.translate(x,y);
   ctx.fillStyle=rgb(o.c); ctx.strokeStyle=o.type==='box'?'#000a':'#0009'; ctx.lineWidth=o.type==='box'?1.5:2;
@@ -295,18 +313,20 @@ function draw2DObj(o,on){
   if(on){ ctx.strokeStyle='#39d4ff'; ctx.lineWidth=2.5; ctx.strokeRect(-w/2-3,-d/2-3,w+6,d+6); }
   ctx.restore();
 }
-function hit2D(wx,wz){ for(let i=objs.length-1;i>=0;i--){ const o=objs[i]; if(Math.abs(wx-o.x)<=o.w/2&&Math.abs(wz-o.z)<=o.d/2) return o; } return null; }
+function hit2D(wx,wz){ for(let i=objs.length-1;i>=0;i--){ const o=objs[i];
+  if(o.type==='road'){ if(segDist(wx,wz,o.x1,o.z1,o.x2,o.z2)<=o.width/2+0.4) return o; continue; }
+  if(Math.abs(wx-o.x)<=o.w/2&&Math.abs(wz-o.z)<=o.d/2) return o; } return null; }
 function evWorld(e){ const r=cv.getBoundingClientRect(); return [s2w((e.clientX-r.left)*(CANVAS/r.width)), s2w((e.clientY-r.top)*(CANVAS/r.height))]; }
 
 let drag2=null;
 cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); const [wx,wz]=evWorld(e);
-  if(tool==='select'){ const o=hit2D(wx,wz); if(o){ pushUndo(); select(o); drag2={ox:wx-o.x,oz:wz-o.z}; } else select(null); }
+  if(tool==='select'){ const o=hit2D(wx,wz); if(o){ pushUndo(); select(o); drag2=(o.type==='road')?null:{ox:wx-o.x,oz:wz-o.z}; } else select(null); }
   else if(tool==='delete'){ const o=hit2D(wx,wz); if(o){ pushUndo(); removeObj3D(o); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} }
-  else { pushUndo(); const o=newObj(tool,snap(wx),snap(wz)); objs.push(o); select(o); drag2={ox:0,oz:0}; }
+  else { pushUndo(); const o=newObj(tool,snap(wx),snap(wz)); objs.push(o); select(o); drag2=(tool==='road')?{road:o}:{ox:0,oz:0}; }
 });
 cv.addEventListener('pointermove',e=>{ const [wx,wz]=evWorld(e);
-  document.getElementById('hint').textContent=`x ${wx.toFixed(1)}   z ${wz.toFixed(1)}`+(sel?`   ·   ${sel.type==='house'?'Haus':'Prop'}`:'');
-  if(drag2&&sel){ sel.x=snap(wx-drag2.ox); sel.z=snap(wz-drag2.oz); syncPanelXZ(); draw(); }
+  document.getElementById('hint').textContent=`x ${wx.toFixed(1)}   z ${wz.toFixed(1)}`+(sel?`   ·   ${sel.type==='house'?'Haus':(sel.type==='road'?'Straße':'Prop')}`:'');
+  if(drag2&&sel){ if(drag2.road){ sel.x2=snap(wx); sel.z2=snap(wz); draw(); } else { sel.x=snap(wx-drag2.ox); sel.z=snap(wz-drag2.oz); syncPanelXZ(); draw(); } }
 });
 cv.addEventListener('pointerup',()=>{ drag2=null; });
 
@@ -330,10 +350,11 @@ function init3D(){
   const sp=new THREE.Mesh(new THREE.CircleGeometry(1.4,24), new THREE.MeshBasicMaterial({color:0x37d67a}));
   sp.rotation.x=-Math.PI/2; sp.position.set(0,0.02,9); scene.add(sp);
   // decorative roads (the game draws the real streets) + forest ring (context only)
+  const decoRoad=new THREE.Group(); scene.add(decoRoad);
   const roadM=new THREE.MeshLambertMaterial({color:0x9c968a});
   for(const r of [-28,-20,-12,-4,4,12,20,28]){
-    const hz=new THREE.Mesh(new THREE.PlaneGeometry(DISC*2,1.5),roadM); hz.rotation.x=-Math.PI/2; hz.position.set(0,0.01,r); hz.userData.skip=true; scene.add(hz);
-    const vt=new THREE.Mesh(new THREE.PlaneGeometry(1.5,DISC*2),roadM); vt.rotation.x=-Math.PI/2; vt.position.set(r,0.01,0); vt.userData.skip=true; scene.add(vt);
+    const hz=new THREE.Mesh(new THREE.PlaneGeometry(DISC*2,1.5),roadM); hz.rotation.x=-Math.PI/2; hz.position.set(0,0.01,r); hz.userData.skip=true; decoRoad.add(hz);
+    const vt=new THREE.Mesh(new THREE.PlaneGeometry(1.5,DISC*2),roadM); vt.rotation.x=-Math.PI/2; vt.position.set(r,0.01,0); vt.userData.skip=true; decoRoad.add(vt);
   }
   const trunkG=new THREE.CylinderGeometry(0.25,0.32,1.4,5), leafG=new THREE.ConeGeometry(1.5,3.2,7);
   const trunkM=new THREE.MeshLambertMaterial({color:0x6b4a2b}), leafM=new THREE.MeshLambertMaterial({color:0x3f6b35});
@@ -346,7 +367,7 @@ function init3D(){
   const hl=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)), new THREE.LineBasicMaterial({color:0x39d4ff,depthTest:false}));
   hl.userData.skip=true; hl.visible=false; hl.renderOrder=999; scene.add(hl);
   three={renderer,scene,camera,group,ray:new THREE.Raycaster(),ground:new THREE.Plane(new THREE.Vector3(0,1,0),0),
-         cam:{r:90,theta:Math.PI*0.5,phi:0.82,tx:0,tz:0}, hl:hl, raf:0, sun, hemi, disc};
+         cam:{r:90,theta:Math.PI*0.5,phi:0.82,tx:0,tz:0}, hl:hl, raf:0, sun, hemi, disc, decoRoad};
   applyWorld();
   return true;
 }
@@ -385,10 +406,16 @@ function houseWindows3D(o,g){
 function chimney3D(o,g){
   const on = o.chim===1 || (o.chim===-1 && o.roof!==0);
   if(!on) return;
-  const m=new THREE.Mesh(new THREE.BoxGeometry(0.34,1.5,0.34),new THREE.MeshLambertMaterial({color:0x8c4d38}));
-  m.position.set(o.w*0.28,o.h+1.05,-o.d*0.28); m.userData.skip=true; g.add(m);
+  const m=new THREE.Mesh(new THREE.BoxGeometry(0.34,2.2,0.34),new THREE.MeshLambertMaterial({color:0x8c4d38}));
+  m.position.set(o.w*0.28,o.h+1.5,-o.d*0.28); m.userData.skip=true; g.add(m);
 }
 function mesh3D(o){
+  if(o.type==='road'){ const dx=o.x2-o.x1, dz=o.z2-o.z1, len=Math.hypot(dx,dz)||0.01;
+    const geo=new THREE.PlaneGeometry(o.width,len); geo.rotateX(-Math.PI/2);
+    const m=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({color:0x53565a}));
+    m.position.set((o.x1+o.x2)/2,0.03,(o.z1+o.z2)/2); m.rotation.y=Math.atan2(dx,dz);
+    return m;
+  }
   if(o.type==='house'){
     const g=new THREE.Group(); g.position.set(o.x,0,o.z);
     const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); body.position.y=o.h/2; g.add(body);
@@ -418,12 +445,13 @@ function applyWorld(){
   if(three.disc) three.disc.material.color.setRGB(0.49*world.ground[0],0.60*world.ground[1],0.37*world.ground[2]);
 }
 function selectHL(o){ const hl=three&&three.hl; if(!hl) return;
-  if(!o){ hl.visible=false; return; }
+  if(!o||o.type==='road'){ hl.visible=false; return; }   // roads use the 2D cyan stroke, no box
   const top=(o.type==='house'?o.h+1.7:o.h);
   hl.scale.set(o.w+0.3, top+0.3, o.d+0.3); hl.position.set(o.x, top/2, o.z); hl.visible=true; }
 function build3D(){           // full rebuild — only for structural changes (load/import/undo/clear)
   if(!three) return; applyWorld(); clearGroup(three.group);
   for(const o of objs){ const m=mesh3D(o); m.userData.obj=o; o.__m3=m; three.group.add(m); }
+  if(three.decoRoad) three.decoRoad.visible=!objs.some(o=>o.type==='road');   // custom roads replace the demo grid
   selectHL(sel);
 }
 function updateObj3D(o){      // rebuild ONE object's mesh (used on add + property edits) — O(1), no flicker
@@ -453,9 +481,9 @@ cv3.addEventListener('pointerdown',e=>{ if(!three) return; cv3.setPointerCapture
   if(tool==='select'||tool==='delete'){
     const o=pick3D(e);
     if(tool==='delete'){ if(o){ pushUndo(); removeObj3D(o); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} return; }
-    if(o){ pushUndo(); select(o); cv3.style.cursor='grabbing'; const g=groundAt(e); drag3=g?{ox:g.x-o.x,oz:g.z-o.z}:{ox:0,oz:0}; }   // instant grab, no rebuild
+    if(o){ pushUndo(); select(o); cv3.style.cursor='grabbing'; const g=groundAt(e); drag3=(o.type==='road')?null:(g?{ox:g.x-o.x,oz:g.z-o.z}:{ox:0,oz:0}); }   // instant grab, no rebuild
     else { cam3={mode:'orbit',x:e.clientX,y:e.clientY}; select(null); }
-  } else { const g=groundAt(e); if(g){ pushUndo(); const o=newObj(tool,snap(g.x),snap(g.z)); objs.push(o); updateObj3D(o); select(o); drag3={ox:0,oz:0}; } }
+  } else { const g=groundAt(e); if(g){ pushUndo(); const o=newObj(tool,snap(g.x),snap(g.z)); objs.push(o); updateObj3D(o); select(o); drag3=(tool==='road')?{road:o}:{ox:0,oz:0}; } }
 });
 cv3.addEventListener('pointermove',e=>{ if(!three) return;
   if(cam3){ const dx=e.clientX-cam3.x, dy=e.clientY-cam3.y; cam3.x=e.clientX; cam3.y=e.clientY; const c=three.cam;
@@ -464,9 +492,8 @@ cv3.addEventListener('pointermove',e=>{ if(!three) return;
       c.tx+=(-dx*r.x - dy*f.x)*s; c.tz+=(-dx*r.z - dy*f.z)*s; }
     return;
   }
-  if(drag3&&sel){ const g=groundAt(e); if(g){ sel.x=snap(g.x-drag3.ox); sel.z=snap(g.z-drag3.oz);
-    if(sel.__m3) sel.__m3.position.set(sel.x,sel.type==='house'?0:sel.h/2,sel.z);
-    selectHL(sel); syncPanelXZ(); } return; }
+  if(drag3&&sel){ const g=groundAt(e); if(g){ if(drag3.road){ sel.x2=snap(g.x); sel.z2=snap(g.z); updateObj3D(sel); }
+    else { sel.x=snap(g.x-drag3.ox); sel.z=snap(g.z-drag3.oz); if(sel.__m3) sel.__m3.position.set(sel.x,sel.type==='house'?0:sel.h/2,sel.z); selectHL(sel); syncPanelXZ(); } } return; }
   if(tool==='select'||tool==='delete'){ const o=pick3D(e); cv3.style.cursor=o?'grab':'default'; }   // hover affordance
 });
 cv3.addEventListener('pointerup',()=>{ cam3=null; drag3=null; cv3.style.cursor='default'; });
@@ -483,8 +510,13 @@ document.querySelectorAll('#viewSeg button').forEach(b=>b.onclick=()=>setMode(b.
 
 // ---------- side panel ----------
 function refreshPanel(){
-  document.getElementById('empty').hidden=!!sel; document.getElementById('props').hidden=!sel; updateStats();
+  const isR=sel&&sel.type==='road';
+  document.getElementById('empty').hidden=!!sel;
+  document.getElementById('props').hidden=!sel||isR;
+  document.getElementById('roadProps').hidden=!isR;
+  updateStats();
   if(!sel) return;
+  if(isR){ pRoadW.value=sel.width; return; }
   const isH=sel.type==='house';
   document.querySelectorAll('.hOnly').forEach(e=>e.style.display=isH?'flex':'none');
   document.getElementById('pType').textContent=isH?'Haus':'Prop (Kiste/Säule)';
@@ -502,8 +534,8 @@ function refreshPanel(){
   document.getElementById('warnBox').textContent=w;
 }
 function syncPanelXZ(){ if(sel){ pX.value=sel.x; pZ.value=sel.z; } }
-function updateStats(){ const h=objs.filter(o=>o.type==='house').length, b=objs.filter(o=>o.type==='box').length;
-  document.getElementById('stats').innerHTML=`Häuser: <b>${h}</b> &nbsp; Props: <b>${b}</b> &nbsp;·&nbsp; Undo: ${undoStack.length}`; }
+function updateStats(){ const h=objs.filter(o=>o.type==='house').length, b=objs.filter(o=>o.type==='box').length, r=objs.filter(o=>o.type==='road').length;
+  document.getElementById('stats').innerHTML=`Häuser: <b>${h}</b> &nbsp; Props: <b>${b}</b> &nbsp; Straßen: <b>${r}</b> &nbsp;·&nbsp; Undo: ${undoStack.length}`; }
 
 const bind=(id,key)=>{ const el=document.getElementById(id);
   el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
@@ -524,6 +556,9 @@ pWin.onchange=()=>{ if(sel){ pushUndo(); sel.win=+pWin.value; live(); } };
 pWinSize.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pWinSize.oninput=()=>{ if(sel){ sel.winSize=parseFloat(pWinSize.value); live(); } };
 pChim.onchange=()=>{ if(sel){ pushUndo(); sel.chim=+pChim.value; live(); } };
+pRoadW.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+pRoadW.oninput=()=>{ if(sel&&sel.type==='road'){ sel.width=parseFloat(pRoadW.value); live(); } };
+document.getElementById('roadDel').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.querySelectorAll('.door4 button').forEach(b=>b.onclick=()=>{ if(sel){ pushUndo(); sel.door=+b.dataset.door; live(); } });
 document.getElementById('delBtn').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.getElementById('dupBtn').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(sel,strip)); o.x+=2; o.z+=2; objs.push(o); if(mode==='3d'&&three) updateObj3D(o); select(o);} };

@@ -134,10 +134,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int prog2, aP2, uScale2, uOff2, uCol2;
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts;
+    private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
+    private boolean hasCustomRoads;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
     // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize} per house, for the roof / window meshes
     private java.util.List<float[]> houseRects;
@@ -373,6 +375,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         cityGround = makeBuffer(makeFlatQuad(35f, 0.02f));
         cityTex = uploadTexture(makeCityBitmap());
+        roadTex = uploadTexture(makeRoadBitmap());
+        if (hasCustomRoads) roadMesh = makeBuffer(makeRoadMesh());   // custom streets replace the default grid
 
         vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
         vegTex = uploadPalette(makeVegPalette());
@@ -454,8 +458,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setIdentityM(model, 0);
         drawWorld(terrain, terrainVerts, 0f, ground[0], ground[1], ground[2]);
 
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
-        drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
+        if (hasCustomRoads) {                                  // level-defined streets replace the default grid
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roadTex);
+            drawWorld(roadMesh, roadVerts, 0f, 1f, 1f, 1f);
+        } else {
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
+            drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
+        }
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
         Matrix.setIdentityM(model, 0);
@@ -2667,6 +2676,50 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return d;
     }
 
+    /** Custom streets from the level: one flat textured quad per segment, laid on the ground. */
+    private float[] makeRoadMesh() {
+        float[] d = new float[roadSegs.length * 6 * 8];
+        int o = 0;
+        for (float[] s : roadSegs) {
+            float x1 = s[0], z1 = s[1], x2 = s[2], z2 = s[3], width = Math.max(0.6f, s[4]);
+            float dx = x2 - x1, dz = z2 - z1, len = (float) Math.sqrt(dx * dx + dz * dz);
+            if (len < 1e-3f) continue;
+            float ux = dx / len, uz = dz / len, px = -uz, pz = ux, hw = width * 0.5f, y = 0.03f;
+            float ax = x1 + px * hw, az = z1 + pz * hw, bx = x1 - px * hw, bz = z1 - pz * hw;
+            float cx = x2 - px * hw, cz = z2 - pz * hw, ex = x2 + px * hw, ez = z2 + pz * hw;
+            float v = len / width;                          // tile dashes along the length
+            o = put(d, o, ax, y, az, 0, 1, 0, 0f, 0f);
+            o = put(d, o, bx, y, bz, 0, 1, 0, 1f, 0f);
+            o = put(d, o, cx, y, cz, 0, 1, 0, 1f, v);
+            o = put(d, o, ax, y, az, 0, 1, 0, 0f, 0f);
+            o = put(d, o, cx, y, cz, 0, 1, 0, 1f, v);
+            o = put(d, o, ex, y, ez, 0, 1, 0, 0f, v);
+        }
+        roadVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    private static Bitmap makeRoadBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFF4A4D50);                            // asphalt
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(91);
+        for (int k = 0; k < 700; k++) {                     // grain
+            int v = rnd.nextInt(26), s = 0x42 + v;
+            p.setColor((0x44 << 24) | (s << 16) | (s << 8) | s);
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 2, y + 2, p);
+        }
+        p.setColor(0xFFB9B2A6);                              // light kerb borders along both long edges (U)
+        c.drawRect(0, 0, N * 0.09f, N, p);
+        c.drawRect(N * 0.91f, 0, N, N, p);
+        p.setColor(0xFFE8C23A);                              // dashed yellow centre line (tiles along V)
+        for (float y = 0; y < N; y += N / 4f) c.drawRect(N * 0.47f, y, N * 0.53f, y + N / 8f, p);
+        return b;
+    }
+
     /** Top-down city ground: concrete blocks, asphalt streets with sidewalk borders + lane dashes. */
     private static Bitmap makeCityBitmap() {
         int N = 1536;
@@ -2749,6 +2802,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (!f.exists()) return false;
             java.util.List<float[]> props = new java.util.ArrayList<float[]>();
             java.util.List<float[]> hs = new java.util.ArrayList<float[]>();
+            java.util.List<float[]> roadList = new java.util.ArrayList<float[]>();
             br = new java.io.BufferedReader(new java.io.FileReader(f));
             String line;
             while ((line = br.readLine()) != null) {
@@ -2769,9 +2823,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     // cx cz w h d r g b  -> ground box centred at y = h/2
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
                     props.add(new float[]{pf(t[1]), h * 0.5f, pf(t[2]), w, h, d, pf(t[6]), pf(t[7]), pf(t[8])});
+                } else if (t[0].equals("R") && t.length >= 5) {
+                    // R x1 z1 x2 z2 [width]  -> a street segment (visual only, no collision)
+                    roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f)});
                 }
             }
-            if (hs.isEmpty() && props.isEmpty()) return false;
+            this.roadSegs = roadList.isEmpty() ? null : roadList.toArray(new float[0][]);
+            this.hasCustomRoads = this.roadSegs != null;
+            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty()) return false;
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {
@@ -2857,8 +2916,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
                 0.46f, 0.30f, 0.17f});
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
-        if (chim) {                                        // brick chimney poking above the gable roof
-            L.add(new float[]{cx + w * 0.28f, h + 1.05f, cz - d * 0.28f, 0.34f, 1.5f, 0.34f, 0.55f, 0.30f, 0.22f});
+        if (chim) {                                        // brick chimney poking clearly above the gable ridge
+            L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f});
         }
     }
 
