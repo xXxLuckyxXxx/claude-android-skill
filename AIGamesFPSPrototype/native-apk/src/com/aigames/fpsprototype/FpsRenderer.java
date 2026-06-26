@@ -2334,18 +2334,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // Facade colour palette: concrete, brick, steel-blue, sandstone, dark concrete.
-    private static final float[][] PALETTE = {     // varied house colours (tint the light stucco texture)
-        {0.93f, 0.88f, 0.74f},   // warm cream
-        {0.88f, 0.60f, 0.40f},   // terracotta / ochre
-        {0.58f, 0.72f, 0.88f},   // sky blue
-        {0.66f, 0.82f, 0.62f},   // sage green
-        {0.92f, 0.70f, 0.72f},   // dusty pink
-        {0.96f, 0.94f, 0.90f},   // off-white
-        {0.86f, 0.78f, 0.48f},   // mustard yellow
-        {0.74f, 0.68f, 0.82f},   // lavender
-        {0.78f, 0.84f, 0.84f},   // pale grey-blue
-        {0.94f, 0.76f, 0.50f},   // sandy orange
+    private static final float[][] PALETTE = {     // muted, realistic facade tints (low saturation stucco/stone/brick)
+        {0.85f, 0.82f, 0.76f},   // warm off-white stucco
+        {0.79f, 0.75f, 0.67f},   // beige
+        {0.74f, 0.72f, 0.69f},   // light warm grey
+        {0.81f, 0.74f, 0.62f},   // sandstone
+        {0.70f, 0.67f, 0.62f},   // taupe
+        {0.76f, 0.71f, 0.64f},   // pale ochre
+        {0.69f, 0.70f, 0.66f},   // sage grey
+        {0.83f, 0.79f, 0.73f},   // cream
+        {0.71f, 0.65f, 0.59f},   // muted clay / brick
+        {0.75f, 0.76f, 0.76f},   // cool stone grey
     };
+    private static final float[][] ROOFS = {       // realistic roof tints (terracotta / slate / weathered)
+        {0.52f, 0.30f, 0.22f},   // muted terracotta
+        {0.40f, 0.40f, 0.43f},   // slate grey
+        {0.33f, 0.29f, 0.27f},   // dark charcoal-brown
+        {0.47f, 0.41f, 0.35f},   // weathered brown
+        {0.50f, 0.33f, 0.26f},   // clay
+    };
+    private static final float[][] DOORS = {       // realistic door colours (wood / painted)
+        {0.42f, 0.28f, 0.17f},   // dark wood
+        {0.30f, 0.26f, 0.22f},   // weathered brown
+        {0.22f, 0.30f, 0.28f},   // muted green
+        {0.34f, 0.34f, 0.36f},   // grey
+        {0.45f, 0.22f, 0.18f},   // dark red
+    };
+    private static final float[] GLASS_DEF = {0.50f, 0.57f, 0.66f};   // muted grey-blue glazing
 
     /** A small city: a grid of varied buildings around an open central plaza + spawn lane. */
     // --- vegetation (one baked mesh, coloured via a tiny palette texture) ---
@@ -2912,7 +2927,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float rr = hh[10], rg = hh[11], rb = hh[12];
                 if (rr < 0f) { rr = 0.69f; rg = 0.31f; rb = 0.16f; }     // default terracotta roof
                 float gr = hh[18], gg = hh[19], gb = hh[20];
-                if (gr < 0f) { gr = 0.60f; gg = 0.76f; gb = 0.94f; }     // default soft-blue glass
+                if (gr < 0f) { gr = GLASS_DEF[0]; gg = GLASS_DEF[1]; gb = GLASS_DEF[2]; }   // default muted glass
                 addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
                             hh[21], hh[22], hh[23], hh[24], hh[25]);      // doorW doorH doorR doorG doorB
                 houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
@@ -2959,15 +2974,45 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (rc.nextFloat() < 0.16f) continue;              // random empty plot -> irregular spacing
                 float cx = gx + (rc.nextFloat() - 0.5f) * 2.0f;    // jitter off the grid (+/-1 m)
                 float cz = gz + (rc.nextFloat() - 0.5f) * 2.0f;
-                float w = 3.4f + rc.nextFloat() * 1.7f;            // varied house footprints
-                float d = 3.4f + rc.nextFloat() * 1.7f;
-                boolean tall = gx * gx + gz * gz > 27f * 27f;      // a few 2-storey houses further out
-                float h = tall ? 3.4f + rc.nextFloat() * 1.5f : 2.6f + rc.nextFloat() * 1.1f;
-                int doorSide = rc.nextInt(4);                      // doors face varied directions
+
+                // Pick a building archetype by where it sits: shops + townhouses near the centre,
+                // cottages in the mid ring, bigger flats/blocks on the outskirts -> a believable town gradient.
+                float dist2 = gx * gx + gz * gz, roll = rc.nextFloat();
+                int arch;
+                if (dist2 > 26f * 26f)      arch = roll < 0.45f ? 2 : (roll < 0.80f ? 1 : 0);   // outskirts
+                else if (dist2 < 16f * 16f) arch = roll < 0.40f ? 3 : (roll < 0.75f ? 1 : 0);   // centre
+                else                        arch = roll < 0.60f ? 0 : (roll < 0.85f ? 1 : 3);   // mid ring
+
+                float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
+                int storeys, winDens; boolean chimney, trim; float[] rf;
+                if (arch == 0) {                                   // cottage: low, wide, pitched
+                    w = 4.0f + rc.nextFloat() * 1.0f; d = 4.0f + rc.nextFloat() * 0.8f; h = 2.6f + rc.nextFloat() * 0.7f;
+                    storeys = 1; foundH = 0.22f + rc.nextFloat() * 0.12f; winDens = 2; chimney = true; trim = false;
+                    rf = ROOFS[rc.nextFloat() < 0.7f ? 0 : 4];
+                } else if (arch == 1) {                            // townhouse: tall, narrow, steep roof, storeys
+                    w = 3.2f + rc.nextFloat() * 0.8f; d = 3.6f + rc.nextFloat() * 0.8f; h = 4.4f + rc.nextFloat() * 1.2f;
+                    storeys = 2 + (rc.nextFloat() < 0.5f ? 1 : 0); foundH = 0.28f + rc.nextFloat() * 0.1f; winDens = 3;
+                    chimney = true; trim = rc.nextFloat() < 0.4f; pitch = 1.4f + rc.nextFloat() * 0.5f;
+                    rf = ROOFS[rc.nextFloat() < 0.5f ? 0 : 1];
+                } else if (arch == 2) {                            // block / flats: big, flatter slate roof
+                    w = 4.5f + rc.nextFloat() * 1.0f; d = 4.5f + rc.nextFloat() * 1.0f; h = 5.0f + rc.nextFloat() * 1.5f;
+                    storeys = 2 + (rc.nextFloat() < 0.6f ? 1 : 0); foundH = 0.30f + rc.nextFloat() * 0.12f; winDens = 3;
+                    chimney = false; trim = rc.nextFloat() < 0.5f; pitch = 0.5f + rc.nextFloat() * 0.4f;
+                    rf = ROOFS[1 + rc.nextInt(2)];                 // slate / charcoal
+                } else {                                           // shop: wide low front, big door + windows, awning band
+                    w = 5.0f + rc.nextFloat() * 1.0f; d = 4.0f + rc.nextFloat() * 0.6f; h = 3.0f + rc.nextFloat() * 0.8f;
+                    storeys = 1; foundH = 0.25f + rc.nextFloat() * 0.1f; winDens = 3; winSize = 1.2f; chimney = false;
+                    trim = true; doorW = 2.4f + rc.nextFloat() * 0.5f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
+                }
+                int doorSide = rc.nextInt(4);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
-                addBuilding(L, doors, cx, cz, w, d, h, doorSide, rc.nextInt(3), p[0], p[1], p[2]);
-                houses.add(new float[]{cx, cz, w, d, h, doorSide, 0.69f, 0.31f, 0.16f, -1f, -1f, 2f, 1f,
-                        0.60f, 0.76f, 0.94f, 0.30f, 0.42f, 0.40f, 0.40f, -1f, -1f, -1f, 1f}); // glass, plinth, no trim, 1 storey
+                float[] dc = DOORS[rc.nextInt(DOORS.length)];
+                float fR = 0.40f + rc.nextFloat() * 0.06f, fG = 0.38f + rc.nextFloat() * 0.06f, fB = 0.36f + rc.nextFloat() * 0.06f;
+                float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
+                addBuilding(L, doors, cx, cz, w, d, h, doorSide, 1, p[0], p[1], p[2], chimney ? 1 : 0,
+                            doorW, doorH, dc[0], dc[1], dc[2]);
+                houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
+                        GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
             }
         }
     }
