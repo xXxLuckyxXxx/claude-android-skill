@@ -105,10 +105,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                              "ADRENALINE", "MOVE SPEED", "DOUBLE JUMP", "GREED"};
 
     // Enemies / survival.
-    private static final int MAX_ENEMIES = 7;
-    private static final float ENEMY_SPEED = 1.7f;     // base m/s
+    private static final int MAX_ENEMIES = 10;         // more of the horde on the field at once
+    private static final float ENEMY_SPEED = 1.85f;    // base m/s
     private static final float ENEMY_FULL_HP = 100f;
-    private static final float SPAWN_DIST = 42f;
+    private static final float SPAWN_DIST = 38f;        // spawn a touch closer so they reach you sooner
     private static final float REACH_DIST = 1.5f;
     private static final float ENEMY_DMG = 20f;
     private static final float MAX_HP = 100f;
@@ -127,7 +127,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float us = 1.4f;          // global UI scale (text + buttons), grows with screen height
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
-    private int progSky, aPSky, uSkyTop, uSkyBot;
+    private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime;
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
@@ -150,6 +150,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private float px = 0f, py = 1.6f, pz = 9f;
     private float yaw = 0f, pitch = -0.08f;
+    private final float[] camFwd = new float[3], camRight = new float[3], camUp = new float[3];  // view basis for the sky
     private float recoil = 0f;
     private long lastNanos;
     private float timeAcc = 0f;
@@ -262,7 +263,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
     private int nearDoor = -1;
 
-    private static final float[] FOG = {0.46f, 0.52f, 0.62f};
+    private static final float[] FOG = {0.72f, 0.80f, 0.90f};   // light blue haze to match the sunny sky horizon
 
     public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
@@ -285,7 +286,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        GLES20.glClearColor(0.46f, 0.52f, 0.62f, 1f);
+        GLES20.glClearColor(0.72f, 0.80f, 0.90f, 1f);
 
         prog3 = buildProgram(VERT3_SRC, FRAG3_SRC);
         aPos = GLES20.glGetAttribLocation(prog3, "aPos");
@@ -303,8 +304,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         progSky = buildProgram(VERT_SKY_SRC, FRAG_SKY_SRC);
         aPSky = GLES20.glGetAttribLocation(progSky, "aP");
-        uSkyTop = GLES20.glGetUniformLocation(progSky, "uTop");
-        uSkyBot = GLES20.glGetUniformLocation(progSky, "uBot");
+        uSkyFwd = GLES20.glGetUniformLocation(progSky, "uFwd");
+        uSkyRight = GLES20.glGetUniformLocation(progSky, "uRight");
+        uSkyUp = GLES20.glGetUniformLocation(progSky, "uUp");
+        uSkySun = GLES20.glGetUniformLocation(progSky, "uSun");
+        uSkyHalfFov = GLES20.glGetUniformLocation(progSky, "uHalfFov");
+        uSkyTime = GLES20.glGetUniformLocation(progSky, "uTime");
 
         progVig = buildProgram(VERT_VIG_SRC, FRAG_VIG_SRC);
         aPVig = GLES20.glGetAttribLocation(progVig, "aP");
@@ -405,8 +410,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glDepthMask(false);
         GLES20.glUseProgram(progSky);
-        GLES20.glUniform3f(uSkyTop, 0.05f, 0.07f, 0.16f);
-        GLES20.glUniform3f(uSkyBot, 0.52f, 0.58f, 0.68f);
+        GLES20.glUniform3f(uSkyFwd, camFwd[0], camFwd[1], camFwd[2]);
+        GLES20.glUniform3f(uSkyRight, camRight[0], camRight[1], camRight[2]);
+        GLES20.glUniform3f(uSkyUp, camUp[0], camUp[1], camUp[2]);
+        GLES20.glUniform3f(uSkySun, -0.35f, 0.55f, -0.62f);   // sun a bit above the rooftops
+        float skyTanY = (float) Math.tan(Math.toRadians(fov) * 0.5);
+        GLES20.glUniform2f(uSkyHalfFov, skyTanY * aspect, skyTanY);
+        GLES20.glUniform1f(uSkyTime, timeAcc);
         quad.position(0);
         GLES20.glEnableVertexAttribArray(aPSky);
         GLES20.glVertexAttribPointer(aPSky, 2, GLES20.GL_FLOAT, false, 8, quad);
@@ -476,7 +486,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (waveBreak <= 0f) beginWave(wave);
             return;
         }
-        float speed = ENEMY_SPEED * Math.min(1.9f, 1f + 0.02f * (wave - 1));
+        float speed = ENEMY_SPEED * Math.min(2.2f, 1f + 0.03f * (wave - 1));   // faster every wave
+        float dmgMul = Math.min(1.8f, 1f + 0.025f * (wave - 1));                // and they hit harder
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enHurt[i] > 0f) enHurt[i] -= dt;
             if (!enAlive[i]) continue;
@@ -485,7 +496,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             enFace[i] = (float) Math.atan2(dx, dz);
             if (d < REACH_DIST * enScale[i]) {
                 enAlive[i] = false;
-                playerHP -= ENEMY_DMG * (enBoss[i] > 0 ? 2.5f : 1f);
+                playerHP -= ENEMY_DMG * dmgMul * (enBoss[i] > 0 ? 2.5f : 1f);
                 hurtFlash = 0.6f;
                 combo = 1; comboTimer = 0f;
                 sfx.hurt();
@@ -509,7 +520,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (waveToSpawn > 0 && spawnTimer <= 0f && aliveCount() < MAX_ENEMIES) {
             spawnEnemy();
             waveToSpawn--;
-            spawnTimer = Math.max(0.32f, 1.4f - wave * 0.04f);
+            spawnTimer = Math.max(0.28f, 1.05f - wave * 0.045f);   // horde arrives quicker each wave
         }
     }
 
@@ -522,7 +533,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Start wave w: size grows over time; every 5th is a mini-boss, every 10th a boss. */
     private void beginWave(int w) {
         wave = w;
-        int size = Math.max(2, Math.round(3 + (w - 1) * 1.4f));
+        int size = Math.max(3, Math.round(4 + (w - 1) * 1.6f));
         waveToSpawn = size;
         waveRemaining = size;
         bossPending = (w % 10 == 0) ? 2 : (w % 5 == 0 ? 1 : 0);
@@ -534,7 +545,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Wave cleared: pay a bonus, show a banner, and pause before the next wave. */
     private void clearWave() {
         if (waveBreak > 0f) return;                       // guard against a multi-kill clearing twice
-        long bonus = 100L * wave;
+        long bonus = 120L * wave;
         cash += bonus; runCash += bonus;
         waveBannerText = "WAVE " + wave + " CLEAR  +$" + bonus;
         waveBanner = 2.4f;
@@ -553,7 +564,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enPhase[i] = rng.nextFloat() * 6.2832f;
                 enHurt[i] = 0f;
                 enFaceType[i] = rng.nextInt(6);
-                float hpMul = Math.min(4f, 1f + 0.06f * (wave - 1));
+                float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
                 if (bossPending > 0) {
                     enBoss[i] = bossPending;
                     enScale[i] = bossPending == 2 ? 1.9f : 1.45f;
@@ -1094,6 +1105,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float ldy = (float) Math.sin(effPitch);
         float ldz = -cosP * (float) Math.cos(vYaw);
         Matrix.setLookAtM(view, 0, px, eyeY, pz, px + ldx, eyeY + ldy, pz + ldz, 0f, 1f, 0f);
+
+        // Cache the camera basis (forward/right/up) so the sky shader can rebuild per-pixel view rays.
+        camFwd[0] = ldx; camFwd[1] = ldy; camFwd[2] = ldz;
+        float rl = (float) Math.sqrt(ldz * ldz + ldx * ldx);   // right = normalize(fwd x worldUp)
+        if (rl < 1e-4f) rl = 1e-4f;
+        camRight[0] = -ldz / rl; camRight[1] = 0f; camRight[2] = ldx / rl;
+        camUp[0] = camRight[1] * ldz - camRight[2] * ldy;       // up = right x fwd
+        camUp[1] = camRight[2] * ldx - camRight[0] * ldz;
+        camUp[2] = camRight[0] * ldy - camRight[1] * ldx;
     }
 
     /** Jump if grounded (or once more in mid-air with the Double-Jump ability); climb low ledges. */
@@ -1302,9 +1322,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         comboTimer = COMBO_WINDOW;
         score += combo * (head ? 2 : 1);
 
-        // cash + xp: headshots worth +50%; cash scales with combo and the Greed ability
+        // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 15 : 10;
-        long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]));
+        long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]) * (1f + 0.06f * (wave - 1)));
         cash += cashGain; runCash += cashGain;
         xp += baseGain; runXp += baseGain; runKills++;
         int before = playerLevel;
@@ -3083,13 +3103,42 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "}";
 
     private static final String VERT_SKY_SRC =
-        "attribute vec2 aP; varying float vy; void main(){ vy=aP.y; gl_Position=vec4(aP,0.999,1.0); }";
+        "attribute vec2 aP; varying vec2 vP; void main(){ vP=aP; gl_Position=vec4(aP,0.999,1.0); }";
 
+    // Daytime sky: rebuild a per-pixel view ray from the camera basis, then paint a blue gradient,
+    // a warm sun disc + halo, and animated FBM clouds projected onto a sky plane.
     private static final String FRAG_SKY_SRC =
-        "precision mediump float; varying float vy; uniform vec3 uTop; uniform vec3 uBot;" +
-        "void main(){ float t=clamp(vy*0.5+0.5,0.0,1.0); vec3 c=mix(uBot,uTop,t*t);" +
-        "  float h=1.0-smoothstep(0.0,0.18,abs(vy)); c+=vec3(0.20,0.14,0.09)*h;" +
-        "  gl_FragColor=vec4(pow(c,vec3(0.4545)),1.0); }";
+        "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
+        "varying vec2 vP;" +
+        "uniform vec3 uFwd; uniform vec3 uRight; uniform vec3 uUp; uniform vec3 uSun;" +
+        "uniform vec2 uHalfFov; uniform float uTime;" +
+        "float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }" +
+        "float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f);" +
+        "  float a=hash(i); float b=hash(i+vec2(1.0,0.0)); float c=hash(i+vec2(0.0,1.0)); float d=hash(i+vec2(1.0,1.0));" +
+        "  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }" +
+        "float fbm(vec2 p){ float v=0.0; float a=0.55; for(int i=0;i<5;i++){ v+=a*vnoise(p); p=p*2.02+vec2(11.3,7.1); a*=0.5; } return v; }" +
+        "void main(){" +
+        "  vec3 dir=normalize(uFwd + vP.x*uHalfFov.x*uRight + vP.y*uHalfFov.y*uUp);" +
+        "  vec3 sun=normalize(uSun); float h=dir.y;" +
+        "  float t=clamp(h,0.0,1.0);" +
+        "  vec3 col=mix(vec3(0.76,0.85,0.95),vec3(0.16,0.41,0.74),pow(t,0.55));" +   // horizon -> zenith
+        "  col=mix(col,vec3(0.55,0.60,0.63),smoothstep(0.0,-0.18,h));" +             // haze just below horizon
+        "  float sd=max(dot(dir,sun),0.0);" +
+        "  float halo=pow(sd,5.0)*0.45 + pow(sd,180.0)*0.7;" +
+        "  col+=halo*vec3(1.0,0.86,0.58);" +
+        "  col=mix(col,vec3(1.05,1.0,0.92),smoothstep(0.9988,0.9994,sd));" +          // sun disc
+        "  float fade=smoothstep(0.05,0.25,h);" +
+        "  if(fade>0.001){" +
+        "    vec2 cp=dir.xz/max(h,0.07);" +
+        "    float d=fbm(cp*1.3+vec2(uTime*0.010,uTime*0.004));" +
+        "    d=d*1.7-0.45;" +
+        "    float cov=smoothstep(0.30,0.95,d)*fade;" +
+        "    float shade=smoothstep(0.2,1.0,d);" +
+        "    vec3 cloud=mix(vec3(0.72,0.75,0.82),vec3(1.0,1.0,1.0),shade)+halo*0.6*vec3(1.0,0.9,0.7);" +
+        "    col=mix(col,cloud,cov*0.92);" +
+        "  }" +
+        "  gl_FragColor=vec4(pow(min(col,vec3(1.0)),vec3(0.4545)),1.0);" +
+        "}";
 
     private static final String VERT_VIG_SRC =
         "attribute vec2 aP; varying vec2 vP; void main(){ vP=aP; gl_Position=vec4(aP,0.0,1.0); }";
