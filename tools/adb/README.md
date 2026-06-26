@@ -32,6 +32,24 @@ tools/adb/fps.sh play 8        # starts a run and screenshots the action
 `install` auto-picks the newest APK from `AIGamesFPSPrototype/Builds/Android/`, falling back
 to `./AIGamesFPS.apk`. Override: `fps.sh install path/to/AIGamesFPS.apk`.
 
+### Windows (PowerShell — no Git Bash needed)
+
+Use **`fps.ps1`** instead; same commands. Put `fps.ps1` + `AIGamesFPS.apk` in one folder, start
+your AVD in Android Studio, then in PowerShell:
+
+```powershell
+cd C:\path\to\that\folder
+# one-time, if the script is blocked:
+Set-ExecutionPolicy -Scope Process Bypass
+.\fps.ps1 doctor
+.\fps.ps1 install
+.\fps.ps1 play 8
+```
+
+It finds `adb` on `PATH`, or auto-falls back to `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`
+(set `$env:ADB` to override). Screenshots use device-side `screencap` + `adb pull` so PNGs stay
+intact. Then send me everything in `.\fps-out\`.
+
 ## What to send back
 
 After `play` (or your own session), zip/attach the **`fps-out/`** folder — it contains:
