@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.GLUtils;
@@ -46,27 +47,62 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float HITMARK_TIME = 0.22f;
     private static final float COMBO_WINDOW = 2.2f;
 
-    // Weapons: 0 = pistol, 1 = SMG (full-auto), 2 = shotgun.
-    private static final int W_COUNT = 3;
-    private static final int[]     W_MAG       = {12, 30, 6};
-    private static final int[]     W_RES_START = {48, 90, 24};
-    private static final int[]     W_RES_MAX   = {120, 240, 48};
-    private static final float[]   W_INTERVAL  = {0.20f, 0.085f, 0.72f};   // s between shots
-    private static final float[]   W_RELOAD    = {1.15f, 1.70f, 2.00f};
-    private static final int[]     W_PELLETS   = {1, 1, 9};
-    private static final float[]   W_SPREAD    = {0.0f, 0.018f, 0.085f};
-    private static final float[]   W_BODYDMG   = {55f, 26f, 20f};
-    private static final float[]   W_HEADDMG   = {120f, 60f, 46f};
-    private static final float[]   W_RECOIL    = {0.030f, 0.016f, 0.075f};
-    private static final float[]   W_SHAKE     = {0.55f, 0.32f, 1.00f};
-    private static final int[]     W_KILL_REWARD = {6, 10, 4};
-    private static final boolean[] W_AUTO      = {false, true, false};
+    // Weapons: 0 = pistol, 1 = SMG (full-auto), 2 = shotgun, 3 = sniper (bought in the shop).
+    private static final int W_COUNT = 4;
+    private static final int[]     W_MAG       = {12, 30, 6, 5};
+    private static final int[]     W_RES_START = {48, 90, 24, 25};
+    private static final int[]     W_RES_MAX   = {120, 240, 48, 60};
+    private static final float[]   W_INTERVAL  = {0.20f, 0.085f, 0.72f, 1.05f};   // s between shots
+    private static final float[]   W_RELOAD    = {1.15f, 1.70f, 2.00f, 2.40f};
+    private static final int[]     W_PELLETS   = {1, 1, 9, 1};
+    private static final float[]   W_SPREAD    = {0.0f, 0.018f, 0.085f, 0.0f};
+    private static final float[]   W_BODYDMG   = {55f, 26f, 20f, 90f};
+    private static final float[]   W_HEADDMG   = {120f, 60f, 46f, 260f};
+    private static final float[]   W_RECOIL    = {0.030f, 0.016f, 0.075f, 0.10f};
+    private static final float[]   W_SHAKE     = {0.55f, 0.32f, 1.00f, 1.20f};
+    private static final int[]     W_KILL_REWARD = {6, 10, 4, 3};
+    private static final boolean[] W_AUTO      = {false, true, false, false};
 
     // Iron sights mounted per weapon: gun-top under the sights, sight-line height, rear/front Z.
-    private static final float[] SIGHT_BASE  = {0.065f, 0.066f, 0.050f};
-    private static final float[] SIGHT_BEAD  = {0.090f, 0.110f, 0.078f};
-    private static final float[] SIGHT_REARZ = {0.100f, 0.090f, 0.050f};
-    private static final float[] SIGHT_FRONTZ = {-0.180f, -0.300f, -0.550f};
+    // (Index 3 = sniper; it draws a scope instead, but SIGHT_BEAD still sets its ADS aim height.)
+    private static final float[] SIGHT_BASE  = {0.065f, 0.066f, 0.050f, 0.050f};
+    private static final float[] SIGHT_BEAD  = {0.090f, 0.110f, 0.078f, 0.115f};
+    private static final float[] SIGHT_REARZ = {0.100f, 0.090f, 0.050f, 0.100f};
+    private static final float[] SIGHT_FRONTZ = {-0.180f, -0.300f, -0.550f, -0.200f};
+
+    // === Meta-progression (persists across deaths) ===
+    // Per-weapon upgrade categories.
+    private static final int UPG_DMG = 0, UPG_RATE = 1, UPG_MAG = 2, UPG_RELOAD = 3, UPG_COUNT = 4;
+    private static final int UPG_MAX_TIER = 5;
+    private static final float[] UPG_DMG_MULT    = {1f, 1.12f, 1.25f, 1.40f, 1.58f, 1.80f};
+    private static final float[] UPG_RATE_MULT   = {1f, 0.93f, 0.87f, 0.81f, 0.75f, 0.70f}; // multiplies interval
+    private static final float[] UPG_RELOAD_MULT = {1f, 0.92f, 0.85f, 0.78f, 0.72f, 0.66f};
+    private static final int[]   UPG_COST        = {0, 500, 1500, 4000, 10000, 25000};       // cost to reach tier t
+
+    // Abilities (global perks, levelled with cash).
+    private static final int AB_MAXHP = 0, AB_FASTRELOAD = 1, AB_DMGBOOST = 2, AB_HEADMASTERY = 3,
+                             AB_ADRENALINE = 4, AB_MOVESPEED = 5, AB_DOUBLEJUMP = 6, AB_CASHBONUS = 7, AB_COUNT = 8;
+    private static final int[] AB_MAX_LEVEL = {5, 1, 5, 3, 3, 4, 1, 5};
+    private static final int[][] AB_COST = {
+        {500, 1200, 3000, 6000, 12000},   // MAXHP        +20 hp / level
+        {2500},                           // FASTRELOAD   -15% reload (global)
+        {800, 2000, 4500, 9000, 18000},   // DMGBOOST     +6% all damage / level
+        {1500, 4000, 10000},              // HEADMASTERY  +15% head damage / level
+        {1200, 3500, 8000},               // ADRENALINE   heal 6/12/18 on kill
+        {700, 1800, 4000, 9000},          // MOVESPEED    +6% / level
+        {6000},                           // DOUBLEJUMP
+        {500, 1500, 3500, 7000, 14000},   // CASHBONUS    +10% cash per kill / level
+    };
+
+    // Shop: which weapons must be bought, and the level needed to buy them. Pistol is free.
+    private static final int[] WEAPON_COST    = {0, 4000, 8000, 20000};
+    private static final int[] WEAPON_REQ_LVL = {0, 3, 6, 12};
+
+    // Display names for the hub menus.
+    private static final String[] WEAPON_NAME = {"PISTOL", "SMG", "SHOTGUN", "SNIPER"};
+    private static final String[] UPG_NAME = {"DAMAGE", "FIRE RATE", "MAGAZINE", "RELOAD"};
+    private static final String[] AB_NAME = {"MAX HEALTH", "FAST RELOAD", "DAMAGE UP", "HEADSHOT UP",
+                                             "ADRENALINE", "MOVE SPEED", "DOUBLE JUMP", "GREED"};
 
     // Enemies / survival.
     private static final int MAX_ENEMIES = 7;
@@ -94,10 +130,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
+    private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts;
 
     private final float[] proj = new float[16];
@@ -136,7 +173,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float comboTimer = 0f;
     private int highScore = 0;
     private float playerHP = MAX_HP;
-    private boolean gameOver = false;
+
+    // Game state machine: HUB (between runs, spend cash) / PLAYING / SUMMARY (run-over recap).
+    private static final int ST_HUB = 0, ST_PLAYING = 1, ST_SUMMARY = 2;
+    private int state = ST_HUB;
+    private int hubTab = 0;              // 0 = weapons, 1 = upgrades, 2 = abilities
+    private int upgradeSel = 0;          // weapon currently shown in the upgrades tab
+    private final float[] tap = new float[2];
+
+    // Persistent meta-progression (loaded in ctor, saved on purchase/death; survives restart()).
+    private long cash = 0;
+    private long xp = 0;
+    private int playerLevel = 1;
+    private final int[] wOwned = new int[W_COUNT];                 // pistol forced to 1 on load
+    private final int[][] upgTier = new int[W_COUNT][UPG_COUNT];
+    private final int[] abLevel = new int[AB_COUNT];
+    // Per-run economy (reset by restart()).
+    private long runCash = 0, runXp = 0;
+    private int runKills = 0, levelsGainedThisRun = 0;
+    private int jumpsUsed = 0;
 
     // Per-weapon ammo state.
     private int curWeapon = 0;
@@ -156,7 +211,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final int[] enOutfit = new int[MAX_ENEMIES];
     private final int[] enFaceType = new int[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
+    private final float[] enScale = new float[MAX_ENEMIES];   // 1 = normal, >1 = (mini)boss
+    private final int[] enBoss = new int[MAX_ENEMIES];        // 0 = normal, 1 = mini-boss, 2 = boss
     private float spawnTimer = 0f;
+
+    // Waves.
+    private int wave = 1;
+    private int waveToSpawn = 0;       // enemies still to spawn this wave
+    private int waveRemaining = 0;     // enemies still to remove (spawned-or-not) before the wave clears
+    private int bossPending = 0;       // >0 = next spawn is a (mini)boss of that tier
+    private float waveBreak = 0f;      // >0 = between-wave reward pause
+    private float waveBanner = 0f;     // banner display timer
+    private String waveBannerText = "";
 
     // Clothing schemes: shirt RGB (torso + arms) + pants RGB (legs). Bright/saturated so
     // enemies stand out from the grey buildings and green ground.
@@ -192,6 +258,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.prefs = ctx.getSharedPreferences("aigames_fps", Context.MODE_PRIVATE);
         this.highScore = prefs.getInt("highscore", 0);
         this.sfx = new Sfx(ctx);
+        loadMeta();
 
         ArrayList<float[]> bl = new ArrayList<float[]>();
         ArrayList<float[]> dl = new ArrayList<float[]>();
@@ -239,6 +306,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uOff2 = GLES20.glGetUniformLocation(prog2, "uOff");
         uCol2 = GLES20.glGetUniformLocation(prog2, "uCol");
 
+        progText = buildProgram(VERT_TEXT_SRC, FRAG_TEXT_SRC);
+        aPText = GLES20.glGetAttribLocation(progText, "aP");
+        aUVText = GLES20.glGetAttribLocation(progText, "aUV");
+        uScaleT = GLES20.glGetUniformLocation(progText, "uScale");
+        uOffT = GLES20.glGetUniformLocation(progText, "uOff");
+        uColT = GLES20.glGetUniformLocation(progText, "uCol");
+        uUVoffT = GLES20.glGetUniformLocation(progText, "uUVoff");
+        uUVscaleT = GLES20.glGetUniformLocation(progText, "uUVscale");
+        uFontTex = GLES20.glGetUniformLocation(progText, "uFont");
+
         GLES20.glUseProgram(prog3);
         GLES20.glUniform1i(uTex, 0);
 
@@ -248,12 +325,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         sphere = makeBuffer(sph);
         sphereVerts = sph.length / 8;
         quad = makeBuffer(QUAD_DATA);
+        textQuad = makeBuffer(TEXTQUAD_DATA);
         int seg = 28;
         circle = makeCircle(seg);
         circleVerts = seg + 2;
 
         floorTex = uploadTexture(makeFloorBitmap());
         metalTex = uploadTexture(makeMetalBitmap());
+        fontTex = uploadFontTexture(makeFontAtlas());
 
         float[] terr = makeTerrain(56, 80f);
         terrain = makeBuffer(terr);
@@ -267,6 +346,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         vegTex = uploadPalette(makeVegPalette());
 
         restart();
+        state = ST_HUB;                 // app opens in the hub (PLAY to begin a run)
         lastNanos = System.nanoTime();
     }
 
@@ -292,7 +372,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         updateEnemies(dt);
         tickTimers(dt);
 
-        float fov = 72f - 30f * aim + 6f * sprintAnim;   // wider view; zoom in on ADS, widen on sprint
+        float adsZoom = (curWeapon == 3) ? 46f : 30f;   // sniper zooms much harder through its scope
+        float fov = 72f - adsZoom * aim + 6f * sprintAnim;
         Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
@@ -346,33 +427,44 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawEnemies();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
-        drawGun();
+        if (state == ST_PLAYING) drawGun();
 
-        drawHud();
+        if (state == ST_PLAYING) drawHud();
+        else if (state == ST_SUMMARY) drawSummary();
+        else drawHub();
     }
 
     // --- enemies ---
 
     private void updateEnemies(float dt) {
-        if (gameOver) return;
-        float speed = ENEMY_SPEED * (1f + Math.min(score, 100) * 0.012f);
+        if (state != ST_PLAYING) return;
+        if (waveBanner > 0f) waveBanner -= dt;
+        if (waveBreak > 0f) {                              // between-wave reward pause
+            waveBreak -= dt;
+            if (waveBreak <= 0f) beginWave(wave);
+            return;
+        }
+        float speed = ENEMY_SPEED * Math.min(1.9f, 1f + 0.02f * (wave - 1));
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enHurt[i] > 0f) enHurt[i] -= dt;
             if (!enAlive[i]) continue;
             float dx = px - enX[i], dz = pz - enZ[i];
             float d = (float) Math.sqrt(dx * dx + dz * dz);
             enFace[i] = (float) Math.atan2(dx, dz);
-            if (d < REACH_DIST) {
+            if (d < REACH_DIST * enScale[i]) {
                 enAlive[i] = false;
-                playerHP -= ENEMY_DMG;
+                playerHP -= ENEMY_DMG * (enBoss[i] > 0 ? 2.5f : 1f);
                 hurtFlash = 0.6f;
                 combo = 1; comboTimer = 0f;
                 sfx.hurt();
+                waveRemaining--;
                 if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
+                else if (waveRemaining <= 0) clearWave();
             } else if (d > 1e-4f) {
+                float es = speed * (enBoss[i] > 0 ? 0.6f : 1f);   // bosses are slower but tankier
                 float a = steerDir(enX[i], enZ[i], (float) Math.atan2(dx, dz));  // navigate round buildings
                 enFace[i] = a;                            // face the way it actually moves
-                float step = speed * dt;
+                float step = es * dt;
                 enX[i] += (float) Math.sin(a) * step;
                 enZ[i] += (float) Math.cos(a) * step;
                 enPhase[i] += step * 9f;                  // advance walk cycle with distance
@@ -382,10 +474,41 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
         }
         spawnTimer -= dt;
-        if (spawnTimer <= 0f) {
+        if (waveToSpawn > 0 && spawnTimer <= 0f && aliveCount() < MAX_ENEMIES) {
             spawnEnemy();
-            spawnTimer = Math.max(0.5f, 1.6f - score * 0.012f);
+            waveToSpawn--;
+            spawnTimer = Math.max(0.32f, 1.4f - wave * 0.04f);
         }
+    }
+
+    private int aliveCount() {
+        int n = 0;
+        for (int i = 0; i < MAX_ENEMIES; i++) if (enAlive[i]) n++;
+        return n;
+    }
+
+    /** Start wave w: size grows over time; every 5th is a mini-boss, every 10th a boss. */
+    private void beginWave(int w) {
+        wave = w;
+        int size = Math.max(2, Math.round(3 + (w - 1) * 1.4f));
+        waveToSpawn = size;
+        waveRemaining = size;
+        bossPending = (w % 10 == 0) ? 2 : (w % 5 == 0 ? 1 : 0);
+        spawnTimer = 0.3f;
+        waveBannerText = (bossPending == 2 ? "BOSS WAVE " : (bossPending == 1 ? "MINI-BOSS WAVE " : "WAVE ")) + w;
+        waveBanner = 1.8f;
+    }
+
+    /** Wave cleared: pay a bonus, show a banner, and pause before the next wave. */
+    private void clearWave() {
+        if (waveBreak > 0f) return;                       // guard against a multi-kill clearing twice
+        long bonus = 100L * wave;
+        cash += bonus; runCash += bonus;
+        waveBannerText = "WAVE " + wave + " CLEAR  +$" + bonus;
+        waveBanner = 2.4f;
+        sfx.swap();
+        wave++;
+        waveBreak = 3.0f;
     }
 
     private void spawnEnemy() {
@@ -395,11 +518,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enX[i] = (float) Math.cos(a) * SPAWN_DIST;
                 enZ[i] = (float) Math.sin(a) * SPAWN_DIST;
                 enFace[i] = 0f;
-                enHP[i] = ENEMY_FULL_HP;
                 enPhase[i] = rng.nextFloat() * 6.2832f;
                 enHurt[i] = 0f;
-                enOutfit[i] = rng.nextInt(OUTFITS.length);
                 enFaceType[i] = rng.nextInt(6);
+                float hpMul = Math.min(4f, 1f + 0.06f * (wave - 1));
+                if (bossPending > 0) {
+                    enBoss[i] = bossPending;
+                    enScale[i] = bossPending == 2 ? 1.9f : 1.45f;
+                    enHP[i] = ENEMY_FULL_HP * hpMul * (bossPending == 2 ? 6f : 3f);
+                    enOutfit[i] = 0;                       // menacing red
+                    bossPending = 0;
+                } else {
+                    enBoss[i] = 0;
+                    enScale[i] = 1f;
+                    enHP[i] = ENEMY_FULL_HP * hpMul;
+                    enOutfit[i] = rng.nextInt(OUTFITS.length);
+                }
                 enAlive[i] = true;
                 return;
             }
@@ -407,14 +541,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void triggerGameOver() {
-        if (gameOver) return;
-        gameOver = true;
+        if (state != ST_PLAYING) return;
+        state = ST_SUMMARY;
         aimOn = false;
         sfx.over();
         if (score > highScore) {
             highScore = score;
             prefs.edit().putInt("highscore", highScore).apply();
         }
+        saveMeta();
     }
 
     // Steering: try headings fanned out from "straight at the player" and take the first one whose
@@ -456,6 +591,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
             Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
+            if (enScale[i] != 1f) Matrix.scaleM(gunBase, 0, enScale[i], enScale[i], enScale[i]);  // bosses are bigger
             enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, shR, shG, shB);                       // torso (shirt)
             enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.97f * k, 0.83f * k, 0.30f * k);     // yellow head
             enemyFace(enFaceType[i]);                                                           // goofy face (varies)
@@ -580,7 +716,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void updateDoors(float dt) {
         int near = -1;
         float best = INTERACT_DIST * INTERACT_DIST;
-        if (!gameOver) {
+        if (state == ST_PLAYING) {
             for (int i = 0; i < doorData.length; i++) {
                 float dx = px - doorData[i][0], dz = pz - doorData[i][2];
                 float d2 = dx * dx + dz * dz;
@@ -641,9 +777,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float mz;
         if (curWeapon == 0) mz = drawPistol();
         else if (curWeapon == 1) mz = drawRifle();
-        else mz = drawShotgun();
+        else if (curWeapon == 2) mz = drawShotgun();
+        else mz = drawSniper();
 
-        if (muzzleTimer > 0f) drawMuzzle(mz, curWeapon == 2 ? 1.7f : 1f);
+        if (muzzleTimer > 0f) drawMuzzle(mz, curWeapon == 2 ? 1.7f : (curWeapon == 3 ? 1.3f : 1f));
     }
 
     private float drawPistol() {                                 // compact pistol (Glock-ish)
@@ -693,6 +830,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, -0.062f, 0.05f, 0.038f, 0.026f, 0.06f, mk, mg, mb);          // trigger guard
         drawSights();
         return -0.66f;
+    }
+
+    private float drawSniper() {                                // bolt-action sniper (AWP / R700-ish) with a scope
+        float bk = 0.10f, bg = 0.11f, bb = 0.13f;               // dark body
+        float mk = 0.18f, mg = 0.19f, mb = 0.22f;               // metal
+        float sc = SIGHT_BEAD[3];                               // scope centre = ADS aim line height
+        gunPart(0f, 0.0f, 0.06f, 0.056f, 0.072f, 0.42f, bk, bg, bb);             // receiver
+        gunPart(0f, 0.006f, -0.44f, 0.022f, 0.022f, 0.70f, mk, mg, mb);          // long barrel
+        gunPart(0f, 0.006f, -0.82f, 0.030f, 0.030f, 0.07f, 0.06f, 0.06f, 0.07f); // muzzle brake
+        gunPartR(0f, -0.020f, 0.30f, 0.050f, 0.072f, 0.30f, -4f, bk + 0.02f, bg + 0.02f, bb + 0.02f); // straight stock
+        gunPart(0f, -0.030f, 0.46f, 0.056f, 0.10f, 0.05f, bk, bg, bb);           // butt pad
+        gunPartR(0f, -0.140f, 0.10f, 0.046f, 0.16f, 0.052f, 14f, bk + 0.02f, bg + 0.02f, bb + 0.02f); // pistol grip
+        gunPartR(0f, -0.120f, -0.03f, 0.042f, 0.10f, 0.050f, 0f, mk * 0.8f, mg * 0.8f, mb * 0.8f);    // magazine
+        gunPart(0.058f, 0.030f, 0.14f, 0.050f, 0.014f, 0.014f, mk + 0.05f, mg + 0.05f, mb + 0.05f);   // bolt handle
+        // scope: two ring mounts, a tube, front/rear lens housings, and a red reticle bead (the aim point)
+        float mc = (0.05f + sc) * 0.5f, mh = sc - 0.05f + 0.01f;
+        gunPart(0f, mc, 0.10f, 0.016f, mh, 0.022f, mk, mg, mb);                  // rear scope mount
+        gunPart(0f, mc, -0.12f, 0.016f, mh, 0.022f, mk, mg, mb);                 // front scope mount
+        gunPart(0f, sc, -0.01f, 0.034f, 0.034f, 0.34f, 0.05f, 0.05f, 0.06f);     // scope tube
+        gunPart(0f, sc, -0.20f, 0.040f, 0.040f, 0.03f, 0.04f, 0.04f, 0.05f);     // objective lens housing
+        gunPart(0f, sc, 0.18f, 0.038f, 0.038f, 0.03f, 0.04f, 0.04f, 0.05f);      // ocular housing
+        gunBeadPart(0f, sc, -0.18f, 0.009f, 1.4f, 0.22f, 0.22f);                 // red reticle dot (centres on ADS)
+        return -0.86f;
     }
 
     /** Iron sights mounted on the current weapon: a small base/post connects the gun body up to the
@@ -768,6 +928,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void updateCamera(float dt) {
+        if (state != ST_PLAYING) {
+            // Frozen (hub / summary): hold the camera and just show the arena from the current pose.
+            float cp = (float) Math.cos(pitch);
+            Matrix.setLookAtM(view, 0, px, py, pz,
+                    px + cp * (float) Math.sin(yaw), py + (float) Math.sin(pitch), pz - cp * (float) Math.cos(yaw),
+                    0f, 1f, 0f);
+            return;
+        }
         if (input.consumeAimToggle()) aimOn = !aimOn;
         if (input.consumeSwitch()) cycleWeapon();
 
@@ -780,13 +948,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         boolean fired = false;
         if (input.consumeFire()) { fire(); fired = true; }
-        if (!fired && !gameOver && W_AUTO[curWeapon] && input.isFireHeld()) fire();
+        if (!fired && W_AUTO[curWeapon] && input.isFireHeld()) fire();
 
         // --- horizontal movement; sprint when the stick is pushed fully forward ---
         float mx = input.moveX(), my = input.moveY();
         float mlen = (float) Math.sqrt(mx * mx + my * my);
-        sprinting = !gameOver && grounded && mlen > 0.9f && my > 0.5f && aim < 0.2f;
-        float speed = MOVE_SPEED * (sprinting ? SPRINT_MULT : 1f);
+        sprinting = grounded && mlen > 0.9f && my > 0.5f && aim < 0.2f;
+        float speed = MOVE_SPEED * (sprinting ? SPRINT_MULT : 1f) * (1f + 0.06f * abLevel[AB_MOVESPEED]);
         float fwdX = (float) Math.sin(yaw), fwdZ = -(float) Math.cos(yaw);
         float rgtX = (float) Math.cos(yaw), rgtZ = (float) Math.sin(yaw);
         px += (rgtX * mx + fwdX * my) * speed * dt;
@@ -797,7 +965,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         // --- vertical movement: jump / climb / gravity ---
         boolean wasGrounded = grounded;
-        if (input.consumeJump() && !gameOver) doJump();
+        if (input.consumeJump()) doJump();
         vy -= GRAVITY * dt;
         feetY += vy * dt;
         float support = groundSupport();
@@ -808,6 +976,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         } else {
             grounded = false;
         }
+        if (grounded) jumpsUsed = 0;                  // reset air-jumps on landing
         py = feetY + EYE_H;
 
         // --- head bob / sway while moving (stronger when sprinting) ---
@@ -833,9 +1002,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.setLookAtM(view, 0, px, eyeY, pz, px + ldx, eyeY + ldy, pz + ldz, 0f, 1f, 0f);
     }
 
-    /** Jump if grounded; if a low ledge is right in front, size the boost to climb it. */
+    /** Jump if grounded (or once more in mid-air with the Double-Jump ability); climb low ledges. */
     private void doJump() {
-        if (grounded) { vy = JUMP_V; grounded = false; }
+        if (grounded) {
+            vy = JUMP_V; grounded = false; jumpsUsed = 1;
+        } else if (abLevel[AB_DOUBLEJUMP] > 0 && jumpsUsed < 2) {
+            vy = JUMP_V; jumpsUsed++;                 // mid-air second jump
+        }
         float best = -1f;
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
@@ -921,40 +1094,46 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
         if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
         if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) finishReload(); }
-        aim += ((aimOn ? 1f : 0f) - aim) * Math.min(1f, dt * 12f);
+        aim += (((aimOn && state == ST_PLAYING) ? 1f : 0f) - aim) * Math.min(1f, dt * 12f);
         if (aim < 0.001f) aim = 0f; else if (aim > 0.999f) aim = 1f;
         sprintAnim += ((sprinting ? 1f : 0f) - sprintAnim) * Math.min(1f, dt * 9f);
         if (sprintAnim < 0.001f) sprintAnim = 0f; else if (sprintAnim > 0.999f) sprintAnim = 1f;
-        input.setGameOver(gameOver);
+        input.setMenuMode(state != ST_PLAYING);
     }
 
     private void restart() {
         score = 0; combo = 1; comboTimer = 0f;
-        curWeapon = 0;
-        for (int w = 0; w < W_COUNT; w++) { wMag[w] = W_MAG[w]; wReserve[w] = W_RES_START[w]; }
+        runCash = 0; runXp = 0; runKills = 0; levelsGainedThisRun = 0; jumpsUsed = 0;
+        curWeapon = firstOwnedWeapon();
+        for (int w = 0; w < W_COUNT; w++) { wMag[w] = effMag(w); wReserve[w] = W_RES_START[w]; }
         reloadTimer = 0f; fireCd = 0f; shake = 0f; switchAnim = 0f; recoil = 0f;
-        playerHP = MAX_HP; hurtFlash = 0f;
+        playerHP = effMaxHp(); hurtFlash = 0f;
         px = 0f; pz = 9f; yaw = 0f; pitch = -0.08f;
         feetY = 0f; vy = 0f; grounded = true; py = EYE_H;
         aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
-        gameOver = false;
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
-        for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
-        spawnTimer = 0.8f;
-        spawnEnemy(); spawnEnemy(); spawnEnemy();
+        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; }
+        waveBreak = 0f; waveBanner = 0f; bossPending = 0;
+        beginWave(1);
+    }
+
+    /** Begin a fresh run from the hub. */
+    private void startRun() {
+        restart();
+        state = ST_PLAYING;
     }
 
     // --- shooting & weapons ---
 
     private void fire() {
-        if (gameOver) { restart(); return; }
+        if (state != ST_PLAYING) return;
         if (sprinting) return;             // gun is lowered while sprinting
         if (reloadTimer > 0f) return;
         if (fireCd > 0f) return;
         if (wMag[curWeapon] <= 0) { beginReload(); return; }
         wMag[curWeapon]--;
-        fireCd = W_INTERVAL[curWeapon];
+        fireCd = effInterval(curWeapon);
 
         muzzleTimer = MUZZLE_TIME * (curWeapon == 2 ? 1.6f : 1f);
         flashTimer = FLASH_TIME;
@@ -984,11 +1163,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int type = 0, idx = -1;                 // 1 = body, 2 = head, 3 = scenery
             for (int i = 0; i < MAX_ENEMIES; i++) {
                 if (!enAlive[i]) continue;
+                float sc = enScale[i];                    // bosses are bigger → bigger hit boxes
                 float bt = rayBox(px, py, pz, dx, dy, dz,
-                        enX[i] - 0.45f, 0f, enZ[i] - 0.45f, enX[i] + 0.45f, 1.24f, enZ[i] + 0.45f);
+                        enX[i] - 0.45f * sc, 0f, enZ[i] - 0.45f * sc, enX[i] + 0.45f * sc, 1.24f * sc, enZ[i] + 0.45f * sc);
                 if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
                 float ht = rayBox(px, py, pz, dx, dy, dz,
-                        enX[i] - 0.24f, 1.26f, enZ[i] - 0.24f, enX[i] + 0.24f, 1.78f, enZ[i] + 0.24f);
+                        enX[i] - 0.24f * sc, 1.26f * sc, enZ[i] - 0.24f * sc, enX[i] + 0.24f * sc, 1.78f * sc, enZ[i] + 0.24f * sc);
                 if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
             }
             for (int i = 0; i < boxes.length; i++) {
@@ -1004,7 +1184,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 anyHit = true;
                 if (head) anyHead = true;
                 enHurt[idx] = 0.12f;
-                enHP[idx] -= head ? W_HEADDMG[curWeapon] : W_BODYDMG[curWeapon];
+                enHP[idx] -= head ? effHeadDmg(curWeapon) : effBodyDmg(curWeapon);
                 if (enHP[idx] <= 0f) onKill(idx, head);
             } else if (type == 3) {
                 hitBox = idx; hitTimer = HIT_TIME;
@@ -1025,7 +1205,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
         comboTimer = COMBO_WINDOW;
         score += combo * (head ? 2 : 1);
+
+        // cash + xp: headshots worth +50%; cash scales with combo and the Greed ability
+        int baseGain = head ? 15 : 10;
+        long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]));
+        cash += cashGain; runCash += cashGain;
+        xp += baseGain; runXp += baseGain; runKills++;
+        int before = playerLevel;
+        recomputeLevel();
+        if (playerLevel > before) levelsGainedThisRun += playerLevel - before;
+
+        // Adrenaline: heal on kill
+        if (abLevel[AB_ADRENALINE] > 0)
+            playerHP = Math.min(effMaxHp(), playerHP + 6f * abLevel[AB_ADRENALINE]);
+
         grantAmmoForKill();
+        waveRemaining--;
+        if (waveRemaining <= 0) clearWave();
     }
 
     /** Kills restock ammo: current weapon gets the reward, the others a trickle. */
@@ -1039,26 +1235,86 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void beginReload() {
         if (reloadTimer > 0f) return;
-        if (wMag[curWeapon] >= W_MAG[curWeapon]) return;
+        if (wMag[curWeapon] >= effMag(curWeapon)) return;
         if (wReserve[curWeapon] <= 0) { sfx.dry(); fireCd = 0.25f; return; }  // out of ammo
-        reloadTimer = W_RELOAD[curWeapon];
-        reloadTotal = W_RELOAD[curWeapon];
+        reloadTimer = effReload(curWeapon);
+        reloadTotal = effReload(curWeapon);
         sfx.reload();
     }
 
     private void finishReload() {
-        int need = W_MAG[curWeapon] - wMag[curWeapon];
+        int need = effMag(curWeapon) - wMag[curWeapon];
         int take = Math.min(need, wReserve[curWeapon]);
         wMag[curWeapon] += take;
         wReserve[curWeapon] -= take;
     }
 
     private void cycleWeapon() {
-        curWeapon = (curWeapon + 1) % W_COUNT;
+        do { curWeapon = (curWeapon + 1) % W_COUNT; } while (wOwned[curWeapon] == 0);  // skip unowned
         reloadTimer = 0f;          // cancel any in-progress reload
         fireCd = 0.14f;            // brief lockout after the swap
         switchAnim = 1f;
         sfx.swap();
+    }
+
+    // --- effective (upgraded) weapon stats: base array folded with upgrade tiers + abilities ---
+    private float effBodyDmg(int w) {
+        return W_BODYDMG[w] * UPG_DMG_MULT[upgTier[w][UPG_DMG]] * (1f + 0.06f * abLevel[AB_DMGBOOST]);
+    }
+    private float effHeadDmg(int w) {
+        return W_HEADDMG[w] * UPG_DMG_MULT[upgTier[w][UPG_DMG]]
+                * (1f + 0.06f * abLevel[AB_DMGBOOST]) * (1f + 0.15f * abLevel[AB_HEADMASTERY]);
+    }
+    private float effInterval(int w) { return W_INTERVAL[w] * UPG_RATE_MULT[upgTier[w][UPG_RATE]]; }
+    private int   effMag(int w) { return Math.round(W_MAG[w] * (1f + 0.18f * upgTier[w][UPG_MAG])); }
+    private float effReload(int w) {
+        return W_RELOAD[w] * UPG_RELOAD_MULT[upgTier[w][UPG_RELOAD]] * (1f - 0.15f * abLevel[AB_FASTRELOAD]);
+    }
+    private float effMaxHp() { return MAX_HP + 20f * abLevel[AB_MAXHP]; }
+    private int firstOwnedWeapon() {
+        for (int w = 0; w < W_COUNT; w++) if (wOwned[w] != 0) return w;
+        return 0;   // pistol is always owned
+    }
+
+    // --- meta progression: level curve + persistence ---
+    /** XP to advance FROM level lvl to lvl+1 (hybrid linear-then-exponential). */
+    private static int xpForLevel(int lvl) { return (int) Math.round(100.0 * Math.pow(lvl, 1.55)); }
+
+    private void recomputeLevel() {
+        int lvl = 1; long rem = xp;
+        while (rem >= xpForLevel(lvl)) { rem -= xpForLevel(lvl); lvl++; if (lvl > 999) break; }
+        playerLevel = lvl;
+    }
+
+    /** Fraction (0..1) of the way from the current level to the next. */
+    private float levelProgress() {
+        int lvl = 1; long rem = xp;
+        while (rem >= xpForLevel(lvl)) { rem -= xpForLevel(lvl); lvl++; if (lvl > 999) return 1f; }
+        return (float) rem / xpForLevel(lvl);
+    }
+
+    private void loadMeta() {
+        cash = prefs.getLong("mp_cash", 0);
+        xp = prefs.getLong("mp_xp", 0);
+        for (int w = 0; w < W_COUNT; w++) {
+            wOwned[w] = prefs.getInt("mp_owned_" + w, w == 0 ? 1 : 0);
+            for (int c = 0; c < UPG_COUNT; c++) upgTier[w][c] = prefs.getInt("mp_upg_" + w + "_" + c, 0);
+        }
+        wOwned[0] = 1;   // pistol always owned
+        for (int a = 0; a < AB_COUNT; a++) abLevel[a] = prefs.getInt("mp_ab_" + a, 0);
+        recomputeLevel();
+    }
+
+    private void saveMeta() {
+        SharedPreferences.Editor e = prefs.edit();
+        e.putLong("mp_cash", cash);
+        e.putLong("mp_xp", xp);
+        for (int w = 0; w < W_COUNT; w++) {
+            e.putInt("mp_owned_" + w, wOwned[w]);
+            for (int c = 0; c < UPG_COUNT; c++) e.putInt("mp_upg_" + w + "_" + c, upgTier[w][c]);
+        }
+        for (int a = 0; a < AB_COUNT; a++) e.putInt("mp_ab_" + a, abLevel[a]);
+        e.apply();
     }
 
     private void playWeaponSound() {
@@ -1133,7 +1389,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawQuadNDC(0f, 0f, 1f, 1f, 0.8f, 0.06f, 0.06f, 0.5f * Math.min(hurtFlash, 1f));
         }
 
-        if (!gameOver) {
+        {
             if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.16f * (muzzleTimer / MUZZLE_TIME));
 
             float ccx = width * 0.5f, ccy = height * 0.5f;
@@ -1214,10 +1470,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawNumberCentered(score, 80f, 26f, 46f, 7f, 16f, 0.55f, 1f, 1f, 0.95f);
 
             // health bar (top-left)
-            float hp = playerHP / MAX_HP; if (hp < 0f) hp = 0f;
+            float hp = playerHP / effMaxHp(); if (hp < 0f) hp = 0f;
             float bx0 = 40f, bw = 230f, by = 54f;
             drawRectPx(bx0 + bw * 0.5f, by, bw, 18f, 0.18f, 0.18f, 0.22f, 0.6f);
             drawRectPx(bx0 + bw * hp * 0.5f, by, bw * hp, 18f, 1f - hp, 0.2f + 0.7f * hp, 0.22f, 0.92f);
+
+            // cash + level + xp progress (top-left, under the health bar)
+            drawText("$" + cash, 40f, 92f, 26f, 1f, 0.86f, 0.25f, 0.96f);
+            drawText("LV " + playerLevel, 40f, 120f, 20f, 0.65f, 0.85f, 1f, 0.95f);
+            float lp = levelProgress();
+            drawRectPx(40f + 116f, 120f, 120f, 7f, 0.2f, 0.2f, 0.24f, 0.7f);
+            drawRectPx(40f + 56f + 120f * lp * 0.5f, 120f, 120f * lp, 7f, 0.4f, 0.75f, 1f, 0.95f);
 
             if (combo > 1) {
                 float ct = comboTimer / COMBO_WINDOW;
@@ -1235,17 +1498,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawRectPx(ax - 65f + 65f * rp, ay, 130f * rp, 12f, 1f, 0.8f, 0.2f, 0.9f);
             } else {
                 int mag = wMag[curWeapon];
-                boolean low = mag <= Math.max(2, W_MAG[curWeapon] / 6);
+                boolean low = mag <= Math.max(2, effMag(curWeapon) / 6);
                 drawNumberAt(mag, ax - 26f, ay, 24f, 38f, 7f, 13f,
                         low ? 1f : 0.9f, low ? 0.3f : 0.95f, low ? 0.3f : 1f, 0.95f);
                 drawNumberAt(wReserve[curWeapon], ax + 46f, ay + 6f, 14f, 24f, 4f, 9f, 0.7f, 0.75f, 0.82f, 0.85f);
             }
-        } else {
-            drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.62f);
-            drawNumberCentered(score, height * 0.40f, 56f, 96f, 12f, 30f, 1f, 1f, 1f, 1f);
-            drawNumberCentered(highScore, height * 0.40f + 98f, 22f, 40f, 6f, 14f, 1f, 0.84f, 0.3f, 0.95f);
-            drawCircle(width * 0.5f, height * 0.74f, 86f, 0.2f, 0.9f, 0.35f, 0.85f);
-            drawRectPx(width * 0.5f, height * 0.74f, 34f, 34f, 0.05f, 0.15f, 0.05f, 0.9f);
+
+            // wave indicator (top centre, under the score) + transient wave banner
+            drawTextCentered("WAVE " + wave, width * 0.5f, 108f, 20f, 0.85f, 0.9f, 1f, 0.9f);
+            if (waveBanner > 0f) {
+                float ba = Math.min(1f, waveBanner);
+                boolean boss = bossPending > 0 || waveBannerText.indexOf("BOSS") >= 0;
+                drawTextCentered(waveBannerText, width * 0.5f, height * 0.30f, 40f,
+                        1f, boss ? 0.4f : 0.92f, boss ? 0.3f : 0.4f, ba);
+            }
         }
 
         drawNumberLeft(buildNumber, width - 116f, 52f, 18f, 30f, 5f, 11f, 1f, 0.8f, 0.2f, 0.95f);
@@ -1253,9 +1519,211 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
-    private static float weaponR(int w) { return w == 0 ? 0.30f : (w == 1 ? 0.40f : 1.00f); }
-    private static float weaponG(int w) { return w == 0 ? 0.85f : (w == 1 ? 1.00f : 0.62f); }
-    private static float weaponB(int w) { return w == 0 ? 1.00f : (w == 1 ? 0.45f : 0.20f); }
+    // --- menus (summary + hub) ---
+
+    private void menuPreamble() {
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glUseProgram(prog2);
+    }
+
+    private boolean hitRect(float cx, float cy, float w, float h, float tx, float ty) {
+        return tx > cx - w * 0.5f && tx < cx + w * 0.5f && ty > cy - h * 0.5f && ty < cy + h * 0.5f;
+    }
+
+    /** Run-over recap: shows what you earned, then CONTINUE → hub (where you spend it). */
+    private void drawSummary() {
+        menuPreamble();
+        drawQuadNDC(0f, 0f, 1f, 1f, 0f, 0f, 0f, 0.72f);
+        float cx = width * 0.5f;
+        float btnY = height - 130f, btnW = Math.min(440f, width * 0.8f), btnH = 104f;
+        if (input.consumeMenuTap(tap) && hitRect(cx, btnY, btnW, btnH, tap[0], tap[1])) {
+            state = ST_HUB; sfx.swap();
+        }
+        drawTextCentered("RUN OVER", cx, height * 0.16f, 54f, 1f, 0.5f, 0.3f, 1f);
+        drawTextCentered("SCORE " + score, cx, height * 0.16f + 74f, 30f, 1f, 1f, 1f, 0.95f);
+        drawTextCentered("BEST " + highScore, cx, height * 0.16f + 112f, 22f, 1f, 0.84f, 0.3f, 0.9f);
+
+        float y = height * 0.40f;
+        drawTextCentered("EARNED $" + runCash, cx, y, 32f, 1f, 0.86f, 0.25f, 1f);
+        drawTextCentered("+" + runXp + " XP", cx, y + 46f, 24f, 0.6f, 0.85f, 1f, 0.95f);
+        drawTextCentered(runKills + " KILLS  WAVE " + wave, cx, y + 84f, 24f, 0.85f, 0.85f, 0.9f, 0.95f);
+        if (levelsGainedThisRun > 0)
+            drawTextCentered("LEVEL UP - NOW LV " + playerLevel, cx, y + 128f, 26f, 0.3f, 1f, 0.5f, 1f);
+
+        drawRectPx(cx, btnY, btnW, btnH, 0.16f, 0.5f, 0.2f, 0.95f);
+        drawTextCentered("CONTINUE", cx, btnY, 34f, 1f, 1f, 1f, 1f);
+        GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    /** The hub: balance, three tabs, the PLAY button, and the active tab's content. */
+    private void drawHub() {
+        menuPreamble();
+        drawQuadNDC(0f, 0f, 1f, 1f, 0.02f, 0.03f, 0.05f, 0.84f);
+        boolean tapped = input.consumeMenuTap(tap);
+        float cx = width * 0.5f;
+
+        drawText("$" + cash, 36f, 56f, 34f, 1f, 0.86f, 0.25f, 1f);
+        drawTextRight("LV " + playerLevel, width - 36f, 56f, 30f, 0.65f, 0.85f, 1f, 1f);
+        drawTextCentered("AIGAMES FPS", cx, 50f, 24f, 0.8f, 0.85f, 0.95f, 0.85f);
+        drawTextCentered("BUILD " + buildNumber, cx, 84f, 16f, 0.5f, 0.55f, 0.62f, 0.8f);
+
+        // tabs
+        String[] tabs = {"WEAPONS", "UPGRADES", "ABILITIES"};
+        float tabW = Math.min(280f, (width - 80f) / 3f), tabH = 66f, tabY = 128f, gap = 12f;
+        float totalW = tabW * 3 + gap * 2, x0 = cx - totalW * 0.5f + tabW * 0.5f;
+        for (int i = 0; i < 3; i++) {
+            float tx = x0 + i * (tabW + gap);
+            if (tapped && hitRect(tx, tabY, tabW, tabH, tap[0], tap[1])) { hubTab = i; sfx.swap(); tapped = false; }
+            boolean sel = hubTab == i;
+            drawRectPx(tx, tabY, tabW, tabH, sel ? 0.22f : 0.10f, sel ? 0.42f : 0.13f, sel ? 0.58f : 0.17f, 0.94f);
+            drawTextCentered(tabs[i], tx, tabY, 20f, 1f, 1f, 1f, sel ? 1f : 0.65f);
+        }
+
+        // PLAY
+        float playY = height - 92f, playW = Math.min(460f, width * 0.82f), playH = 108f;
+        if (tapped && hitRect(cx, playY, playW, playH, tap[0], tap[1])) { startRun(); return; }
+        drawRectPx(cx, playY, playW, playH, 0.16f, 0.52f, 0.2f, 0.96f);
+        drawTextCentered("PLAY", cx, playY, 46f, 1f, 1f, 1f, 1f);
+
+        float top = 188f, bottom = playY - playH * 0.5f - 18f;
+        if (hubTab == 0) hubWeapons(top, bottom, tapped);
+        else if (hubTab == 1) hubUpgrades(top, bottom, tapped);
+        else hubAbilities(top, bottom, tapped);
+        GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    /**
+     * One purchasable list row. Returns true exactly when an affordable BUY is tapped this frame.
+     * doneText != null shows a grey status (OWNED/MAX) with no button; locked shows a red gate label.
+     */
+    private boolean hubRow(float y, float rowH, String name, String detail, int cost,
+                           boolean afford, boolean locked, String lockMsg, String doneText, boolean tapped) {
+        float cx = width * 0.5f;
+        float rowW = Math.min(width - 56f, 800f);
+        float x0 = cx - rowW * 0.5f;
+        drawRectPx(cx, y, rowW, rowH, 0.10f, 0.12f, 0.16f, 0.92f);
+        drawText(name, x0 + 22f, y - rowH * 0.17f, Math.min(28f, rowH * 0.34f), 1f, 1f, 1f, 0.97f);
+        drawText(detail, x0 + 22f, y + rowH * 0.26f, Math.min(19f, rowH * 0.24f), 0.68f, 0.78f, 0.9f, 0.92f);
+
+        float btnW = 188f, btnH = rowH - 22f, bcx = x0 + rowW - btnW * 0.5f - 16f;
+        boolean buy = false;
+        if (doneText != null) {
+            drawRectPx(bcx, y, btnW, btnH, 0.16f, 0.2f, 0.18f, 0.9f);
+            drawTextCentered(doneText, bcx, y, 22f, 0.6f, 0.85f, 0.65f, 1f);
+        } else if (locked) {
+            drawRectPx(bcx, y, btnW, btnH, 0.22f, 0.13f, 0.13f, 0.9f);
+            drawTextCentered(lockMsg, bcx, y, 19f, 1f, 0.6f, 0.5f, 1f);
+        } else {
+            drawRectPx(bcx, y, btnW, btnH, afford ? 0.16f : 0.2f, afford ? 0.5f : 0.16f, afford ? 0.2f : 0.16f, 0.95f);
+            drawTextCentered("$" + cost, bcx, y, 23f, 1f, 1f, 1f, afford ? 1f : 0.55f);
+            if (tapped && afford && hitRect(bcx, y, btnW, btnH, tap[0], tap[1])) buy = true;
+        }
+        return buy;
+    }
+
+    private void hubWeapons(float top, float bottom, boolean tapped) {
+        int n = W_COUNT;
+        float gap = 12f, rowH = Math.min(132f, (bottom - top - gap * (n - 1)) / n);
+        float y = top + rowH * 0.5f;
+        for (int w = 0; w < n; w++) {
+            boolean owned = wOwned[w] != 0;
+            boolean locked = !owned && playerLevel < WEAPON_REQ_LVL[w];
+            int cost = WEAPON_COST[w];
+            String detail = "DMG " + Math.round(W_BODYDMG[w]) + "   MAG " + W_MAG[w]
+                    + (W_PELLETS[w] > 1 ? "   x" + W_PELLETS[w] : "") + (W_AUTO[w] ? "   AUTO" : "");
+            if (hubRow(y, rowH, WEAPON_NAME[w], detail, cost, cash >= cost, locked,
+                    "REACH LV " + WEAPON_REQ_LVL[w], owned ? "OWNED" : null, tapped)) {
+                cash -= cost; wOwned[w] = 1; sfx.swap(); saveMeta();
+            }
+            y += rowH + gap;
+        }
+    }
+
+    private void hubUpgrades(float top, float bottom, boolean tapped) {
+        float cx = width * 0.5f;
+        // weapon sub-selector (owned weapons only)
+        float selH = 56f, gap = 10f, selW = Math.min(220f, (width - 80f) / W_COUNT);
+        float totalW = selW * W_COUNT + gap * (W_COUNT - 1), x0 = cx - totalW * 0.5f + selW * 0.5f;
+        if (wOwned[upgradeSel] == 0) upgradeSel = firstOwnedWeapon();
+        for (int w = 0; w < W_COUNT; w++) {
+            float sx = x0 + w * (selW + gap);
+            boolean owned = wOwned[w] != 0;
+            if (tapped && owned && hitRect(sx, top + selH * 0.5f, selW, selH, tap[0], tap[1])) {
+                upgradeSel = w; sfx.swap(); tapped = false;
+            }
+            boolean sel = upgradeSel == w;
+            drawRectPx(sx, top + selH * 0.5f, selW, selH, sel ? 0.28f : 0.11f, sel ? 0.4f : 0.14f, sel ? 0.5f : 0.18f, owned ? 0.92f : 0.45f);
+            drawTextCentered(owned ? WEAPON_NAME[w] : "LOCK", sx, top + selH * 0.5f, 18f, 1f, 1f, 1f, owned ? (sel ? 1f : 0.7f) : 0.45f);
+        }
+
+        float listTop = top + selH + 16f;
+        int n = UPG_COUNT;
+        float rgap = 10f, rowH = Math.min(112f, (bottom - listTop - rgap * (n - 1)) / n);
+        float y = listTop + rowH * 0.5f;
+        for (int c = 0; c < n; c++) {
+            int tier = upgTier[upgradeSel][c];
+            boolean maxed = tier >= UPG_MAX_TIER;
+            int cost = maxed ? 0 : UPG_COST[tier + 1];
+            if (hubRow(y, rowH, UPG_NAME[c], upgDetail(upgradeSel, c), cost, cash >= cost, false, "",
+                    maxed ? "MAX" : null, tapped)) {
+                cash -= cost; upgTier[upgradeSel][c] = tier + 1; sfx.swap(); saveMeta();
+            }
+            y += rowH + rgap;
+        }
+    }
+
+    private void hubAbilities(float top, float bottom, boolean tapped) {
+        int n = AB_COUNT;
+        float gap = 9f, rowH = Math.min(110f, (bottom - top - gap * (n - 1)) / n);
+        float y = top + rowH * 0.5f;
+        for (int ab = 0; ab < n; ab++) {
+            int lv = abLevel[ab], mx = AB_MAX_LEVEL[ab];
+            boolean maxed = lv >= mx;
+            int cost = maxed ? 0 : AB_COST[ab][lv];
+            if (hubRow(y, rowH, AB_NAME[ab], abDetail(ab), cost, cash >= cost, false, "",
+                    maxed ? "MAX" : null, tapped)) {
+                cash -= cost; abLevel[ab] = lv + 1; sfx.swap(); saveMeta();
+            }
+            y += rowH + gap;
+        }
+    }
+
+    private String upgDetail(int w, int c) {
+        int t = upgTier[w][c];
+        String eff;
+        switch (c) {
+            case UPG_DMG:    eff = "DMG " + Math.round(effBodyDmg(w)); break;
+            case UPG_RATE:   eff = "RPM " + Math.round(60f / effInterval(w)); break;
+            case UPG_MAG:    eff = "MAG " + effMag(w); break;
+            default:         eff = "RELOAD " + Math.round(effReload(w) * 1000f) + "MS"; break;
+        }
+        return "TIER " + t + "/" + UPG_MAX_TIER + "   " + eff;
+    }
+
+    private String abDetail(int ab) {
+        int lv = abLevel[ab], mx = AB_MAX_LEVEL[ab];
+        String eff;
+        switch (ab) {
+            case AB_MAXHP:       eff = "+" + (20 * lv) + " HP"; break;
+            case AB_FASTRELOAD:  eff = lv > 0 ? "-15% RELOAD" : "RELOAD -15%"; break;
+            case AB_DMGBOOST:    eff = "+" + (6 * lv) + "% DMG"; break;
+            case AB_HEADMASTERY: eff = "+" + (15 * lv) + "% HEAD"; break;
+            case AB_ADRENALINE:  eff = "+" + (6 * lv) + " HP/KILL"; break;
+            case AB_MOVESPEED:   eff = "+" + (6 * lv) + "% SPEED"; break;
+            case AB_DOUBLEJUMP:  eff = lv > 0 ? "ENABLED" : "AIR JUMP"; break;
+            default:             eff = "+" + (10 * lv) + "% CASH"; break;
+        }
+        return "LV " + lv + "/" + mx + "   " + eff;
+    }
+
+    private static final float[] WCOL_R = {0.30f, 0.40f, 1.00f, 0.72f};
+    private static final float[] WCOL_G = {0.85f, 1.00f, 0.62f, 0.50f};
+    private static final float[] WCOL_B = {1.00f, 0.45f, 0.20f, 1.00f};
+    private static float weaponR(int w) { return WCOL_R[w]; }
+    private static float weaponG(int w) { return WCOL_G[w]; }
+    private static float weaponB(int w) { return WCOL_B[w]; }
 
     private static float clamp(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -1330,6 +1798,57 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aP2, 2, GLES20.GL_FLOAT, false, 8, buf);
     }
 
+    // --- text (bitmap-font atlas) ---
+    // Monospace ASCII 32..127 in a FONT_COLS x FONT_ROWS grid, white-on-transparent.
+    private static final int FONT_COLS = 16, FONT_ROWS = 6;
+    private static final float TEXT_ADV = 0.60f;   // glyph cell width as a fraction of size
+
+    /** Width in px a string would occupy at the given size (for centring / right-align). */
+    private float measureText(int len, float sizePx) { return len * sizePx * TEXT_ADV; }
+    private float measureText(String s, float sizePx) { return measureText(s.length(), sizePx); }
+
+    /** Draw text with its LEFT edge at xPx and vertical CENTRE at yPx. Restores prog2 afterwards. */
+    private void drawText(String s, float xPx, float yPx, float sizePx, float r, float g, float b, float a) {
+        GLES20.glUseProgram(progText);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fontTex);
+        GLES20.glUniform1i(uFontTex, 0);
+        GLES20.glUniform4f(uColT, r, g, b, a);
+        GLES20.glUniform2f(uUVscaleT, 1f / FONT_COLS, 1f / FONT_ROWS);
+        textQuad.position(0);
+        GLES20.glEnableVertexAttribArray(aPText);
+        GLES20.glVertexAttribPointer(aPText, 2, GLES20.GL_FLOAT, false, 16, textQuad);
+        textQuad.position(2);
+        GLES20.glEnableVertexAttribArray(aUVText);
+        GLES20.glVertexAttribPointer(aUVText, 2, GLES20.GL_FLOAT, false, 16, textQuad);
+
+        float cw = sizePx * TEXT_ADV;
+        float hsx = (cw * 0.5f) / width * 2f, hsy = (sizePx * 0.5f) / height * 2f;
+        float oy = 1f - yPx / height * 2f;
+        for (int i = 0; i < s.length(); i++) {
+            int idx = s.charAt(i) - 32;
+            if (idx >= 0 && idx < FONT_COLS * FONT_ROWS && s.charAt(i) != ' ') {
+                int col = idx % FONT_COLS, row = idx / FONT_COLS;
+                GLES20.glUniform2f(uUVoffT, (float) col / FONT_COLS, (float) row / FONT_ROWS);
+                GLES20.glUniform2f(uScaleT, hsx, hsy);
+                float cx = xPx + i * cw + cw * 0.5f;
+                GLES20.glUniform2f(uOffT, cx / width * 2f - 1f, oy);
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+            }
+        }
+        GLES20.glUseProgram(prog2);   // HUD/menu code assumes prog2 is active
+    }
+
+    /** Draw text horizontally centred on cxPx, vertical centre at yPx. */
+    private void drawTextCentered(String s, float cxPx, float yPx, float sizePx, float r, float g, float b, float a) {
+        drawText(s, cxPx - measureText(s, sizePx) * 0.5f, yPx, sizePx, r, g, b, a);
+    }
+
+    /** Draw text right-aligned so it ENDS at xPx. */
+    private void drawTextRight(String s, float xPx, float yPx, float sizePx, float r, float g, float b, float a) {
+        drawText(s, xPx - measureText(s, sizePx), yPx, sizePx, r, g, b, a);
+    }
+
     // --- textures ---
 
     private static int uploadTexture(Bitmap bmp) {
@@ -1344,6 +1863,41 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_REPEAT);
         bmp.recycle();
         return id[0];
+    }
+
+    /** Font atlas: clamp + linear, NO mipmap, so glyph cells never bleed into each other. */
+    private static int uploadFontTexture(Bitmap bmp) {
+        int[] id = new int[1];
+        GLES20.glGenTextures(1, id, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id[0]);
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        bmp.recycle();
+        return id[0];
+    }
+
+    /** Bake monospace ASCII 32..127 white-on-transparent into a FONT_COLS x FONT_ROWS grid. */
+    private static Bitmap makeFontAtlas() {
+        int cw = 48, ch = 64;
+        Bitmap b = Bitmap.createBitmap(FONT_COLS * cw, FONT_ROWS * ch, Bitmap.Config.ARGB_8888);  // transparent
+        Canvas c = new Canvas(b);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(0xFFFFFFFF);
+        p.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+        p.setTextSize(ch * 0.72f);
+        p.setTextAlign(Paint.Align.CENTER);
+        Paint.FontMetrics fm = p.getFontMetrics();
+        float baseOff = -(fm.ascent + fm.descent) * 0.5f;   // vertically centre the glyph in its cell
+        int cells = FONT_COLS * FONT_ROWS;
+        for (int i = 0; i < cells; i++) {
+            char ch2 = (char) (32 + i);
+            int col = i % FONT_COLS, row = i / FONT_COLS;
+            c.drawText(String.valueOf(ch2), col * cw + cw * 0.5f, row * ch + ch * 0.5f + baseOff, p);
+        }
+        return b;
     }
 
     private static Bitmap makeFloorBitmap() {
@@ -2102,6 +2656,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final float[] QUAD_DATA = {-1f, -1f, 1f, -1f, 1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f};
 
+    // Interleaved pos(2)+uv(2). UV origin top-left (v=0 at top, matching the baked atlas).
+    private static final float[] TEXTQUAD_DATA = {
+        -1f, -1f, 0f, 1f,   1f, -1f, 1f, 1f,   1f, 1f, 1f, 0f,
+        -1f, -1f, 0f, 1f,   1f,  1f, 1f, 0f,  -1f, 1f, 0f, 0f,
+    };
+
     private static final String VERT3_SRC =
         "uniform mat4 uMVP; uniform mat4 uModel;" +
         "attribute vec4 aPos; attribute vec3 aNormal; attribute vec2 aUV;" +
@@ -2174,4 +2734,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final String FRAG2_SRC =
         "precision mediump float; uniform vec4 uCol; void main(){ gl_FragColor=uCol; }";
+
+    // Textured 2D text: per-glyph UV rect via uUVoff/uUVscale; white atlas tinted by uCol.
+    private static final String VERT_TEXT_SRC =
+        "attribute vec2 aP; attribute vec2 aUV; uniform vec2 uScale; uniform vec2 uOff;" +
+        "uniform vec2 uUVoff; uniform vec2 uUVscale; varying vec2 vUV;" +
+        "void main(){ vUV=aUV*uUVscale+uUVoff; gl_Position=vec4(aP*uScale+uOff,0.0,1.0); }";
+
+    private static final String FRAG_TEXT_SRC =
+        "precision mediump float; varying vec2 vUV; uniform sampler2D uFont; uniform vec4 uCol;" +
+        "void main(){ gl_FragColor=uCol*texture2D(uFont,vUV); }";
 }
