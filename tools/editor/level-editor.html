@@ -265,7 +265,7 @@ function undo(){ if(!undoStack.length) return; objs=JSON.parse(undoStack.pop());
 
 // ---------- view-agnostic refresh ----------
 function refresh(){ if(mode==='3d'&&three) build3D(); else draw(); refreshPanel(); }
-function select(o){ sel=o; refresh(); }
+function select(o){ sel=o; if(mode==='3d'&&three) selectHL(o); else draw(); refreshPanel(); }
 
 // ---------- 2D view ----------
 function draw(){
@@ -301,7 +301,7 @@ function evWorld(e){ const r=cv.getBoundingClientRect(); return [s2w((e.clientX-
 let drag2=null;
 cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); const [wx,wz]=evWorld(e);
   if(tool==='select'){ const o=hit2D(wx,wz); if(o){ pushUndo(); select(o); drag2={ox:wx-o.x,oz:wz-o.z}; } else select(null); }
-  else if(tool==='delete'){ const o=hit2D(wx,wz); if(o){ pushUndo(); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} }
+  else if(tool==='delete'){ const o=hit2D(wx,wz); if(o){ pushUndo(); removeObj3D(o); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} }
   else { pushUndo(); const o=newObj(tool,snap(wx),snap(wz)); objs.push(o); select(o); drag2={ox:0,oz:0}; }
 });
 cv.addEventListener('pointermove',e=>{ const [wx,wz]=evWorld(e);
@@ -342,8 +342,11 @@ function init3D(){
     const lf=new THREE.Mesh(leafG,leafM); lf.position.set(tx,2.5,tz); lf.userData.skip=true; scene.add(lf);
   }
   const group=new THREE.Group(); scene.add(group);
+  // persistent selection box (scaled, never rebuilt) — lives on the scene so group rebuilds don't touch it
+  const hl=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)), new THREE.LineBasicMaterial({color:0x39d4ff,depthTest:false}));
+  hl.userData.skip=true; hl.visible=false; hl.renderOrder=999; scene.add(hl);
   three={renderer,scene,camera,group,ray:new THREE.Raycaster(),ground:new THREE.Plane(new THREE.Vector3(0,1,0),0),
-         cam:{r:90,theta:Math.PI*0.5,phi:0.82,tx:0,tz:0}, hl:null, raf:0, sun, hemi, disc};
+         cam:{r:90,theta:Math.PI*0.5,phi:0.82,tx:0,tz:0}, hl:hl, raf:0, sun, hemi, disc};
   applyWorld();
   return true;
 }
@@ -372,9 +375,9 @@ function houseWindows3D(o,g){
       for(let ri=0;ri<6;ri++){ const wy=1.15+ri*rowStep; if(wy+winH/2>o.h-0.25) continue;
         if(doorWall&&Math.abs(t)<1.5*Math.max(1,wsc)&&wy<3.0) continue;
         const pane=new THREE.Mesh(new THREE.PlaneGeometry(winW,winH),mat);
-        if(W.ax===0) pane.position.set(t,wy,W.s*(o.d/2+0.03));
-        else { pane.position.set(W.s*(o.w/2+0.03),wy,t); pane.rotation.y=Math.PI/2; }
-        pane.userData.skip=true; g.add(pane);
+        if(W.ax===0) pane.position.set(t,wy,W.s*(o.d/2+0.06));
+        else { pane.position.set(W.s*(o.w/2+0.06),wy,t); pane.rotation.y=Math.PI/2; }
+        g.add(pane);
       }
     }
   }
@@ -389,13 +392,14 @@ function mesh3D(o){
   if(o.type==='house'){
     const g=new THREE.Group(); g.position.set(o.x,0,o.z);
     const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); body.position.y=o.h/2; g.add(body);
+    const cap=new THREE.Mesh(new THREE.BoxGeometry(o.w+0.3,0.3,o.d+0.3),new THREE.MeshLambertMaterial({color:col([o.c[0]*0.9,o.c[1]*0.9,o.c[2]*0.95])})); cap.position.y=o.h+0.15; g.add(cap);  // eave band (matches game)
     g.add(gableRoof(o));
-    const dw=Math.min(o.w,o.d)*0.34, dm=new THREE.Mesh(new THREE.BoxGeometry(0.12,Math.min(2.2,o.h*0.8),dw),new THREE.MeshLambertMaterial({color:0x2a1c0e}));
+    const dw=Math.min(o.w,o.d)*0.34, dm=new THREE.Mesh(new THREE.BoxGeometry(0.12,Math.min(2.2,o.h*0.8),dw),new THREE.MeshLambertMaterial({color:0x764d2b}));
     const dy=Math.min(2.2,o.h*0.8)/2;
-    if(o.door===0){ dm.position.set(0,dy,o.d/2); dm.rotation.y=Math.PI/2; }
-    else if(o.door===1){ dm.position.set(0,dy,-o.d/2); dm.rotation.y=Math.PI/2; }
-    else if(o.door===2){ dm.position.set(o.w/2,dy,0); }
-    else { dm.position.set(-o.w/2,dy,0); }
+    if(o.door===0){ dm.position.set(0,dy,o.d/2-0.02); dm.rotation.y=Math.PI/2; }
+    else if(o.door===1){ dm.position.set(0,dy,-o.d/2+0.02); dm.rotation.y=Math.PI/2; }
+    else if(o.door===2){ dm.position.set(o.w/2-0.02,dy,0); }
+    else { dm.position.set(-o.w/2+0.02,dy,0); }
     g.add(dm);
     houseWindows3D(o,g); chimney3D(o,g);
     return g;
@@ -413,14 +417,23 @@ function applyWorld(){
   if(three.hemi) three.hemi.intensity=0.75*world.ambient;
   if(three.disc) three.disc.material.color.setRGB(0.49*world.ground[0],0.60*world.ground[1],0.37*world.ground[2]);
 }
-function build3D(){
-  if(!three) return; applyWorld(); clearGroup(three.group); three.hl=null;
+function selectHL(o){ const hl=three&&three.hl; if(!hl) return;
+  if(!o){ hl.visible=false; return; }
+  const top=(o.type==='house'?o.h+1.7:o.h);
+  hl.scale.set(o.w+0.3, top+0.3, o.d+0.3); hl.position.set(o.x, top/2, o.z); hl.visible=true; }
+function build3D(){           // full rebuild — only for structural changes (load/import/undo/clear)
+  if(!three) return; applyWorld(); clearGroup(three.group);
   for(const o of objs){ const m=mesh3D(o); m.userData.obj=o; o.__m3=m; three.group.add(m); }
-  if(sel){ const top=(sel.type==='house'?sel.h+1.7:sel.h);
-    const wf=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(sel.w+0.3,top+0.3,sel.d+0.3)),new THREE.LineBasicMaterial({color:0x39d4ff}));
-    wf.position.set(sel.x,top/2,sel.z); wf.userData.skip=true; three.group.add(wf); three.hl=wf;
-  }
+  selectHL(sel);
 }
+function updateObj3D(o){      // rebuild ONE object's mesh (used on add + property edits) — O(1), no flicker
+  if(!three) return;
+  if(o.__m3){ const i=three.group.children.indexOf(o.__m3); if(i>=0) three.group.remove(o.__m3); disposeObj(o.__m3); }
+  const m=mesh3D(o); m.userData.obj=o; o.__m3=m; three.group.add(m);
+  if(o===sel) selectHL(o);
+}
+function removeObj3D(o){ if(three&&o&&o.__m3){ const i=three.group.children.indexOf(o.__m3); if(i>=0) three.group.remove(o.__m3); disposeObj(o.__m3); o.__m3=null; } }
+function live(){ if(mode==='3d'&&three) updateObj3D(sel); else draw(); refreshPanel(); }   // light per-object refresh
 function updateCam(){ const c=three.cam; c.phi=clamp(c.phi,0.12,1.45); c.r=clamp(c.r,14,220);
   const tx=c.tx,ty=4,tz=c.tz;
   three.camera.position.set(tx+c.r*Math.sin(c.phi)*Math.cos(c.theta), ty+c.r*Math.cos(c.phi), tz+c.r*Math.sin(c.phi)*Math.sin(c.theta));
@@ -430,7 +443,7 @@ function loop(){ if(mode!=='3d'||!three) return; three.raf=requestAnimationFrame
 function ndc(e){ const r=cv3.getBoundingClientRect(); return new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1); }
 function groundAt(e){ three.ray.setFromCamera(ndc(e),three.camera); const v=new THREE.Vector3(); return three.ray.ray.intersectPlane(three.ground,v)?v:null; }
 function pick3D(e){ three.ray.setFromCamera(ndc(e),three.camera); const its=three.ray.intersectObjects(three.group.children,true);
-  for(const it of its){ let n=it.object; while(n){ if(n.userData.skip) break; if(n.userData.obj) return n.userData.obj; n=n.parent; } } return null; }
+  for(const it of its){ let n=it.object; while(n){ if(n.userData.obj) return n.userData.obj; n=n.parent; } } return null; }  // any part of a house selects it
 
 let cam3=null, drag3=null;
 cv3.addEventListener('contextmenu',e=>e.preventDefault());
@@ -439,10 +452,10 @@ cv3.addEventListener('pointerdown',e=>{ if(!three) return; cv3.setPointerCapture
   if(pan){ cam3={mode:'pan',x:e.clientX,y:e.clientY}; return; }
   if(tool==='select'||tool==='delete'){
     const o=pick3D(e);
-    if(tool==='delete'){ if(o){ pushUndo(); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} return; }
-    if(o){ pushUndo(); sel=o; refresh(); const g=groundAt(e); drag3=g?{ox:g.x-o.x,oz:g.z-o.z}:{ox:0,oz:0}; }
+    if(tool==='delete'){ if(o){ pushUndo(); removeObj3D(o); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} return; }
+    if(o){ pushUndo(); select(o); cv3.style.cursor='grabbing'; const g=groundAt(e); drag3=g?{ox:g.x-o.x,oz:g.z-o.z}:{ox:0,oz:0}; }   // instant grab, no rebuild
     else { cam3={mode:'orbit',x:e.clientX,y:e.clientY}; select(null); }
-  } else { const g=groundAt(e); if(g){ pushUndo(); const o=newObj(tool,snap(g.x),snap(g.z)); objs.push(o); select(o); drag3={ox:0,oz:0}; } }
+  } else { const g=groundAt(e); if(g){ pushUndo(); const o=newObj(tool,snap(g.x),snap(g.z)); objs.push(o); updateObj3D(o); select(o); drag3={ox:0,oz:0}; } }
 });
 cv3.addEventListener('pointermove',e=>{ if(!three) return;
   if(cam3){ const dx=e.clientX-cam3.x, dy=e.clientY-cam3.y; cam3.x=e.clientX; cam3.y=e.clientY; const c=three.cam;
@@ -453,9 +466,10 @@ cv3.addEventListener('pointermove',e=>{ if(!three) return;
   }
   if(drag3&&sel){ const g=groundAt(e); if(g){ sel.x=snap(g.x-drag3.ox); sel.z=snap(g.z-drag3.oz);
     if(sel.__m3) sel.__m3.position.set(sel.x,sel.type==='house'?0:sel.h/2,sel.z);
-    if(three.hl) three.hl.position.set(sel.x,three.hl.position.y,sel.z); syncPanelXZ(); } }
+    selectHL(sel); syncPanelXZ(); } return; }
+  if(tool==='select'||tool==='delete'){ const o=pick3D(e); cv3.style.cursor=o?'grab':'default'; }   // hover affordance
 });
-cv3.addEventListener('pointerup',()=>{ cam3=null; drag3=null; });
+cv3.addEventListener('pointerup',()=>{ cam3=null; drag3=null; cv3.style.cursor='default'; });
 cv3.addEventListener('wheel',e=>{ if(!three) return; e.preventDefault(); three.cam.r*=(1+Math.sign(e.deltaY)*0.1); },{passive:false});
 
 // ---------- view toggle ----------
@@ -493,41 +507,41 @@ function updateStats(){ const h=objs.filter(o=>o.type==='house').length, b=objs.
 
 const bind=(id,key)=>{ const el=document.getElementById(id);
   el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-  el.oninput=()=>{ if(!sel) return; sel[key]=parseFloat(el.value)||0; refresh(); }; };
+  el.oninput=()=>{ if(!sel) return; sel[key]=parseFloat(el.value)||0; live(); }; };
 ['pX:x','pZ:z','pW:w','pD:d','pH:h'].forEach(s=>{const[i,k]=s.split(':');bind(i,k);});
-pRoof.onchange=()=>{ if(sel){ pushUndo(); sel.roof=+pRoof.value; refresh(); } };
+pRoof.onchange=()=>{ if(sel){ pushUndo(); sel.roof=+pRoof.value; live(); } };
 pCol.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-pCol.oninput=()=>{ if(sel){ sel.c=hex2c(pCol.value); refresh(); } };
+pCol.oninput=()=>{ if(sel){ sel.c=hex2c(pCol.value); live(); } };
 pRoofCol.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-pRoofCol.oninput=()=>{ if(sel){ sel.roofC=hex2c(pRoofCol.value); refresh(); } };
+pRoofCol.oninput=()=>{ if(sel){ sel.roofC=hex2c(pRoofCol.value); live(); } };
 pPitch.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-pPitch.oninput=()=>{ if(sel&&!pPitchAuto.checked){ sel.pitch=parseFloat(pPitch.value); refresh(); } };
-pPitchAuto.onchange=()=>{ if(sel){ pushUndo(); sel.pitch=pPitchAuto.checked?-1:parseFloat(pPitch.value); refreshPanel(); refresh(); } };
+pPitch.oninput=()=>{ if(sel&&!pPitchAuto.checked){ sel.pitch=parseFloat(pPitch.value); live(); } };
+pPitchAuto.onchange=()=>{ if(sel){ pushUndo(); sel.pitch=pPitchAuto.checked?-1:parseFloat(pPitch.value); refreshPanel(); live(); } };
 pOver.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-pOver.oninput=()=>{ if(sel&&!pOverAuto.checked){ sel.overhang=parseFloat(pOver.value); refresh(); } };
-pOverAuto.onchange=()=>{ if(sel){ pushUndo(); sel.overhang=pOverAuto.checked?-1:parseFloat(pOver.value); refreshPanel(); refresh(); } };
-pWin.onchange=()=>{ if(sel){ pushUndo(); sel.win=+pWin.value; refresh(); } };
+pOver.oninput=()=>{ if(sel&&!pOverAuto.checked){ sel.overhang=parseFloat(pOver.value); live(); } };
+pOverAuto.onchange=()=>{ if(sel){ pushUndo(); sel.overhang=pOverAuto.checked?-1:parseFloat(pOver.value); refreshPanel(); live(); } };
+pWin.onchange=()=>{ if(sel){ pushUndo(); sel.win=+pWin.value; live(); } };
 pWinSize.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-pWinSize.oninput=()=>{ if(sel){ sel.winSize=parseFloat(pWinSize.value); refresh(); } };
-pChim.onchange=()=>{ if(sel){ pushUndo(); sel.chim=+pChim.value; refresh(); } };
-document.querySelectorAll('.door4 button').forEach(b=>b.onclick=()=>{ if(sel){ pushUndo(); sel.door=+b.dataset.door; refresh(); } });
-document.getElementById('delBtn').onclick=()=>{ if(sel){ pushUndo(); objs.splice(objs.indexOf(sel),1); select(null);} };
-document.getElementById('dupBtn').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(sel,strip)); o.x+=2; o.z+=2; objs.push(o); select(o);} };
+pWinSize.oninput=()=>{ if(sel){ sel.winSize=parseFloat(pWinSize.value); live(); } };
+pChim.onchange=()=>{ if(sel){ pushUndo(); sel.chim=+pChim.value; live(); } };
+document.querySelectorAll('.door4 button').forEach(b=>b.onclick=()=>{ if(sel){ pushUndo(); sel.door=+b.dataset.door; live(); } });
+document.getElementById('delBtn').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
+document.getElementById('dupBtn').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(sel,strip)); o.x+=2; o.z+=2; objs.push(o); if(mode==='3d'&&three) updateObj3D(o); select(o);} };
 const sw=document.getElementById('sw');
-PALETTE.forEach((c,i)=>{ const d=document.createElement('div'); d.style.background=rgb(c); d.title='Palette '+(i+1); d.onclick=()=>{ if(sel){ pushUndo(); sel.c=c.slice(); refresh(); } }; sw.appendChild(d); });
+PALETTE.forEach((c,i)=>{ const d=document.createElement('div'); d.style.background=rgb(c); d.title='Palette '+(i+1); d.onclick=()=>{ if(sel){ pushUndo(); sel.c=c.slice(); live(); } }; sw.appendChild(d); });
 
 // ---------- tools + top buttons + keys ----------
 document.querySelectorAll('#tools button').forEach(b=>b.onclick=()=>{ tool=b.dataset.tool; document.querySelectorAll('#tools button').forEach(x=>x.classList.toggle('on',x===b)); });
 document.getElementById('undoBtn').onclick=undo;
-document.getElementById('loadDefault').onclick=()=>{ pushUndo(); objs=parse(DEFAULT_LVL); select(null); syncWelt(); applyWorld(); };
-document.getElementById('clearAll').onclick=()=>{ if(confirm('Alle Objekte entfernen?')){ pushUndo(); objs=[]; select(null);} };
+document.getElementById('loadDefault').onclick=()=>{ pushUndo(); objs=parse(DEFAULT_LVL); sel=null; refresh(); syncWelt(); };
+document.getElementById('clearAll').onclick=()=>{ if(confirm('Alle Objekte entfernen?')){ pushUndo(); objs=[]; sel=null; refresh();} };
 document.getElementById('exportBtn').onclick=()=>{ const b=new Blob([serialize()],{type:'text/plain'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='level.lvl'; a.click(); };
 document.getElementById('copyBtn').onclick=async()=>{ try{ await navigator.clipboard.writeText(serialize()); copyBtn.textContent='Kopiert ✓'; setTimeout(()=>copyBtn.textContent='Kopieren',1200);}catch(_){ prompt('Kopieren:',serialize()); } };
 document.getElementById('importBtn').onclick=()=>document.getElementById('file').click();
-document.getElementById('file').onchange=e=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ pushUndo(); objs=parse(rd.result); select(null); syncWelt(); applyWorld(); }; rd.readAsText(f); };
+document.getElementById('file').onchange=e=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ pushUndo(); objs=parse(rd.result); sel=null; refresh(); syncWelt(); }; rd.readAsText(f); };
 window.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); return; }
-  if((e.key==='Delete'||e.key==='Backspace')&&sel&&document.activeElement.tagName!=='INPUT'){ pushUndo(); objs.splice(objs.indexOf(sel),1); select(null); }
+  if((e.key==='Delete'||e.key==='Backspace')&&sel&&document.activeElement.tagName!=='INPUT'){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null); }
 });
 
 // ---------- welt (world look) panel ----------
