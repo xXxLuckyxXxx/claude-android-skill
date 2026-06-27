@@ -263,6 +263,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] enFace = new float[MAX_ENEMIES];
     private final float[] enHP = new float[MAX_ENEMIES];
     private final float[] enMaxHP = new float[MAX_ENEMIES];
+    private final float[] enKx = new float[MAX_ENEMIES], enKz = new float[MAX_ENEMIES];  // knockback velocity
+    private float hitStop = 0f;        // brief slow-mo crunch on a kill
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
     private final int[] enOutfit = new int[MAX_ENEMIES];
@@ -472,12 +474,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             updatePopups(dt);
             if (deathAnim <= 0f) state = ST_SUMMARY;
         } else {
-            updateDoors(dt);
-            updateCamera(dt);
-            updateEnemies(dt);
-            updateParticles(dt);
+            float gdt = dt;
+            if (hitStop > 0f) { hitStop -= dt; gdt = dt * 0.12f; }   // kill crunch: brief slow-mo on the world
+            updateDoors(gdt);
+            updateCamera(gdt);
+            updateEnemies(gdt);
+            updateParticles(gdt);
             updatePopups(dt);
-            tickTimers(dt);
+            tickTimers(gdt);
         }
 
         float adsZoom = (curWeapon == 3) ? 46f : 30f;   // sniper zooms much harder through its scope
@@ -600,6 +604,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enHurt[i] > 0f) enHurt[i] -= dt;
             if (!enAlive[i]) continue;
+            if (enKx[i] != 0f || enKz[i] != 0f) {              // apply + decay knockback, then resolve collision
+                enX[i] += enKx[i] * dt; enZ[i] += enKz[i] * dt;
+                float kd = (float) Math.exp(-9f * dt);
+                enKx[i] *= kd; enKz[i] *= kd;
+                if (enKx[i] * enKx[i] + enKz[i] * enKz[i] < 0.0004f) { enKx[i] = 0f; enKz[i] = 0f; }
+                colTmp[0] = enX[i]; colTmp[1] = enZ[i]; collide(0.4f, 0f, false, colTmp); enX[i] = colTmp[0]; enZ[i] = colTmp[1];
+            }
             float dx = px - enX[i], dz = pz - enZ[i];
             float d = (float) Math.sqrt(dx * dx + dz * dz);
             enFace[i] = (float) Math.atan2(dx, dz);
@@ -613,6 +624,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enAlive[i] = false;
                 playerHP -= ENEMY_DMG * dmgMul * (enBoss[i] > 0 ? 2.5f : 1f);
                 hurtFlash = 0.6f;
+                if (optShake) shake = Math.max(shake, enBoss[i] > 0 ? 0.45f : 0.28f);   // jolt when hit
                 // remember where the hit came from (relative to where we're looking)
                 {
                     float ddx = enX[i] - px, ddz = enZ[i] - pz;
@@ -630,7 +642,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float es = speed * (enBoss[i] > 0 ? 0.6f : 1f);   // bosses are slower but tankier
                 float a = steerDir(enX[i], enZ[i], (float) Math.atan2(dx, dz));  // navigate round buildings
                 enFace[i] = a;                            // face the way it actually moves
-                float step = es * dt;
+                float step = es * dt * (enHurt[i] > 0f ? 0.4f : 1f);   // flinch: stagger briefly when shot
                 enX[i] += (float) Math.sin(a) * step;
                 enZ[i] += (float) Math.cos(a) * step;
                 enPhase[i] += step * 9f;                  // advance walk cycle with distance
@@ -722,6 +734,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enFace[i] = 0f;
                 enPhase[i] = rng.nextFloat() * 6.2832f;
                 enHurt[i] = 0f;
+                enKx[i] = 0f; enKz[i] = 0f;
                 enFaceType[i] = rng.nextInt(6);
                 float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
                 if (bossPending > 0) {
@@ -1424,7 +1437,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
-        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; }
+        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; }
+        hitStop = 0f;
         for (int i = 0; i < MAX_PARTICLES; i++) pLife[i] = 0f;
         waveBreak = 0f; waveBanner = 0f; bossPending = 0;
         beginWave(1);
@@ -1500,6 +1514,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHurt[idx] = 0.12f;
                 float dmg = head ? effHeadDmg(curWeapon) : effBodyDmg(curWeapon);
                 enHP[idx] -= dmg;
+                float kf = (head ? 3.6f : 2.3f) * (enBoss[idx] > 0 ? 0.22f : 1f);   // knockback impulse along the bullet
+                enKx[idx] += dx * kf; enKz[idx] += dz * kf;
                 spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (head ? 1.6f : 0.95f) * enScale[idx], enZ[idx], head, dx, dy, dz);
                 // floating damage number at the enemy (projected to screen)
                 if (optDmgNum && projectToScreen(enX[idx], 1.45f * enScale[idx], enZ[idx], projScreen)) {
@@ -1599,6 +1615,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void onKill(int idx, boolean head) {
         spawnDeathBurst(enX[idx], enZ[idx], enScale[idx], enOutfit[idx]);   // pixel-burst feedback
+        hitStop = Math.max(hitStop, head ? 0.07f : 0.05f);                 // brief slow-mo crunch
         enAlive[idx] = false;
         combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
         comboTimer = COMBO_WINDOW;
