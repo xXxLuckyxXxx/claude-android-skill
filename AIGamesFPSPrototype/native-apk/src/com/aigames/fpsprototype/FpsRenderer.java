@@ -171,6 +171,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] view = new float[16];
     private final float[] model = new float[16];
     private final float[] mvp = new float[16];
+    private final float[] doorBase = new float[16];   // hinge transform for detailed swinging doors
     private final float[] tmpA = new float[16];
     private final float[] gunBase = new float[16];
     private final float[] partM = new float[16];
@@ -1117,21 +1118,52 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < doorData.length; i++) {
             float[] dd = doorData[i];
             float ang = doorOpen[i] * 85f;                  // swing open up to ~85°
-            Matrix.setIdentityM(model, 0);
-            if (dd[6] == 0f) {                              // wall spans X, hinge on the +X edge
-                Matrix.translateM(model, 0, dd[0] + dd[3], dd[1], dd[2]);
-                Matrix.rotateM(model, 0, ang, 0f, 1f, 0f);
-                Matrix.translateM(model, 0, -dd[3], 0f, 0f);
-                Matrix.scaleM(model, 0, dd[3] * 2f, dd[4] * 2f, dd[5] * 2f);
+            int axis = (int) dd[6];
+            float tH = dd[3], vH = dd[4], pH = dd[5];        // half tangent / vertical / depth of the leaf
+            Matrix.setIdentityM(doorBase, 0);               // hinge: origin ends at the leaf centre
+            if (axis == 0) {                                // wall spans X, hinge on the +X edge
+                Matrix.translateM(doorBase, 0, dd[0] + tH, dd[1], dd[2]);
+                Matrix.rotateM(doorBase, 0, ang, 0f, 1f, 0f);
+                Matrix.translateM(doorBase, 0, -tH, 0f, 0f);
             } else {                                        // wall spans Z, hinge on the +Z edge
-                Matrix.translateM(model, 0, dd[0], dd[1], dd[2] + dd[3]);
-                Matrix.rotateM(model, 0, ang, 0f, 1f, 0f);
-                Matrix.translateM(model, 0, 0f, 0f, -dd[3]);
-                Matrix.scaleM(model, 0, dd[5] * 2f, dd[4] * 2f, dd[3] * 2f);
+                Matrix.translateM(doorBase, 0, dd[0], dd[1], dd[2] + tH);
+                Matrix.rotateM(doorBase, 0, ang, 0f, 1f, 0f);
+                Matrix.translateM(doorBase, 0, 0f, 0f, -tH);
             }
-            float em = (i == nearDoor) ? 1.3f : 1f;         // highlight the door you can use
-            drawWorld(cube, 36, 0f, dd[8] * em, dd[9] * em, dd[10] * em);
+            float em = (i == nearDoor) ? 1.25f : 1f;        // highlight the door you can use
+            float lr = dd[8] * em, lg = dd[9] * em, lb = dd[10] * em;
+            int style = dd.length > 11 ? (int) dd[11] : 0;
+            doorBit(axis, 0f, 0f, 0f, tH * 2f, vH * 2f, pH * 2f, lr, lg, lb);   // leaf
+            float sr = dd[8] * 0.78f * em, sg = dd[9] * 0.78f * em, sb = dd[10] * 0.78f * em;  // recessed shade
+            float gr = 0.55f, gg = 0.66f, gb = 0.74f;       // glass
+            float fd = pH * 1.2f;                            // detail sits just proud of the leaf face
+            for (int f = -1; f <= 1; f += 2) {              // detail on both faces (exterior + interior)
+                float ld = f * fd;
+                if (style == 0) {                          // panelled (4 panels)
+                    for (int a2 = -1; a2 <= 1; a2 += 2) for (int b2 = -1; b2 <= 1; b2 += 2)
+                        doorBit(axis, a2 * tH * 0.42f, b2 * vH * 0.42f, ld, tH * 0.58f, vH * 0.62f, pH * 0.45f, sr, sg, sb);
+                } else if (style == 1) {                   // plank (vertical grooves)
+                    for (int p = -2; p <= 2; p++)
+                        doorBit(axis, p * tH * 0.36f, 0f, ld, pH * 1.0f, vH * 1.85f, pH * 0.4f, sr * 0.9f, sg * 0.9f, sb * 0.9f);
+                } else if (style == 2) {                   // glazed (upper pane + lower panel)
+                    doorBit(axis, 0f, vH * 0.42f, ld, tH * 1.35f, vH * 0.78f, pH * 0.45f, gr, gg, gb);
+                    doorBit(axis, 0f, -vH * 0.45f, ld, tH * 1.35f, vH * 0.72f, pH * 0.45f, sr, sg, sb);
+                } else {                                   // shop (big glazing + cross muntins)
+                    doorBit(axis, 0f, vH * 0.08f, ld, tH * 1.55f, vH * 1.5f, pH * 0.45f, gr, gg, gb);
+                    doorBit(axis, 0f, 0f, ld * 1.1f, tH * 1.7f, pH * 0.6f, pH * 0.6f, lr, lg, lb);
+                    doorBit(axis, 0f, vH * 0.45f, ld * 1.1f, pH * 0.6f, vH * 1.0f, pH * 0.6f, lr, lg, lb);
+                }
+            }
+            doorBit(axis, -tH * 0.72f, 0f, pH * 1.0f, pH * 0.9f, vH * 0.18f, pH * 0.9f, 0.72f, 0.73f, 0.55f);   // handle
         }
+    }
+
+    /** Draw one box of a door in the leaf's local frame (lt=along width, lv=vertical, ld=depth; sizes are full). */
+    private void doorBit(int axis, float lt, float lv, float ld, float st, float sv, float sd, float r, float g, float b) {
+        System.arraycopy(doorBase, 0, model, 0, 16);
+        if (axis == 0) { Matrix.translateM(model, 0, lt, lv, ld); Matrix.scaleM(model, 0, st, sv, sd); }
+        else           { Matrix.translateM(model, 0, ld, lv, lt); Matrix.scaleM(model, 0, sd, sv, st); }
+        drawWorld(cube, 36, 0f, r, g, b);
     }
 
     // --- weapon viewmodels ---
@@ -3867,8 +3899,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float[] dc = DOORS[rc.nextInt(DOORS.length)];
                 float fR = 0.40f + rc.nextFloat() * 0.06f, fG = 0.38f + rc.nextFloat() * 0.06f, fB = 0.36f + rc.nextFloat() * 0.06f;
                 float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
+                int doorStyle = arch == 0 ? 1 : (arch == 1 ? 0 : (arch == 2 ? 2 : 3));   // plank / panel / glazed / shop
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, 1, p[0], p[1], p[2], chimney ? 1 : 0,
-                            doorW, doorH, dc[0], dc[1], dc[2]);
+                            doorW, doorH, dc[0], dc[1], dc[2], doorStyle);
                 houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                         GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
                 if (rc.nextFloat() < 0.45f) {                      // a barrel / crate / planter tucked against a wall
@@ -4082,6 +4115,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b, int chimney,
                                     float doorW, float doorH, float dr, float dg, float db) {
+        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney, doorW, doorH, dr, dg, db, 0);
+    }
+
+    private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
+                                    int doorSide, int roofStyle, float r, float g, float b, int chimney,
+                                    float doorW, float doorH, float dr, float dg, float db, int doorStyle) {
         float t = 0.3f;
         doorW = clamp(doorW, 0.8f, Math.min(w, d) - 0.6f);     // keep the gap inside the wall
         doorH = clamp(doorH, 1.6f, h - 0.3f);                  // keep the lintel under the eave
@@ -4096,7 +4135,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (doorSide == 2) { dcx = cx + w * 0.5f; dcz = cz; axis = 1; }
         else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
         doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
-                dr, dg, db});
+                dr, dg, db, doorStyle});
+        // door surround (architrave: jambs + lintel), slightly proud, in a light stone trim — frames the opening
+        float fr = 0.84f, fg = 0.82f, fb = 0.76f, jb = 0.13f, pr = 0.10f, fy = doorH * 0.5f;
+        float nnx = doorSide == 2 ? 1 : (doorSide == 3 ? -1 : 0), nnz = doorSide == 0 ? 1 : (doorSide == 1 ? -1 : 0);
+        if (axis == 0) {
+            float fcz = dcz + nnz * (t * 0.5f - 0.02f);
+            L.add(new float[]{dcx - (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
+            L.add(new float[]{dcx + (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
+            L.add(new float[]{dcx, doorH + 0.09f, fcz, doorW + jb * 2f, 0.18f, t + pr, fr, fg, fb});
+        } else {
+            float fcx = dcx + nnx * (t * 0.5f - 0.02f);
+            L.add(new float[]{fcx, fy, dcz - (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
+            L.add(new float[]{fcx, fy, dcz + (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
+            L.add(new float[]{fcx, doorH + 0.09f, dcz, t + pr, 0.18f, doorW + jb * 2f, fr, fg, fb});
+        }
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
             L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f});
