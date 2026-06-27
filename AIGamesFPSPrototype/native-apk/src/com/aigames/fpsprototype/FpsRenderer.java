@@ -161,6 +161,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         {0.85f, 0.83f, 0.78f},   // 5 mattress / pillow
         {0.33f, 0.33f, 0.36f},   // 6 metal (lamp cord)
         {0.97f, 0.87f, 0.60f},   // 7 lampshade (warm)
+        {0.36f, 0.43f, 0.52f},   // 8 sofa / upholstery (muted blue)
+        {0.62f, 0.43f, 0.35f},   // 9 accent fabric / books (terracotta)
+        {0.27f, 0.45f, 0.28f},   // 10 plant foliage (green)
+        {0.80f, 0.80f, 0.84f},   // 11 picture / mirror (light)
     };
 
     private final float[] proj = new float[16];
@@ -4247,6 +4251,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float lane = 1.0f, pass = 0.95f;
         float koX = cx + dox * (inx - lane * 0.5f), koZ = cz + doz * (inz - lane * 0.5f);
         float koW = dox != 0 ? lane : pass, koD = doz != 0 ? lane : pass;
+        java.util.List<float[]> occ = new java.util.ArrayList<float[]>();        // placed footprints, for later furniture
+        occ.add(new float[]{koX, koZ, koW, koD});
         float[] sgx = {-1, 1, -1, 1}, sgz = {-1, -1, 1, 1};         // corners: 0=(-,-) 1=(+,-) 2=(-,+) 3=(+,+)
         // BED: corner farthest from the door
         int bedC = 0; float bestB = -1e9f;
@@ -4260,6 +4266,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             addPiece(L, bx, 0.22f, bz, bedW, 0.30f, bedD, 2, true);                            // frame (solid)
             addPiece(L, bx, 0.42f, bz, bedW - 0.08f, 0.14f, bedD - 0.08f, 4, false);           // duvet
             addPiece(L, bx - sgx[bedC] * bedW * 0.30f, 0.46f, bz - sgz[bedC] * bedD * 0.30f, 0.40f, 0.12f, 0.28f, 5, false); // pillow
+            occ.add(new float[]{bx, bz, bedW, bedD});
+            // nightstand tucked beside the head of the bed (toward room centre), with a tiny lamp
+            float nsx = bx - sgx[bedC] * (bedW * 0.5f + 0.22f), nsz = bz - sgz[bedC] * (bedD * 0.5f - 0.10f);
+            if (Math.abs(nsx - cx) < inx - 0.2f && Math.abs(nsz - cz) < inz - 0.2f && clearSpot(occ, nsx, nsz, 0.34f, 0.30f)) {
+                addPiece(L, nsx, 0.22f, nsz, 0.34f, 0.40f, 0.30f, 2, true);
+                addPiece(L, nsx, 0.50f, nsz, 0.16f, 0.18f, 0.16f, 7, false);     // little lamp
+                occ.add(new float[]{nsx, nsz, 0.34f, 0.30f});
+            }
         }
         // WARDROBE: prefer the diagonal corner, else an adjacent one — never blocking the entry, never into the bed
         float wardH = Math.min(1.70f, ceilH - 0.15f);
@@ -4268,6 +4282,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (aabbOverlap(wx, wz, 0.70f, 0.50f, koX, koZ, koW, koD)) continue;               // blocks the door lane
             if (bedPlaced && aabbOverlap(wx, wz, 0.70f, 0.50f, bx, bz, bedW, bedD)) continue;  // into the bed
             addPiece(L, wx, wardH * 0.5f + 0.04f, wz, 0.62f, wardH, 0.42f, 3, true);
+            occ.add(new float[]{wx, wz, 0.62f, 0.42f});
             break;
         }
         // TABLE + chairs: centred, pushed away from the door, only if the room is roomy and the spot is clear
@@ -4280,13 +4295,64 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     addPiece(L, tx + ((lg & 1) == 0 ? -0.32f : 0.32f), 0.35f, tz + ((lg & 2) == 0 ? -0.24f : 0.24f), 0.06f, 0.66f, 0.06f, 3, false);
                 addPiece(L, tx - 0.52f, 0.27f, tz, 0.38f, 0.46f, 0.38f, 2, false);             // chair (sits on the floor)
                 addPiece(L, tx + 0.52f, 0.27f, tz, 0.38f, 0.46f, 0.38f, 2, false);
+                occ.add(new float[]{tx, tz, 1.65f, 0.75f});                                     // table + both chairs
             }
+        }
+
+        // --- extra furnishings: sofa, bookshelf, potted plant, wall pictures ---
+        // SOFA: against a wall, facing the room, low and upholstered
+        for (int side = 0; side < 4 && inx > 1.0f && inz > 1.0f; side++) {
+            boolean alongX = (side < 2);
+            float sw = alongX ? Math.min(1.5f, inx * 1.3f) : 0.5f;
+            float sd = alongX ? 0.5f : Math.min(1.5f, inz * 1.3f);
+            float sx2 = cx + (alongX ? 0f : (side == 2 ? -1f : 1f) * (inx - sd * 0.5f - 0.02f));
+            float sz2 = cz + (alongX ? (side == 0 ? -1f : 1f) * (inz - sd * 0.5f - 0.02f) : 0f);
+            if (!clearSpot(occ, sx2, sz2, sw, sd)) continue;
+            addPiece(L, sx2, 0.22f, sz2, sw, 0.30f, sd, 8, true);                               // seat
+            float bdx2 = alongX ? 0f : (side == 2 ? -1f : 1f), bdz2 = alongX ? (side == 0 ? -1f : 1f) : 0f;
+            addPiece(L, sx2 + bdx2 * (sd * 0.5f - 0.08f), 0.46f, sz2 + bdz2 * (sd * 0.5f - 0.08f),
+                    alongX ? sw : 0.16f, 0.34f, alongX ? 0.16f : sd, 8, false);                 // backrest
+            occ.add(new float[]{sx2, sz2, sw, sd});
+            break;
+        }
+        // BOOKSHELF: a tall thin unit in a free corner, with a colourful book band
+        for (int ci = 0; ci < 4; ci++) {
+            float shx = cx + sgx[ci] * (inx - 0.22f), shz = cz + sgz[ci] * (inz - 0.16f);
+            if (!clearSpot(occ, shx, shz, 0.6f, 0.34f)) continue;
+            float shH = Math.min(1.85f, ceilH - 0.2f);
+            addPiece(L, shx, shH * 0.5f + 0.04f, shz, 0.56f, shH, 0.3f, 3, true);               // case
+            addPiece(L, shx, shH * 0.62f, shz, 0.48f, 0.16f, 0.24f, 9, false);                  // books
+            addPiece(L, shx, shH * 0.40f, shz, 0.48f, 0.16f, 0.24f, 9, false);
+            occ.add(new float[]{shx, shz, 0.6f, 0.34f});
+            break;
+        }
+        // POTTED PLANT: a small green accent in any remaining corner
+        for (int ci = 3; ci >= 0; ci--) {
+            float pxp = cx + sgx[ci] * (inx - 0.20f), pzp = cz + sgz[ci] * (inz - 0.20f);
+            if (!clearSpot(occ, pxp, pzp, 0.32f, 0.32f)) continue;
+            addPiece(L, pxp, 0.15f, pzp, 0.26f, 0.30f, 0.26f, 2, false);                        // pot
+            addPiece(L, pxp, 0.46f, pzp, 0.40f, 0.42f, 0.40f, 10, false);                       // foliage
+            occ.add(new float[]{pxp, pzp, 0.32f, 0.32f});
+            break;
+        }
+        // WALL PICTURES: two framed pictures flat on the back wall (decor only, no collision)
+        float pwx = cx - dox * (inx - 0.03f), pwz = cz - doz * (inz - 0.03f);
+        boolean wallAlongX = (doz != 0);   // back wall runs along X when the door faces +/-Z
+        for (int pi = -1; pi <= 1; pi += 2) {
+            float ox = wallAlongX ? pi * inx * 0.4f : 0f, oz = wallAlongX ? 0f : pi * inz * 0.4f;
+            addPiece(L, pwx + ox, ceilH * 0.62f, pwz + oz, wallAlongX ? 0.34f : 0.04f, 0.28f, wallAlongX ? 0.04f : 0.34f, 11, false);
         }
     }
 
     /** True if two XZ footprints (centre + full extents) overlap — used to keep furniture off the door + each other. */
     private static boolean aabbOverlap(float ax, float az, float aw, float ad, float bx, float bz, float bw, float bd) {
         return Math.abs(ax - bx) < (aw + bw) * 0.5f && Math.abs(az - bz) < (ad + bd) * 0.5f;
+    }
+
+    /** True if a footprint clears every already-placed furniture footprint (with a small breathing margin). */
+    private static boolean clearSpot(java.util.List<float[]> occ, float x, float z, float w, float d) {
+        for (float[] o : occ) if (aabbOverlap(x, z, w + 0.1f, d + 0.1f, o[0], o[1], o[2], o[3])) return false;
+        return true;
     }
 
     private void addPiece(List<float[]> L, float x, float y, float z, float w, float h, float d, int colorIdx, boolean solid) {
