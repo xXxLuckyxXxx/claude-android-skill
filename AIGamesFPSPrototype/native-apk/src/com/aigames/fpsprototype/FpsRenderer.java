@@ -273,6 +273,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
     private final int[] enOutfit = new int[MAX_ENEMIES];
+    private final int[] enType = new int[MAX_ENEMIES];   // 0 = normal, 1 = runner (fast/weak), 2 = brute (slow/tanky)
     private final int[] enFaceType = new int[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
     private final float[] enScale = new float[MAX_ENEMIES];   // 1 = normal, >1 = (mini)boss
@@ -646,7 +647,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
                 else if (waveRemaining <= 0) clearWave();
             } else if (d > 1e-4f) {
-                float es = speed * (enBoss[i] > 0 ? 0.6f : 1f);   // bosses are slower but tankier
+                float typeMul = enBoss[i] > 0 ? 0.6f : (enType[i] == 1 ? 1.7f : (enType[i] == 2 ? 0.6f : 1f));
+                float es = speed * typeMul;                        // runners rush, brutes/bosses lumber
                 float a = steerDir(enX[i], enZ[i], (float) Math.atan2(dx, dz));  // navigate round buildings
                 enFace[i] = a;                            // face the way it actually moves
                 float step = es * dt * (enHurt[i] > 0f ? 0.4f : 1f);   // flinch: stagger briefly when shot
@@ -662,7 +664,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (waveToSpawn > 0 && spawnTimer <= 0f && aliveCount() < MAX_ENEMIES) {
             spawnEnemy();
             waveToSpawn--;
-            spawnTimer = Math.max(0.28f, 1.05f - wave * 0.045f);   // horde arrives quicker each wave
+            spawnTimer = Math.max(0.30f, 1.2f - wave * 0.05f);   // horde arrives quicker each wave (gentler early)
         }
     }
 
@@ -675,7 +677,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Start wave w: size grows over time; every 5th is a mini-boss, every 10th a boss. */
     private void beginWave(int w) {
         wave = w;
-        int size = Math.max(4, Math.round(5 + (w - 1) * 1.8f));
+        int size = Math.max(3, Math.round(4 + (w - 1) * 1.8f));   // gentler opening waves
         waveToSpawn = size;
         waveRemaining = size;
         waveSize = size;
@@ -746,15 +748,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
                 if (bossPending > 0) {
                     enBoss[i] = bossPending;
+                    enType[i] = 0;
                     enScale[i] = bossPending == 2 ? 1.9f : 1.45f;
                     enHP[i] = ENEMY_FULL_HP * hpMul * (bossPending == 2 ? 6f : 3f);
                     enOutfit[i] = 0;                       // menacing red
                     bossPending = 0;
                 } else {
                     enBoss[i] = 0;
-                    enScale[i] = 1f;
-                    enHP[i] = ENEMY_FULL_HP * hpMul;
-                    enOutfit[i] = rng.nextInt(OUTFITS.length);
+                    // variety from wave 2: ~22% runner (fast, frail), ~16% brute (slow, tanky)
+                    float tr = (wave >= 2) ? rng.nextFloat() : 1f;
+                    int type = tr < 0.22f ? 1 : (tr < 0.38f ? 2 : 0);
+                    enType[i] = type;
+                    enScale[i] = type == 1 ? 0.82f : (type == 2 ? 1.45f : 1f);
+                    enHP[i] = ENEMY_FULL_HP * hpMul * (type == 1 ? 0.55f : (type == 2 ? 2.6f : 1f));
+                    enOutfit[i] = type == 1 ? 4 % OUTFITS.length : (type == 2 ? 3 % OUTFITS.length : rng.nextInt(OUTFITS.length));
                 }
                 enMaxHP[i] = enHP[i];
                 enAlive[i] = true;
