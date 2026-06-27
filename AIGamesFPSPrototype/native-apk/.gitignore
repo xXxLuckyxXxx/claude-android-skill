@@ -1,3 +1,9 @@
-# Downloaded build tools (fetched by README instructions) and build output.
-.tools/
+# Build output.
 build/
+
+# Build-tool jars are VENDORED (committed) so a fresh `git clone` can build a
+# signed APK with no Android-SDK platform download — see /CLAUDE.md.
+# Everything else that lands under .tools/ stays ignored.
+.tools/*
+!.tools/android.jar
+!.tools/dalvik-dx.jar
