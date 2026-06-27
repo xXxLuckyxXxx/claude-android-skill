@@ -39,7 +39,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float GRAVITY = 13.0f;
     private static final float JUMP_V = 4.7f;          // a plain hop lifts the feet ~0.85 m
     private static final float MANTLE_MAX = 1.85f;     // tallest ledge you can climb onto
-    private static final float SPRINT_MULT = 1.45f;
+    private static final float SPRINT_MULT = 1.36f;   // top sprint boost (ramped in via sprintAnim, not instant)
     private static final int STRIDE = 32;             // 8 floats: pos3, normal3, uv2
     private static final float MUZZLE_TIME = 0.08f;
     private static final float HIT_TIME = 0.25f;
@@ -265,6 +265,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] enMaxHP = new float[MAX_ENEMIES];
     private final float[] enKx = new float[MAX_ENEMIES], enKz = new float[MAX_ENEMIES];  // knockback velocity
     private float hitStop = 0f;        // brief slow-mo crunch on a kill
+    // collectible drops (health / ammo orbs)
+    private static final int MAX_PICKUPS = 10;
+    private final float[] pkX = new float[MAX_PICKUPS], pkY = new float[MAX_PICKUPS], pkZ = new float[MAX_PICKUPS], pkLife = new float[MAX_PICKUPS];
+    private final int[] pkType = new int[MAX_PICKUPS];   // 0 = health, 1 = ammo
+    private int pkNext = 0;
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
     private final int[] enOutfit = new int[MAX_ENEMIES];
@@ -480,6 +485,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             updateCamera(gdt);
             updateEnemies(gdt);
             updateParticles(gdt);
+            updatePickups(gdt);
             updatePopups(dt);
             tickTimers(gdt);
         }
@@ -579,6 +585,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawDoors();
         drawEnemies();
         drawParticles();
+        drawPickups();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         if (state == ST_PLAYING) drawGun();
@@ -833,6 +840,50 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.scaleM(model, 0, s, s, s);
             float boost = lf > 0.8f ? 1.6f : 1f;              // brief bright pop on spawn
             drawWorld(cube, 36, 3f, pR[i] * boost, pG[i] * boost, pB[i] * boost);
+        }
+    }
+
+    // --- collectible drops ---
+
+    private void spawnPickup(float x, float z, int type) {
+        int i = pkNext; pkNext = (pkNext + 1) % MAX_PICKUPS;
+        pkX[i] = x; pkZ[i] = z; pkY[i] = terrainH(x, z) + 0.55f;
+        pkType[i] = type; pkLife[i] = 12f;
+    }
+
+    private void updatePickups(float dt) {
+        for (int i = 0; i < MAX_PICKUPS; i++) {
+            if (pkLife[i] <= 0f) continue;
+            pkLife[i] -= dt;
+            float dx = px - pkX[i], dz = pz - pkZ[i];
+            if (dx * dx + dz * dz < 1.5f * 1.5f) {            // walked over → collect
+                pkLife[i] = 0f;
+                if (pkType[i] == 0) {
+                    playerHP = Math.min(effMaxHp(), playerHP + 30f);
+                    spawnPopup("+30 HP", width * 0.5f, height * 0.56f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 24f);
+                } else {
+                    for (int w = 0; w < W_COUNT; w++) wReserve[w] = Math.min(W_RES_MAX[w], wReserve[w] + W_RES_MAX[w] / 3);
+                    spawnPopup("+AMMO", width * 0.5f, height * 0.56f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 24f);
+                }
+                sfx.swap();
+            }
+        }
+    }
+
+    private void drawPickups() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        float spin = timeAcc * 110f, bob = (float) Math.sin(timeAcc * 3f) * 0.12f;
+        for (int i = 0; i < MAX_PICKUPS; i++) {
+            if (pkLife[i] <= 0f) continue;
+            float fade = pkLife[i] < 2f ? Math.max(0.25f, pkLife[i] / 2f) : 1f;   // dim out near despawn
+            Matrix.setIdentityM(model, 0);
+            Matrix.translateM(model, 0, pkX[i], pkY[i] + bob, pkZ[i]);
+            Matrix.rotateM(model, 0, spin, 0f, 1f, 0f);
+            Matrix.rotateM(model, 0, 32f, 1f, 0f, 0.35f);
+            Matrix.scaleM(model, 0, 0.22f, 0.22f, 0.22f);
+            if (pkType[i] == 0) drawWorld(cube, 36, 3f, 0.95f * fade, 0.22f * fade, 0.24f * fade);   // health: red
+            else                drawWorld(cube, 36, 3f, 0.98f * fade, 0.8f * fade, 0.22f * fade);    // ammo: gold
         }
     }
 
@@ -1269,7 +1320,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float mx = input.moveX(), my = input.moveY();
         float mlen = (float) Math.sqrt(mx * mx + my * my);
         sprinting = grounded && mlen > 0.9f && my > 0.5f && aim < 0.2f;
-        float speed = MOVE_SPEED * (sprinting ? SPRINT_MULT : 1f) * (1f + 0.06f * abLevel[AB_MOVESPEED]);
+        // sprint accelerates in gradually (eased by sprintAnim) instead of snapping to top speed
+        float sprintMul = 1f + (SPRINT_MULT - 1f) * sprintAnim;
+        float speed = MOVE_SPEED * sprintMul * (1f + 0.06f * abLevel[AB_MOVESPEED]);
         float fwdX = (float) Math.sin(yaw), fwdZ = -(float) Math.cos(yaw);
         float rgtX = (float) Math.cos(yaw), rgtZ = (float) Math.sin(yaw);
         px += (rgtX * mx + fwdX * my) * speed * dt;
@@ -1420,7 +1473,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) finishReload(); }
         aim += (((aimOn && state == ST_PLAYING) ? 1f : 0f) - aim) * Math.min(1f, dt * 12f);
         if (aim < 0.001f) aim = 0f; else if (aim > 0.999f) aim = 1f;
-        sprintAnim += ((sprinting ? 1f : 0f) - sprintAnim) * Math.min(1f, dt * 9f);
+        // ramp into the sprint gradually (~0.6 s to top speed), drop out of it quickly
+        float saRate = sprinting ? 4f : 10f;
+        sprintAnim += ((sprinting ? 1f : 0f) - sprintAnim) * Math.min(1f, dt * saRate);
         if (sprintAnim < 0.001f) sprintAnim = 0f; else if (sprintAnim > 0.999f) sprintAnim = 1f;
         input.setMenuMode(state != ST_PLAYING);
     }
@@ -1438,6 +1493,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
         for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; }
+        for (int i = 0; i < MAX_PICKUPS; i++) pkLife[i] = 0f;
         hitStop = 0f;
         for (int i = 0; i < MAX_PARTICLES; i++) pLife[i] = 0f;
         waveBreak = 0f; waveBanner = 0f; bossPending = 0;
@@ -1631,6 +1687,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (rank != null) spawnPopup(rank, width * 0.5f, height * 0.37f, 1f, 0.66f, 0.18f, 30f);
         pushFeed(enBoss[idx] > 0 ? "BOSS DOWN" : (head ? "HEADSHOT" : "ELIMINATED"), enBoss[idx] > 0 ? 2 : (head ? 1 : 0));
         if (optShake && enBoss[idx] > 0) shake = Math.max(shake, enBoss[idx] >= 2 ? 0.55f : 0.32f);   // boss-kill jolt
+        // chance to drop a collectible (bosses always drop health)
+        if (enBoss[idx] > 0) spawnPickup(enX[idx], enZ[idx], 0);
+        else { float drop = rng.nextFloat(); if (drop < 0.15f) spawnPickup(enX[idx], enZ[idx], 0); else if (drop < 0.33f) spawnPickup(enX[idx], enZ[idx], 1); }
 
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 15 : 10;
