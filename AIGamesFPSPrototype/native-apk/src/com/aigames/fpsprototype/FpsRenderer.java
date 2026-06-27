@@ -136,10 +136,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int prog2, aP2, uScale2, uOff2, uCol2;
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts;
     private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
     private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
     private boolean hasCustomRoads;
@@ -150,6 +150,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float[][] roofGroups;                  // per-house roof colour groups: {firstVert, vertCount, r,g,b}
     private float[][] winGroups;                   // per-house window glass-tint groups: {firstVert, vertCount, r,g,b}
     private float[][] bandGroups;                  // foundation / trim / storey-band colour groups: {firstVert, vertCount, r,g,b}
+    private float[][] interiorGroups;              // baked house-interior material groups: {firstVert, vertCount, r,g,b}
+    private java.util.List<float[]> interiorPieces;// furniture/floor/ceiling specs {x,y,z,w,h,d,colorIdx}, built once
+    private static final float[][] INT_COLS = {    // interior material palette (indexed by colorIdx)
+        {0.46f, 0.33f, 0.21f},   // 0 wood floor
+        {0.86f, 0.84f, 0.80f},   // 1 ceiling
+        {0.54f, 0.39f, 0.24f},   // 2 wood furniture
+        {0.34f, 0.24f, 0.16f},   // 3 dark wood (legs / wardrobe)
+        {0.50f, 0.30f, 0.30f},   // 4 fabric (bed cover / rug)
+        {0.85f, 0.83f, 0.78f},   // 5 mattress / pillow
+        {0.33f, 0.33f, 0.36f},   // 6 metal (lamp cord)
+        {0.97f, 0.87f, 0.60f},   // 7 lampshade (warm)
+    };
 
     private final float[] proj = new float[16];
     private final float[] view = new float[16];
@@ -293,6 +305,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         ArrayList<float[]> hl = new ArrayList<float[]>();
         // A custom level (placed via the web editor + adb push) overrides the procedural village.
         if (!buildWorldFromFile(ctx, bl, dl, hl)) buildWorldInto(bl, dl, hl);
+        furnishAll(bl, hl);                                 // walk-in interiors: furniture colliders + visual specs
         this.boxes = bl.toArray(new float[0][]);
         this.doorData = dl.toArray(new float[0][]);
         this.houseRects = hl;
@@ -395,6 +408,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
         wallTex = uploadTexture(makeHouseBitmap());
+        woodTex = uploadTexture(makeWoodBitmap());
+        interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
 
         restart();
         state = ST_HUB;                 // app opens in the hub (PLAY to begin a run)
@@ -485,6 +500,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stucco facades
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
+            if (b.length > 10 && b[10] != 0f) continue;       // collision-only proxy (interior furniture) — drawn via interiorMesh
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
             if (b.length > 9 && b[9] != 0f) Matrix.rotateM(model, 0, b[9], 0f, 1f, 0f);   // props/fences carry a yaw
@@ -510,6 +526,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawWorld(trimMesh, trimVerts, 0f, 0.95f, 0.93f, 0.86f);
         if (bandGroups != null) {                              // per-house foundation / trim / storey bands
             for (float[] gp : bandGroups) drawWorldRange(bandMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+        }
+        if (interiorGroups != null) {                          // baked walk-in interiors (floors/ceilings/furniture)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, woodTex);
+            for (float[] gp : interiorGroups) drawWorldRange(interiorMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
         }
 
         drawDoors();
@@ -3348,6 +3368,101 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         o = box6(d, o, cx + hw, cy, cz, perp, halfH, hd + proud);    // +x face
         o = box6(d, o, cx - hw, cy, cz, perp, halfH, hd + proud);    // -x face
         return o;
+    }
+
+    // --- walk-in interiors: a furnished ground-floor room per house, baked into one mesh + collision proxies ---
+
+    /** Furnish every house once: store visual pieces for the baked mesh, add solid colliders to L. */
+    private void furnishAll(List<float[]> L, List<float[]> houses) {
+        interiorPieces = new java.util.ArrayList<float[]>();
+        for (float[] h : houses) furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5]);
+    }
+
+    /** A cosy ground-floor room: wood floor, ceiling, rug, hanging lamp, a bed, a wardrobe and a table + chairs,
+     *  laid out away from the doorway. Solid pieces also get a non-rendered collision box in L. */
+    private void furnishHouse(List<float[]> L, float cx, float cz, float w, float dd, float h, int ds) {
+        float inx = w * 0.5f - 0.28f, inz = dd * 0.5f - 0.28f;       // interior half-extents (inside the walls)
+        if (inx < 0.7f || inz < 0.7f) return;                        // too small to furnish
+        long seed = ((long) Float.floatToIntBits(cx)) * 73856093L ^ ((long) Float.floatToIntBits(cz)) * 19349663L;
+        Random r = new Random(seed);
+        float ceilH = Math.min(2.55f, h - 0.22f);
+        float dox = (ds == 2 ? 1 : (ds == 3 ? -1 : 0)), doz = (ds == 0 ? 1 : (ds == 1 ? -1 : 0));   // door points OUT
+        addPiece(L, cx, 0.05f, cz, inx * 2f, 0.05f, inz * 2f, 0, false);                       // wood floor
+        addPiece(L, cx, ceilH, cz, inx * 2f - 0.04f, 0.10f, inz * 2f - 0.04f, 1, false);       // ceiling
+        addPiece(L, cx, 0.09f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
+        addPiece(L, cx, ceilH - 0.18f, cz, 0.06f, 0.30f, 0.06f, 6, false);                     // lamp cord
+        addPiece(L, cx, ceilH - 0.40f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
+        // score the four corners by distance from the doorway; bed + wardrobe take the two farthest
+        float[] sgx = {-1, 1, -1, 1}, sgz = {-1, -1, 1, 1};
+        int c1 = 0, c2 = 1; float s1 = -1e9f, s2 = -1e9f;
+        for (int ci = 0; ci < 4; ci++) {
+            float score = -(sgx[ci] * dox + sgz[ci] * doz) + (r.nextFloat() - 0.5f) * 0.4f;
+            if (score > s1) { s2 = s1; c2 = c1; s1 = score; c1 = ci; }
+            else if (score > s2) { s2 = score; c2 = ci; }
+        }
+        boolean bedAlongX = w >= dd;                                  // bed long side along the longer interior axis
+        float bedW = bedAlongX ? Math.min(1.9f, inx * 1.5f) : 0.95f;
+        float bedD = bedAlongX ? 0.95f : Math.min(1.9f, inz * 1.5f);
+        float bx = cx + sgx[c1] * (inx - bedW * 0.5f - 0.04f), bz = cz + sgz[c1] * (inz - bedD * 0.5f - 0.04f);
+        addPiece(L, bx, 0.24f, bz, bedW, 0.30f, bedD, 2, true);                                 // bed frame (solid)
+        addPiece(L, bx, 0.44f, bz, bedW - 0.08f, 0.14f, bedD - 0.08f, 4, false);               // duvet
+        addPiece(L, bx - sgx[c1] * bedW * 0.32f, 0.48f, bz - sgz[c1] * bedD * 0.32f, 0.42f, 0.12f, 0.30f, 5, false); // pillow
+        float wx = cx + sgx[c2] * (inx - 0.30f), wz = cz + sgz[c2] * (inz - 0.24f);
+        addPiece(L, wx, 0.92f, wz, 0.62f, 1.70f, 0.42f, 3, true);                               // wardrobe (solid)
+        if (inx > 0.95f && inz > 0.95f) {                            // table + chairs if the room has room
+            float tx = cx - dox * (inx * 0.30f), tz = cz - doz * (inz * 0.30f);
+            addPiece(L, tx, 0.72f, tz, 0.80f, 0.07f, 0.60f, 2, true);                           // table top (solid)
+            for (int lg = 0; lg < 4; lg++)
+                addPiece(L, tx + ((lg & 1) == 0 ? -0.32f : 0.32f), 0.37f, tz + ((lg & 2) == 0 ? -0.24f : 0.24f), 0.06f, 0.72f, 0.06f, 3, false);
+            addPiece(L, tx - 0.52f, 0.46f, tz, 0.38f, 0.48f, 0.38f, 2, false);                  // chair
+            addPiece(L, tx + 0.52f, 0.46f, tz, 0.38f, 0.48f, 0.38f, 2, false);                  // chair
+        }
+    }
+
+    private void addPiece(List<float[]> L, float x, float y, float z, float w, float h, float d, int colorIdx, boolean solid) {
+        interiorPieces.add(new float[]{x, y, z, w, h, d, colorIdx});
+        if (solid) L.add(new float[]{x, y, z, w, h, d, 0.5f, 0.5f, 0.5f, 0f, 1f});   // collision-only proxy (idx 10 = no-render)
+    }
+
+    /** Bake every interior piece into one mesh, grouped by material colour for cheap batched draws (~8 calls total). */
+    private float[] makeInteriorMesh() {
+        if (interiorPieces == null || interiorPieces.isEmpty()) { interiorGroups = null; interiorVerts = 0; return new float[0]; }
+        float[] d = new float[interiorPieces.size() * 36 * 8 + 64];
+        int o = 0;
+        java.util.List<float[]> groups = new java.util.ArrayList<float[]>();
+        for (int ci = 0; ci < INT_COLS.length; ci++) {
+            int start = o / 8;
+            for (float[] p : interiorPieces) {
+                if ((int) p[6] != ci) continue;
+                o = box6(d, o, p[0], p[1], p[2], p[3] * 0.5f, p[4] * 0.5f, p[5] * 0.5f);
+            }
+            int cnt = o / 8 - start;
+            if (cnt > 0) groups.add(new float[]{start, cnt, INT_COLS[ci][0], INT_COLS[ci][1], INT_COLS[ci][2]});
+        }
+        interiorGroups = groups.toArray(new float[0][]);
+        interiorVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    /** Warm wood planks with grain — used for floors + furniture (tinted per material via uColor). */
+    private static Bitmap makeWoodBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFEAE0CF);                                    // near-neutral warm base so uColor sets the real tone
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(91);
+        for (int plank = 1; plank < 6; plank++) {                  // plank seams
+            float y = plank * N / 6f;
+            p.setColor(0x33000000); c.drawRect(0, y, N, y + 2.5f, p);
+        }
+        for (int k = 0; k < 1400; k++) {                           // fine grain streaks
+            int v = rnd.nextInt(36);
+            p.setColor((0x22 << 24) | ((0xCC - v) << 16) | ((0xBE - v) << 8) | (0xA6 - v));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 8 + rnd.nextInt(20), y + 1, p);
+        }
+        return b;
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
