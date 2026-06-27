@@ -222,6 +222,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int state = ST_HUB;
     private float deathAnim = 0f;      // >0 = playing the death sequence before the summary
     private boolean newBest = false;   // this run beat the high score
+    // player-toggleable options (settings panel)
+    private boolean showSettings = false;
+    private boolean optShake = true, optDmgNum = true, optRadar = true, optKillfeed = true;
     private int hubTab = 0;              // 0 = weapons, 1 = upgrades, 2 = abilities
     private int hubTabShown = -1;        // tab whose content-reveal is currently animating
     private float hubTabAnim = 1f;       // 0..1 content-reveal progress for the active tab
@@ -1449,7 +1452,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         flashTimer = FLASH_TIME;
         recoil += W_RECOIL[curWeapon];
         if (recoil > 0.26f) recoil = 0.26f;
-        shake = W_SHAKE[curWeapon];
+        if (optShake) shake = W_SHAKE[curWeapon];
         playWeaponSound();
         ejectShell();
 
@@ -1499,7 +1502,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHP[idx] -= dmg;
                 spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (head ? 1.6f : 0.95f) * enScale[idx], enZ[idx], head, dx, dy, dz);
                 // floating damage number at the enemy (projected to screen)
-                if (projectToScreen(enX[idx], 1.45f * enScale[idx], enZ[idx], projScreen)) {
+                if (optDmgNum && projectToScreen(enX[idx], 1.45f * enScale[idx], enZ[idx], projScreen)) {
                     float jx = (fxRnd.nextFloat() - 0.5f) * 36f * us;
                     if (head) spawnPopup("" + Math.round(dmg), projScreen[0] + jx, projScreen[1], 1f, 0.82f, 0.22f, 27f);
                     else      spawnPopup("" + Math.round(dmg), projScreen[0] + jx, projScreen[1], 1f, 0.97f, 0.85f, 20f);
@@ -1610,7 +1613,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (combo == 9) rank = "UNSTOPPABLE";
         if (rank != null) spawnPopup(rank, width * 0.5f, height * 0.37f, 1f, 0.66f, 0.18f, 30f);
         pushFeed(enBoss[idx] > 0 ? "BOSS DOWN" : (head ? "HEADSHOT" : "ELIMINATED"), enBoss[idx] > 0 ? 2 : (head ? 1 : 0));
-        if (enBoss[idx] > 0) shake = Math.max(shake, enBoss[idx] >= 2 ? 0.55f : 0.32f);   // boss-kill jolt
+        if (optShake && enBoss[idx] > 0) shake = Math.max(shake, enBoss[idx] >= 2 ? 0.55f : 0.32f);   // boss-kill jolt
 
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 15 : 10;
@@ -1726,6 +1729,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         wOwned[0] = 1;   // pistol always owned
         for (int a = 0; a < AB_COUNT; a++) abLevel[a] = prefs.getInt("mp_ab_" + a, 0);
+        optShake = prefs.getBoolean("opt_shake", true);
+        optDmgNum = prefs.getBoolean("opt_dmgnum", true);
+        optRadar = prefs.getBoolean("opt_radar", true);
+        optKillfeed = prefs.getBoolean("opt_killfeed", true);
         recomputeLevel();
     }
 
@@ -1738,6 +1745,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (int c = 0; c < UPG_COUNT; c++) e.putInt("mp_upg_" + w + "_" + c, upgTier[w][c]);
         }
         for (int a = 0; a < AB_COUNT; a++) e.putInt("mp_ab_" + a, abLevel[a]);
+        e.putBoolean("opt_shake", optShake);
+        e.putBoolean("opt_dmgnum", optDmgNum);
+        e.putBoolean("opt_radar", optRadar);
+        e.putBoolean("opt_killfeed", optKillfeed);
         e.apply();
     }
 
@@ -1898,8 +1909,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
             drawEnemyHealthBars();   // world-anchored, under the controls
             drawBossBar();
-            drawRadar();
-            drawKillfeed();
+            if (optRadar) drawRadar();
+            if (optKillfeed) drawKillfeed();
 
             // aim-down-sights focus vignette (stronger through the sniper scope)
             if (aim > 0.02f) drawEdgeVignette(0f, 0f, 0f, aim * (curWeapon == 3 ? 0.5f : 0.28f));
@@ -2195,6 +2206,50 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
+    /** A small settings gear icon (toothed disc). */
+    private void drawGear(float cx, float cy, float r, float a) {
+        for (int t = 0; t < 8; t++) {
+            float ang = t * 0.7854f;
+            drawRectPx(cx + (float) Math.cos(ang) * r, cy + (float) Math.sin(ang) * r, r * 0.55f, r * 0.55f, 0.82f, 0.85f, 0.92f, a);
+        }
+        drawCircle(cx, cy, r, 0.82f, 0.85f, 0.92f, a);
+        drawCircle(cx, cy, r * 0.42f, 0.08f, 0.10f, 0.15f, a);
+    }
+
+    private void toggleOpt(int i) {
+        if (i == 0) optShake = !optShake;
+        else if (i == 1) optDmgNum = !optDmgNum;
+        else if (i == 2) optRadar = !optRadar;
+        else optKillfeed = !optKillfeed;
+        sfx.swap();
+    }
+
+    /** Modal settings overlay: toggle the optional HUD/FX features on or off (persisted). */
+    private void drawSettingsOverlay(boolean tapped) {
+        drawQuadNDC(0f, 0f, 1f, 1f, 0.02f, 0.03f, 0.05f, 0.72f);
+        float cx = width * 0.5f, cw = Math.min(580f * us, width * 0.72f), ch = 460f * us, cy = height * 0.46f;
+        drawCard(cx, cy, cw, ch, 26f * us, 0.09f, 0.11f, 0.16f, 0.99f);
+        drawTextCenteredShadow("SETTINGS", cx, cy - ch * 0.5f + 46f * us, 30f, 0.9f, 0.95f, 1f, 1f);
+        drawRoundRect(cx, cy - ch * 0.5f + 74f * us, 120f * us, 4f * us, 2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f);
+        String[] labels = {"SCREEN SHAKE", "DAMAGE NUMBERS", "RADAR", "KILLFEED"};
+        boolean[] vals = {optShake, optDmgNum, optRadar, optKillfeed};
+        float rowY0 = cy - ch * 0.5f + 132f * us, rh = 66f * us;
+        for (int i = 0; i < 4; i++) {
+            float ry = rowY0 + i * rh;
+            drawTextShadow(labels[i], cx - cw * 0.5f + 42f * us, ry, 20f, 0.86f, 0.9f, 0.96f, 1f);
+            float tw = 104f * us, th = 44f * us, tx = cx + cw * 0.5f - 42f * us - tw * 0.5f;
+            boolean on = vals[i];
+            if (tapped && hitRect(tx, ry, tw + 24f * us, th + 16f * us, tap[0], tap[1])) { toggleOpt(i); on = !on; }
+            drawRoundRect(tx, ry, tw, th, th * 0.5f, on ? 0.16f : 0.15f, on ? 0.52f : 0.16f, on ? 0.3f : 0.18f, 0.96f);
+            drawCircle(on ? tx + tw * 0.5f - th * 0.5f : tx - tw * 0.5f + th * 0.5f, ry, th * 0.4f, 1f, 1f, 1f, 0.96f);
+            drawTextCentered(on ? "ON" : "OFF", on ? tx - tw * 0.22f : tx + tw * 0.2f, ry, 13f, 1f, 1f, 1f, 0.85f);
+        }
+        float by = cy + ch * 0.5f - 50f * us, bw = 220f * us, bh = 58f * us;
+        if (tapped && hitRect(cx, by, bw, bh, tap[0], tap[1])) { showSettings = false; saveMeta(); sfx.swap(); }
+        drawButton(cx, by, bw, bh, bh * 0.5f, 0.2f, 0.55f, 0.85f, 1f, false);
+        drawTextCenteredShadow("CLOSE", cx, by, 22f, 1f, 1f, 1f, 1f);
+    }
+
     /** The hub: balance, three tabs, the PLAY button, and the active tab's content. */
     private void drawHub() {
         menuPreamble();
@@ -2212,6 +2267,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawRectPx(cx, hbH + (4f + i * 6f) * us, width, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.06f - i * 0.012f);
         drawRectPx(cx, hbH, width, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);    // accent line
         boolean tapped = input.consumeMenuTap(tap);
+        boolean settingsTap = tapped && showSettings;   // route taps to the settings overlay while it's open
+        if (showSettings) tapped = false;                // …and freeze the hub behind it
+        // settings gear button (top-left, left of the tabs)
+        float gx = 60f * us, gy = hbH + 60f * us;
+        if (!showSettings && tapped && hitRect(gx, gy, 64f * us, 64f * us, tap[0], tap[1])) { showSettings = true; tapped = false; }
+        drawGear(gx, gy, 22f * us, showSettings ? 1f : 0.72f);
 
         // header: cash chip (coin + gold) left — value counts up/down toward the real balance
         if (cashShown < 0f) cashShown = cash;
@@ -2304,6 +2365,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float e = 1f - (1f - hubEnterAnim) * (1f - hubEnterAnim);
             drawRectPx(cx, height * 0.5f, width, height, 0.012f, 0.016f, 0.038f, (1f - e) * 0.97f);
         }
+        if (showSettings) drawSettingsOverlay(settingsTap);
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
