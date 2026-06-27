@@ -3860,8 +3860,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     trim = true; doorW = 2.2f + rc.nextFloat() * 0.4f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
                 }
                 // set the house back from the streets: keep its footprint within +/- 2.0 m of the block centre
-                float cx = gx + clamp((rc.nextFloat() - 0.5f) * 0.8f, -Math.max(0f, 2.0f - w * 0.5f), Math.max(0f, 2.0f - w * 0.5f));
-                float cz = gz + clamp((rc.nextFloat() - 0.5f) * 0.8f, -Math.max(0f, 2.0f - d * 0.5f), Math.max(0f, 2.0f - d * 0.5f));
+                float cx = gx + clamp((rc.nextFloat() - 0.5f) * 1.5f, -Math.max(0f, 2.1f - w * 0.5f), Math.max(0f, 2.1f - w * 0.5f));
+                float cz = gz + clamp((rc.nextFloat() - 0.5f) * 1.5f, -Math.max(0f, 2.1f - d * 0.5f), Math.max(0f, 2.1f - d * 0.5f));
                 int doorSide = rc.nextInt(4);
                 float[] p = PALETTE[rc.nextInt(PALETTE.length)];
                 float[] dc = DOORS[rc.nextInt(DOORS.length)];
@@ -3906,19 +3906,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 }
             }
         }
-        // 1b. garden bushes/shrubs hugging each house (vegetation mesh → non-colliding, lush front gardens)
+        // 1b. front-garden hedges + a few shrubs around each house (vegetation mesh → non-colliding)
         for (float[] h : houses) {
             float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f;
-            int n = 2 + rc.nextInt(3);
+            int ds = (int) h[5];
+            // a tidy hedge along the street-facing (door) edge for ~40% of houses, with a gap for the path
+            if (rc.nextFloat() < 0.4f) {
+                float nx = ds == 2 ? 1 : (ds == 3 ? -1 : 0), nz = ds == 0 ? 1 : (ds == 1 ? -1 : 0);
+                float tx = nz, tz = nx;
+                float front = (nx != 0 ? hw : hd) + 1.1f, span = (nx != 0 ? hd : hw) + 0.5f;
+                for (float s = -span; s <= span + 0.01f; s += 0.7f) {
+                    if (Math.abs(s) < 0.75f) continue;                          // path gap
+                    float bx = cx + nx * front + tx * s, bz = cz + nz * front + tz * s;
+                    if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
+                    if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
+                    if (!clearOfHouses(houses, bx, bz, 0f)) continue;
+                    trees.add(new float[]{bx, bz, 0.34f});                       // low hedge unit
+                }
+            }
+            // a couple of scattered shrubs for the rest of the lot
+            int n = 1 + rc.nextInt(2);
             for (int b = 0; b < n; b++) {
-                float ang = rc.nextFloat() * 6.2832f;
-                float rr = Math.max(hw, hd) + 0.55f + rc.nextFloat() * 1.1f;
+                float ang = rc.nextFloat() * 6.2832f, rr = Math.max(hw, hd) + 0.6f + rc.nextFloat() * 1.0f;
                 float bx = cx + (float) Math.cos(ang) * rr, bz = cz + (float) Math.sin(ang) * rr;
-                if (bx * bx + bz * bz > 30f * 30f) continue;
-                if (onRoadXZ(bx, bz)) continue;                                 // keep off the carriageway
-                if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;     // spawn lane
+                if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
+                if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
                 if (!clearOfHouses(houses, bx, bz, 0.18f)) continue;
-                trees.add(new float[]{bx, bz, 0.40f + rc.nextFloat() * 0.40f});  // small garden bush / shrub
+                trees.add(new float[]{bx, bz, 0.42f + rc.nextFloat() * 0.38f});
             }
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
@@ -3938,6 +3952,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addStall(L, MARKET_LOTS[0][0], MARKET_LOTS[0][1], 0.78f, 0.32f, 0.27f);   // red awning
         addWell (L, MARKET_LOTS[1][0], MARKET_LOTS[1][1]);
         addStall(L, MARKET_LOTS[2][0], MARKET_LOTS[2][1], 0.34f, 0.46f, 0.32f);   // green awning
+        addFountain(L, 0f, 0f);                                                   // central plaza landmark
+    }
+
+    /** A stone fountain: an octagonal basin with water, a central pedestal, bowl and spout. */
+    private static void addFountain(List<float[]> L, float x, float z) {
+        float sr = 0.73f, sg = 0.72f, sb = 0.68f;
+        L.add(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr, sg, sb, 0f});              // basin (octagon)
+        L.add(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr - 0.05f, sg - 0.05f, sb - 0.05f, 45f});
+        L.add(new float[]{x, 0.50f, z, 1.9f, 0.08f, 1.9f, 0.34f, 0.52f, 0.62f, 0f});     // water surface
+        L.add(new float[]{x, 0.50f, z, 1.9f, 0.08f, 1.9f, 0.30f, 0.49f, 0.61f, 45f});
+        L.add(new float[]{x, 0.86f, z, 0.46f, 1.1f, 0.46f, sr, sg, sb, 0f});             // pedestal
+        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr, sg, sb, 0f});            // upper bowl
+        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr - 0.04f, sg - 0.04f, sb - 0.04f, 45f});
+        L.add(new float[]{x, 1.50f, z, 0.78f, 0.05f, 0.78f, 0.34f, 0.52f, 0.62f, 0f});   // bowl water
+        L.add(new float[]{x, 1.74f, z, 0.16f, 0.55f, 0.16f, sr, sg, sb, 0f});            // spout
     }
 
     private static final float[][] MARKET_LOTS = {{-10f, -20f}, {0f, -20f}, {10f, -20f}};
