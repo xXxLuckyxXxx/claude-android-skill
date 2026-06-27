@@ -226,6 +226,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int hubTabShown = -1;        // tab whose content-reveal is currently animating
     private float hubTabAnim = 1f;       // 0..1 content-reveal progress for the active tab
     private float cashShown = -1f;       // animated (count-up) cash value for the hub header
+    private float lpShown = -1f;         // animated (smooth-fill) xp-bar progress for the hub header
     private boolean hubWasShown = false; // tracks hub entry to trigger the entrance fade
     private float hubEnterAnim = 1f;     // 0..1 whole-hub entrance fade-in
     private float tabIndX = -1f;         // animated x of the sliding tab selection highlight
@@ -749,8 +750,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** A small bright spark spray when a bullet connects (gold for headshots, orange for body). */
-    private void spawnHitSparks(float ex, float ey, float ez, boolean head) {
+    /** A small bright spark spray when a bullet connects — sprays back along the bullet's path
+     *  (bdx,bdy,bdz = bullet travel dir; sparks fly toward the shooter), gold for headshots. */
+    private void spawnHitSparks(float ex, float ey, float ez, boolean head, float bdx, float bdy, float bdz) {
         int count = head ? 9 : 5;
         for (int n = 0; n < count; n++) {
             int i = pNext;
@@ -758,9 +760,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             pX[i] = ex + (rng.nextFloat() - 0.5f) * 0.2f;
             pY[i] = ey + (rng.nextFloat() - 0.5f) * 0.2f;
             pZ[i] = ez + (rng.nextFloat() - 0.5f) * 0.2f;
-            pVX[i] = (rng.nextFloat() - 0.5f) * 3.8f;
-            pVY[i] = 1.0f + rng.nextFloat() * 2.6f;
-            pVZ[i] = (rng.nextFloat() - 0.5f) * 3.8f;
+            pVX[i] = -bdx * 3.2f + (rng.nextFloat() - 0.5f) * 2.6f;       // spray back toward the shooter
+            pVY[i] = -bdy * 2.0f + 1.2f + rng.nextFloat() * 1.8f;
+            pVZ[i] = -bdz * 3.2f + (rng.nextFloat() - 0.5f) * 2.6f;
             if (head) { pR[i] = 1f; pG[i] = 0.86f; pB[i] = 0.32f; }   // gold
             else      { pR[i] = 1f; pG[i] = 0.52f; pB[i] = 0.20f; }   // orange
             pSize[i] = 0.035f + rng.nextFloat() * 0.03f;
@@ -1477,7 +1479,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHurt[idx] = 0.12f;
                 float dmg = head ? effHeadDmg(curWeapon) : effBodyDmg(curWeapon);
                 enHP[idx] -= dmg;
-                spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (head ? 1.6f : 0.95f) * enScale[idx], enZ[idx], head);
+                spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (head ? 1.6f : 0.95f) * enScale[idx], enZ[idx], head, dx, dy, dz);
                 // floating damage number at the enemy (projected to screen)
                 if (projectToScreen(enX[idx], 1.45f * enScale[idx], enZ[idx], projScreen)) {
                     float jx = (fxRnd.nextFloat() - 0.5f) * 36f * us;
@@ -2213,11 +2215,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawChip(lvChipX, 50f * us, lvChipW, 50f * us, 0.07f, 0.13f, 0.18f, 0.92f);
         drawTextCentered(lvStr, lvChipX, 50f * us, 26f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
         float lp = levelProgress(), xbw = Math.min(300f * us, width * 0.36f), xbx = width - 24f * us - xbw;
+        if (lpShown < 0f) lpShown = lp;
+        lpShown += (lp - lpShown) * 0.1f;                                  // smooth fill
+        if (Math.abs(lp - lpShown) < 0.002f) lpShown = lp;
         drawRoundRect(xbx + xbw * 0.5f, 92f * us, xbw, 12f * us, 6f * us, 0.14f, 0.16f, 0.20f, 0.9f);
-        if (lp > 0.001f) {
-            drawRoundRect(xbx + xbw * lp * 0.5f, 92f * us, xbw * lp, 12f * us, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.97f);
-            drawRoundRect(xbx + xbw * lp * 0.5f, 89f * us, xbw * lp - 4f * us, 4f * us, 2f * us, 0.7f, 0.95f, 1f, 0.6f);
+        if (lpShown > 0.001f) {
+            drawRoundRect(xbx + xbw * lpShown * 0.5f, 92f * us, xbw * lpShown, 12f * us, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.97f);
+            drawRoundRect(xbx + xbw * lpShown * 0.5f, 89f * us, xbw * lpShown - 4f * us, 4f * us, 2f * us, 0.7f, 0.95f, 1f, 0.6f);
         }
+        drawSheen(xbx + xbw * 0.5f, 92f * us, xbw, 14f * us, 7f * us, 4.5f, 0f, 0.18f);   // periodic shine
 
         // tabs (rounded pills; selected one glows)
         String[] tabs = {"WEAPONS", "UPGRADES", "ABILITIES"};
@@ -2261,6 +2267,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawSheen(cx, playY, playW, playH, playRad, 3.0f, 0f, 0.22f);
         drawTextCenteredShadow("PLAY", cx, playY, 48f, 1f, 1f, 1f, 1f);
         drawText("BUILD " + buildNumber, 18f * us, height - 16f * us, 13f, 0.45f, 0.5f, 0.58f, 0.65f);
+        if (highScore > 0) drawTextRight("BEST SCORE  " + highScore, width - 18f * us, height - 16f * us, 14f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.7f);
 
         // tab-switch reveal: reset on change, then ease 0→1 — rows stagger in (see rowReveal())
         if (hubTab != hubTabShown) { hubTabShown = hubTab; hubTabAnim = 0f; }
