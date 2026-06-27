@@ -671,8 +671,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         waveBannerText = "WAVE " + wave + " CLEAR  +$" + bonus;
         waveBanner = 2.4f; waveBannerMax = 2.4f;
         sfx.swap();
+        spawnCoinRain();
         wave++;
         waveBreak = 1.8f;
+    }
+
+    /** Celebratory gold-coin shower around the player on a wave clear. */
+    private void spawnCoinRain() {
+        for (int n = 0; n < 44; n++) {
+            int i = pNext; pNext = (pNext + 1) % MAX_PARTICLES;
+            pX[i] = px + (rng.nextFloat() - 0.5f) * 16f;
+            pY[i] = py + 5f + rng.nextFloat() * 6f;
+            pZ[i] = pz + (rng.nextFloat() - 0.5f) * 16f;
+            pVX[i] = (rng.nextFloat() - 0.5f) * 1.6f;
+            pVY[i] = -1f - rng.nextFloat() * 2.5f;
+            pVZ[i] = (rng.nextFloat() - 0.5f) * 1.6f;
+            pR[i] = 1f; pG[i] = 0.82f; pB[i] = 0.24f;       // gold
+            pSize[i] = 0.06f + rng.nextFloat() * 0.045f;
+            pMaxLife[i] = 1.3f + rng.nextFloat() * 0.9f;
+            pLife[i] = pMaxLife[i];
+        }
     }
 
     /** A point ~13-24 m from the player, biased to the REAR arc (out of the forward view) and on
@@ -1592,6 +1610,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (combo == 9) rank = "UNSTOPPABLE";
         if (rank != null) spawnPopup(rank, width * 0.5f, height * 0.37f, 1f, 0.66f, 0.18f, 30f);
         pushFeed(enBoss[idx] > 0 ? "BOSS DOWN" : (head ? "HEADSHOT" : "ELIMINATED"), enBoss[idx] > 0 ? 2 : (head ? 1 : 0));
+        if (enBoss[idx] > 0) shake = Math.max(shake, enBoss[idx] >= 2 ? 0.55f : 0.32f);   // boss-kill jolt
 
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 15 : 10;
@@ -1959,10 +1978,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (nearDoor >= 0) {
                 float ix = Hud.interactCx(width), iy = Hud.interactCy(height);
                 boolean open = doorOpen[nearDoor] > 0.5f;
-                drawCircle(ix, iy, Hud.INTERACT_RADIUS, open ? 1f : 0.25f, open ? 0.55f : 0.95f, open ? 0.25f : 0.45f, 0.42f);
-                drawRectPx(ix, iy, 54f * us, 76f * us, 0.93f, 0.93f, 0.80f, 0.92f);   // door frame
-                drawRectPx(ix, iy, 40f * us, 64f * us, 0.46f, 0.30f, 0.17f, 0.96f);   // door leaf
-                drawRectPx(ix + 11f * us, iy, 7f * us, 9f * us, 0.96f, 0.90f, 0.45f, 1f);   // knob
+                drawGlow(ix, iy, Hud.INTERACT_RADIUS * 2f, Hud.INTERACT_RADIUS * 2f, Hud.INTERACT_RADIUS,
+                        open ? 0.9f : 0.3f, open ? 0.55f : 0.85f, open ? 0.3f : 0.45f, 0.8f);
+                drawPad(ix, iy, Hud.INTERACT_RADIUS, open ? 0.85f : 0.28f, open ? 0.5f : 0.82f, open ? 0.28f : 0.45f, 0.55f);
+                drawRoundRect(ix, iy, 40f * us, 60f * us, 6f * us, 0.93f, 0.93f, 0.80f, 0.96f);   // door frame
+                drawRoundRect(ix, iy, 28f * us, 48f * us, 4f * us, 0.46f, 0.30f, 0.17f, 0.97f);   // door leaf
+                drawCircle(ix + 8f * us, iy, 4f * us, 0.96f, 0.9f, 0.45f, 1f);                    // knob
+                drawTextCenteredShadow(open ? "CLOSE" : "OPEN", ix, iy + Hud.INTERACT_RADIUS + 24f * us, 16f, 1f, 1f, 1f, 0.92f);
             }
 
             // crosshair (colors when the last shot landed: gold head, green body)
