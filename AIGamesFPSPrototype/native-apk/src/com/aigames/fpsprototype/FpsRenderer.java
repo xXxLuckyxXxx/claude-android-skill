@@ -201,6 +201,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] popR = new float[MAX_POPUPS], popG = new float[MAX_POPUPS], popB = new float[MAX_POPUPS], popSz = new float[MAX_POPUPS];
     private int popNext = 0;
     private final java.util.Random fxRnd = new java.util.Random(7);
+    private float hurtDirAngle = 0f, hurtDirTimer = 0f;   // red damage-direction indicator
     private int hitBox = -1;
     private boolean lastShotHit = false, lastShotHead = false;
 
@@ -249,6 +250,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] enZ = new float[MAX_ENEMIES];
     private final float[] enFace = new float[MAX_ENEMIES];
     private final float[] enHP = new float[MAX_ENEMIES];
+    private final float[] enMaxHP = new float[MAX_ENEMIES];
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
     private final int[] enOutfit = new int[MAX_ENEMIES];
@@ -262,6 +264,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int wave = 1;
     private int waveToSpawn = 0;       // enemies still to spawn this wave
     private int waveRemaining = 0;     // enemies still to remove (spawned-or-not) before the wave clears
+    private int waveSize = 5;          // total enemies this wave (for the progress bar)
     private int bossPending = 0;       // >0 = next spawn is a (mini)boss of that tier
     private float waveBreak = 0f;      // >0 = between-wave reward pause
     private float waveBanner = 0f;     // banner display timer
@@ -591,6 +594,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enAlive[i] = false;
                 playerHP -= ENEMY_DMG * dmgMul * (enBoss[i] > 0 ? 2.5f : 1f);
                 hurtFlash = 0.6f;
+                // remember where the hit came from (relative to where we're looking)
+                {
+                    float ddx = enX[i] - px, ddz = enZ[i] - pz;
+                    float fX = camFwd[0], fZ = camFwd[2];
+                    float fl = (float) Math.sqrt(fX * fX + fZ * fZ); if (fl < 1e-4f) fl = 1f; fX /= fl; fZ /= fl;
+                    hurtDirAngle = (float) Math.atan2(ddx * (-fZ) + ddz * fX, ddx * fX + ddz * fZ);
+                    hurtDirTimer = 0.85f;
+                }
                 combo = 1; comboTimer = 0f;
                 sfx.hurt();
                 waveRemaining--;
@@ -629,6 +640,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int size = Math.max(4, Math.round(5 + (w - 1) * 1.8f));
         waveToSpawn = size;
         waveRemaining = size;
+        waveSize = size;
         bossPending = (w % 10 == 0) ? 2 : (w % 5 == 0 ? 1 : 0);
         spawnTimer = 0.3f;
         waveBannerText = (bossPending == 2 ? "BOSS WAVE " : (bossPending == 1 ? "MINI-BOSS WAVE " : "WAVE ")) + w;
@@ -687,6 +699,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     enHP[i] = ENEMY_FULL_HP * hpMul;
                     enOutfit[i] = rng.nextInt(OUTFITS.length);
                 }
+                enMaxHP[i] = enHP[i];
                 enAlive[i] = true;
                 return;
             }
@@ -1402,6 +1415,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (recoil > 0.26f) recoil = 0.26f;
         shake = W_SHAKE[curWeapon];
         playWeaponSound();
+        ejectShell();
 
         int pellets = W_PELLETS[curWeapon];
         float spread = W_SPREAD[curWeapon] * (1f - 0.75f * aim);   // ADS tightens the spread
@@ -1476,6 +1490,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void updatePopups(float dt) {
+        if (hurtDirTimer > 0f) hurtDirTimer -= dt;
         for (int i = 0; i < MAX_POPUPS; i++) {
             if (popT[i] <= 0f) continue;
             popT[i] -= dt;
@@ -1492,6 +1507,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float pop = 1f + 0.35f * (1f - Math.min(1f, age * 9f)); // brief pop-in scale at spawn
             drawTextCenteredShadow(popText[i], popX[i], popY[i], popSz[i] * pop, popR[i], popG[i], popB[i], a);
         }
+    }
+
+    /** Eject a brass shell casing to the right of the gun (arcs and bounces via the particle physics). */
+    private void ejectShell() {
+        int i = pNext; pNext = (pNext + 1) % MAX_PARTICLES;
+        float ox = camFwd[0] * 0.45f + camRight[0] * 0.14f, oz = camFwd[2] * 0.45f + camRight[2] * 0.14f;
+        pX[i] = px + ox; pY[i] = py - 0.12f; pZ[i] = pz + oz;
+        pVX[i] = camRight[0] * 2.7f + (rng.nextFloat() - 0.5f) * 0.6f;
+        pVZ[i] = camRight[2] * 2.7f + (rng.nextFloat() - 0.5f) * 0.6f;
+        pVY[i] = 1.7f + rng.nextFloat() * 0.7f;
+        pR[i] = 0.85f; pG[i] = 0.6f; pB[i] = 0.18f;   // brass
+        pSize[i] = 0.045f; pMaxLife[i] = 0.8f; pLife[i] = pMaxLife[i];
     }
 
     /** Project a world point to screen pixels via the current view+proj. Returns false if behind camera. */
@@ -1691,6 +1718,77 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, circleVerts);
     }
 
+    // --- HUD: radar, enemy health bars, boss bar ---
+
+    /** A corner radar: player-relative enemy blips, forward = up, with a sweeping line. */
+    private void drawRadar() {
+        float rad = 64f * us;
+        float rcx = 24f * us + rad, rcy = 178f * us + rad;   // top-left, below the cash/level stack
+        float fX = camFwd[0], fZ = camFwd[2];
+        float fl = (float) Math.sqrt(fX * fX + fZ * fZ); if (fl < 1e-4f) fl = 1f; fX /= fl; fZ /= fl;
+        float rX = -fZ, rZ = fX;                                 // right = forward rotated -90°
+        drawCircle(rcx, rcy + 3f * us, rad + 5f * us, 0f, 0f, 0f, 0.32f);          // shadow
+        drawCircle(rcx, rcy, rad + 2.5f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.45f); // border ring
+        drawCircle(rcx, rcy, rad, 0.05f, 0.09f, 0.13f, 0.62f);                     // dish
+        drawCircle(rcx, rcy, rad * 0.6f + 1.5f * us, 0.3f, 0.5f, 0.6f, 0.16f);     // mid range ring
+        drawCircle(rcx, rcy, rad * 0.6f, 0.05f, 0.09f, 0.13f, 0.62f);
+        drawRectPx(rcx, rcy, rad * 2f, 1.5f * us, 0.4f, 0.6f, 0.7f, 0.16f);        // crosshair
+        drawRectPx(rcx, rcy, 1.5f * us, rad * 2f, 0.4f, 0.6f, 0.7f, 0.16f);
+        float sa = timeAcc * 2.2f, ss = (float) Math.sin(sa), sc = (float) Math.cos(sa);
+        for (int k = 1; k <= 6; k++) {                                            // sweeping line of dots
+            float rr = rad * k / 6f;
+            drawCircle(rcx + ss * rr, rcy - sc * rr, 2.2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.22f * (1f - k / 7.5f));
+        }
+        drawRoundRect(rcx, rcy - rad + 6f * us, 4f * us, 10f * us, 2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f); // forward notch
+        float range = 40f;
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enAlive[i]) continue;
+            float dx = enX[i] - px, dz = enZ[i] - pz;
+            float fwd = dx * fX + dz * fZ, rgt = dx * rX + dz * rZ;
+            float nx = rgt / range, ny = fwd / range;
+            float bl = (float) Math.sqrt(nx * nx + ny * ny);
+            boolean edge = bl > 1f; if (edge) { nx /= bl; ny /= bl; }
+            float bx = rcx + nx * rad * 0.9f, by = rcy - ny * rad * 0.9f;
+            boolean boss = enBoss[i] > 0;
+            float bs = (boss ? 6.5f : 4.2f) * us, bp = boss ? (0.7f + 0.3f * pulse01(5f, 0f)) : 1f;
+            drawCircle(bx, by, bs + 1.5f * us, 0f, 0f, 0f, 0.4f);
+            drawCircle(bx, by, bs, 1f, boss ? 0.45f : 0.3f, boss ? 0.15f : 0.25f, (edge ? 0.5f : 0.95f) * bp);
+        }
+        drawCircle(rcx, rcy, 4.5f * us, 0.8f, 0.95f, 1f, 0.97f);                   // player
+    }
+
+    /** Small floating health bars over wounded enemies (and always over bosses). */
+    private void drawEnemyHealthBars() {
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (!enAlive[i] || enMaxHP[i] <= 0f) continue;
+            float frac = enHP[i] / enMaxHP[i];
+            if (frac >= 0.999f && enBoss[i] == 0) continue;
+            float topY = terrainH(enX[i], enZ[i]) + 1.95f * enScale[i];
+            if (!projectToScreen(enX[i], topY, enZ[i], projScreen)) continue;
+            float bx = projScreen[0], by = projScreen[1];
+            if (bx < -50f || bx > width + 50f || by < 0f || by > height) continue;
+            float bw = (enBoss[i] > 0 ? 104f : 60f) * us, bh = 8f * us;
+            drawRoundRect(bx, by, bw + 3f * us, bh + 3f * us, bh, 0f, 0f, 0f, 0.5f);
+            drawRoundRect(bx, by, bw, bh, bh * 0.5f, 0.2f, 0.2f, 0.24f, 0.85f);
+            if (frac > 0f) drawRoundRect(bx - bw * 0.5f + bw * frac * 0.5f, by, bw * frac, bh, bh * 0.5f,
+                    1f - frac, 0.2f + 0.7f * frac, 0.22f, 0.95f);
+        }
+    }
+
+    /** A dramatic boss health bar across the top while a (mini)boss lives. */
+    private void drawBossBar() {
+        int bi = -1, tier = 0;
+        for (int i = 0; i < MAX_ENEMIES; i++) if (enAlive[i] && enBoss[i] > tier) { bi = i; tier = enBoss[i]; }
+        if (bi < 0) return;
+        float frac = Math.max(0f, enHP[bi] / enMaxHP[bi]);
+        float bw = Math.min(660f * us, width * 0.62f), bh = 26f * us, by = 232f * us;
+        drawTextCenteredShadow(tier >= 2 ? "BOSS" : "MINI-BOSS", width * 0.5f, by - 24f * us, 18f, 1f, 0.5f, 0.4f, 0.95f);
+        drawGlow(width * 0.5f, by, bw, bh, bh * 0.5f, 1f, 0.3f, 0.25f, 0.6f);
+        drawRoundRect(width * 0.5f, by, bw + 4f * us, bh + 4f * us, bh * 0.5f + 2f * us, 0f, 0f, 0f, 0.55f);
+        drawRoundRect(width * 0.5f, by, bw, bh, bh * 0.5f, 0.18f, 0.06f, 0.08f, 0.9f);
+        if (frac > 0f) drawRoundRect(width * 0.5f - bw * 0.5f + bw * frac * 0.5f, by, bw * frac, bh, bh * 0.5f, 0.92f, 0.2f, 0.18f, 0.96f);
+    }
+
     // --- HUD ---
 
     private void drawHud() {
@@ -1722,7 +1820,39 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         {
             if (muzzleTimer > 0f) drawQuadNDC(0f, 0f, 1f, 1f, 1f, 0.9f, 0.6f, 0.16f * (muzzleTimer / MUZZLE_TIME));
 
+            drawEnemyHealthBars();   // world-anchored, under the controls
+            drawBossBar();
+            drawRadar();
+
+            // aim-down-sights focus vignette (stronger through the sniper scope)
+            if (aim > 0.02f) drawEdgeVignette(0f, 0f, 0f, aim * (curWeapon == 3 ? 0.5f : 0.28f));
+
             float ccx = width * 0.5f, ccy = height * 0.5f;
+
+            // damage-direction indicator: a red arc pointing toward the last attacker
+            if (hurtDirTimer > 0f) {
+                float ha = Math.min(1f, hurtDirTimer / 0.85f) * 0.75f;
+                float R = 150f * us;
+                for (int k = -2; k <= 2; k++) {
+                    float ang = hurtDirAngle + k * 0.14f, fall = 1f - Math.abs(k) / 3f;
+                    float ix = ccx + (float) Math.sin(ang) * R, iy = ccy - (float) Math.cos(ang) * R;
+                    drawCircle(ix, iy, (22f * fall + 8f) * us, 0.95f, 0.2f, 0.15f, ha * 0.5f * fall);
+                }
+            }
+
+            // sprint speed lines: radial streaks from the centre outward, brighter toward the edge
+            if (sprintAnim > 0.12f) {
+                float sl = (sprintAnim - 0.12f) / 0.88f;
+                float maxR = (float) Math.sqrt(width * width + height * height) * 0.5f;
+                for (int s2 = 0; s2 < 20; s2++) {
+                    float ang = s2 * 6.2832f / 20f;
+                    float dxs = (float) Math.cos(ang), dys = (float) Math.sin(ang);
+                    for (int k = 1; k <= 6; k++) {
+                        float t2 = k / 6f, rr = (0.48f + 0.5f * t2) * maxR;
+                        drawCircle(ccx + dxs * rr, ccy + dys * rr, (2.5f + 3.5f * t2) * us, 0.85f, 0.92f, 1f, sl * 0.3f * t2);
+                    }
+                }
+            }
 
             // move stick: a defined ring base + a glossy knob that tracks the finger
             float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
@@ -1735,6 +1865,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
             // fire button
             drawPad(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 0.95f, 0.26f, 0.22f, 0.62f);
+            // reload progress ring around the fire button
+            if (reloadTimer > 0f) {
+                float fpx = Hud.fireCx(width), fpy = Hud.fireCy(height), prog = 1f - reloadTimer / reloadTotal;
+                int N = 20;
+                for (int d = 0; d < N; d++) {
+                    float ang = d * 6.2832f / N - 1.5708f, rr = Hud.FIRE_RADIUS + 16f * us;
+                    boolean on = d < prog * N;
+                    drawCircle(fpx + (float) Math.cos(ang) * rr, fpy + (float) Math.sin(ang) * rr, 4f * us,
+                            on ? 1f : 0.3f, on ? 0.85f : 0.32f, on ? 0.3f : 0.35f, on ? 0.95f : 0.5f);
+                }
+                drawTextCentered("RELOADING", fpx, fpy + Hud.FIRE_RADIUS + 30f * us, 15f, 1f, 0.8f, 0.3f, 0.85f);
+            }
 
             // weapon switch button (shows current weapon 1/2/3, tinted per weapon)
             float swx = Hud.switchCx(width), swy = Hud.switchCy(height);
@@ -1866,8 +2008,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             String waveStr = "WAVE " + wave;
             float wpw = measureText(waveStr, 20f) + 40f * us;
             drawRoundRect(width * 0.5f, 134f * us, wpw, 38f * us, 19f * us, 0.06f, 0.08f, 0.14f, 0.72f);
-            drawRoundRect(width * 0.5f, 134f * us + 17f * us, wpw * 0.92f, 3f * us, 1.5f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.6f);
             drawTextCentered(waveStr, width * 0.5f, 134f * us, 20f, 0.9f, 0.95f, 1f, 0.95f);
+            // wave progress bar (enemies cleared) + remaining count
+            float cleared = waveSize - waveRemaining; if (cleared < 0f) cleared = 0f;
+            float wf = waveSize > 0 ? cleared / (float) waveSize : 0f;
+            float pbw = Math.max(wpw, 190f * us), pby = 162f * us;
+            drawRoundRect(width * 0.5f, pby, pbw, 7f * us, 3.5f * us, 0.12f, 0.14f, 0.18f, 0.75f);
+            if (wf > 0.001f) drawRoundRect(width * 0.5f - pbw * 0.5f + pbw * wf * 0.5f, pby, pbw * wf, 7f * us, 3.5f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.93f);
+            drawTextCentered(Math.max(0, waveRemaining) + " LEFT", width * 0.5f, pby + 18f * us, 13f, 0.72f, 0.82f, 0.92f, 0.82f);
             if (waveBanner > 0f) {
                 float ba = Math.min(1f, waveBanner);                       // fade out at the end
                 float elapsed = waveBannerMax - waveBanner;
