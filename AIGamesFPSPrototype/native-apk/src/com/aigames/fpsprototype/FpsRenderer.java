@@ -202,6 +202,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int popNext = 0;
     private final java.util.Random fxRnd = new java.util.Random(7);
     private float hurtDirAngle = 0f, hurtDirTimer = 0f;   // red damage-direction indicator
+    // killfeed (top-right list of recent eliminations)
+    private static final int MAX_FEED = 5;
+    private final String[] feedText = new String[MAX_FEED];
+    private final float[] feedT = new float[MAX_FEED];
+    private final int[] feedKind = new int[MAX_FEED];     // 0 body, 1 head, 2 boss
+    private int feedNext = 0;
     private int hitBox = -1;
     private boolean lastShotHit = false, lastShotHead = false;
 
@@ -1489,12 +1495,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         popR[i] = r; popG[i] = g; popB[i] = b; popSz[i] = sz;
     }
 
+    private void pushFeed(String s, int kind) {
+        int i = feedNext; feedNext = (feedNext + 1) % MAX_FEED;
+        feedText[i] = s; feedKind[i] = kind; feedT[i] = 3.6f;
+    }
+
     private void updatePopups(float dt) {
         if (hurtDirTimer > 0f) hurtDirTimer -= dt;
+        for (int i = 0; i < MAX_FEED; i++) if (feedT[i] > 0f) feedT[i] -= dt;
         for (int i = 0; i < MAX_POPUPS; i++) {
             if (popT[i] <= 0f) continue;
             popT[i] -= dt;
             popY[i] -= 95f * us * dt;                     // rise
+        }
+    }
+
+    /** Top-right killfeed: recent eliminations stacked newest-first, fading out. */
+    private void drawKillfeed() {
+        float x = width - 24f * us, y = 132f * us, rowH = 34f * us;
+        int shown = 0;
+        for (int n = 0; n < MAX_FEED && shown < MAX_FEED; n++) {
+            int i = (feedNext - 1 - n + MAX_FEED * 2) % MAX_FEED;
+            if (feedT[i] <= 0f || feedText[i] == null) continue;
+            float a = Math.min(1f, feedT[i] / 0.5f);
+            float cy = y + shown * rowH;
+            float tw = measureText(feedText[i], 15f) + 40f * us;
+            drawRoundRect(x - tw * 0.5f, cy, tw, 28f * us, 14f * us, 0.06f, 0.08f, 0.13f, 0.55f * a);
+            float dr = feedKind[i] == 1 ? 1f : (feedKind[i] == 2 ? 1f : 0.95f);
+            float dg = feedKind[i] == 1 ? 0.82f : (feedKind[i] == 2 ? 0.3f : 0.35f);
+            float db = feedKind[i] == 1 ? 0.25f : (feedKind[i] == 2 ? 0.25f : 0.3f);
+            drawCircle(x - tw + 16f * us, cy, 5f * us, dr, dg, db, 0.95f * a);
+            drawText(feedText[i], x - tw + 28f * us, cy, 15f, 0.9f, 0.92f, 0.96f, a);
+            shown++;
         }
     }
 
@@ -1547,6 +1579,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (combo == 7) rank = "RAMPAGE";
         else if (combo == 9) rank = "UNSTOPPABLE";
         if (rank != null) spawnPopup(rank, width * 0.5f, height * 0.37f, 1f, 0.66f, 0.18f, 30f);
+        pushFeed(enBoss[idx] > 0 ? "BOSS DOWN" : (head ? "HEADSHOT" : "ELIMINATED"), enBoss[idx] > 0 ? 2 : (head ? 1 : 0));
 
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 15 : 10;
@@ -1612,6 +1645,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         fireCd = 0.14f;            // brief lockout after the swap
         switchAnim = 1f;
         sfx.swap();
+        // flash the weapon name above the ammo
+        spawnPopup(WEAPON_NAME[curWeapon], Hud.fireCx(width), Hud.fireCy(height) - Hud.FIRE_RADIUS - 110f * us,
+                weaponR(curWeapon), weaponG(curWeapon), weaponB(curWeapon), 22f);
     }
 
     // --- effective (upgraded) weapon stats: base array folded with upgrade tiers + abilities ---
@@ -1832,6 +1868,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawEnemyHealthBars();   // world-anchored, under the controls
             drawBossBar();
             drawRadar();
+            drawKillfeed();
 
             // aim-down-sights focus vignette (stronger through the sniper scope)
             if (aim > 0.02f) drawEdgeVignette(0f, 0f, 0f, aim * (curWeapon == 3 ? 0.5f : 0.28f));
