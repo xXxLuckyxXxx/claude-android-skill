@@ -3178,17 +3178,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // Facade colour palette: concrete, brick, steel-blue, sandstone, dark concrete.
-    private static final float[][] PALETTE = {     // muted, realistic facade tints (low saturation stucco/stone/brick)
+    private static final float[][] PALETTE = {     // muted realistic facades — neutrals dominate, with some painted houses
         {0.85f, 0.82f, 0.76f},   // warm off-white stucco
         {0.79f, 0.75f, 0.67f},   // beige
         {0.74f, 0.72f, 0.69f},   // light warm grey
         {0.81f, 0.74f, 0.62f},   // sandstone
         {0.70f, 0.67f, 0.62f},   // taupe
         {0.76f, 0.71f, 0.64f},   // pale ochre
-        {0.69f, 0.70f, 0.66f},   // sage grey
         {0.83f, 0.79f, 0.73f},   // cream
         {0.71f, 0.65f, 0.59f},   // muted clay / brick
         {0.75f, 0.76f, 0.76f},   // cool stone grey
+        // painted houses (still low-saturation, period-realistic)
+        {0.64f, 0.70f, 0.61f},   // sage green
+        {0.60f, 0.67f, 0.72f},   // dusty blue
+        {0.82f, 0.63f, 0.53f},   // soft terracotta
+        {0.85f, 0.79f, 0.58f},   // buttery yellow
+        {0.76f, 0.64f, 0.63f},   // muted rose
+        {0.66f, 0.47f, 0.41f},   // warm brick red
     };
     private static final float[][] ROOFS = {       // realistic roof tints (terracotta / slate / weathered)
         {0.52f, 0.30f, 0.22f},   // muted terracotta
@@ -3196,6 +3202,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         {0.33f, 0.29f, 0.27f},   // dark charcoal-brown
         {0.47f, 0.41f, 0.35f},   // weathered brown
         {0.50f, 0.33f, 0.26f},   // clay
+        {0.43f, 0.46f, 0.42f},   // mossy slate-green
+        {0.36f, 0.34f, 0.40f},   // blue-slate
+        {0.58f, 0.36f, 0.27f},   // warm red tile
     };
     private static final float[][] DOORS = {       // realistic door colours (wood / painted)
         {0.42f, 0.28f, 0.17f},   // dark wood
@@ -3830,17 +3839,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (arch == 0) {                                   // cottage: low, gabled
                     w = 3.0f + rc.nextFloat() * 0.5f; d = 3.0f + rc.nextFloat() * 0.45f; h = 2.8f + rc.nextFloat() * 0.7f;
                     storeys = 1; foundH = 0.22f + rc.nextFloat() * 0.10f; winDens = 2; chimney = true; trim = false;
-                    rf = ROOFS[rc.nextFloat() < 0.7f ? 0 : 4];
+                    rf = ROOFS[new int[]{0, 0, 4, 7}[rc.nextInt(4)]];   // terracotta / clay / warm red tile
                 } else if (arch == 1) {                            // townhouse: tall, narrow, terraced
                     w = 2.8f + rc.nextFloat() * 0.5f; d = 3.0f + rc.nextFloat() * 0.4f; h = 4.8f + rc.nextFloat() * 1.4f;
                     storeys = 2 + (rc.nextFloat() < 0.6f ? 1 : 0); foundH = 0.28f + rc.nextFloat() * 0.10f; winDens = 3;
                     chimney = true; trim = rc.nextFloat() < 0.45f; pitch = 1.3f + rc.nextFloat() * 0.5f;
-                    rf = ROOFS[rc.nextFloat() < 0.5f ? 0 : 1];
+                    rf = ROOFS[new int[]{0, 1, 1, 7}[rc.nextInt(4)]];   // terracotta / slate / warm red tile
                 } else if (arch == 2) {                            // apartment block: tall, flat slate roof
                     w = 3.1f + rc.nextFloat() * 0.45f; d = 3.1f + rc.nextFloat() * 0.45f; h = 5.4f + rc.nextFloat() * 1.6f;
                     storeys = 3 + (rc.nextFloat() < 0.5f ? 1 : 0); foundH = 0.30f + rc.nextFloat() * 0.10f; winDens = 3;
                     chimney = false; trim = rc.nextFloat() < 0.5f; pitch = 0.5f + rc.nextFloat() * 0.4f;
-                    rf = ROOFS[1 + rc.nextInt(2)];                 // slate / charcoal
+                    rf = ROOFS[new int[]{1, 2, 5, 6}[rc.nextInt(4)]];   // slate / charcoal / mossy / blue-slate
                 } else {                                           // shop: low front, big door + windows, awning band
                     w = 3.2f + rc.nextFloat() * 0.4f; d = 3.0f + rc.nextFloat() * 0.4f; h = 3.2f + rc.nextFloat() * 0.7f;
                     storeys = 1; foundH = 0.24f + rc.nextFloat() * 0.10f; winDens = 3; winSize = 1.2f; chimney = false;
@@ -3887,10 +3896,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     if (near) continue;
                     placed.add(new float[]{sx, sz});
                     float pick = rc.nextFloat();
-                    if (pick < 0.28f)      addLamp(L, sx, sz);                       // a lamp every few slots
-                    else if (pick < 0.74f) trees.add(new float[]{sx, sz, 0.85f + rc.nextFloat() * 0.45f});  // street tree
+                    if (pick < 0.26f)      addLamp(L, sx, sz);                       // a lamp every few slots
+                    else if (pick < 0.86f) trees.add(new float[]{sx, sz, 0.8f + rc.nextFloat() * 0.7f});   // street tree (varied)
                     // else: leave a gap so it isn't a solid wall of furniture
                 }
+            }
+        }
+        // 1b. garden bushes/shrubs hugging each house (vegetation mesh → non-colliding, lush front gardens)
+        for (float[] h : houses) {
+            float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f;
+            int n = 2 + rc.nextInt(3);
+            for (int b = 0; b < n; b++) {
+                float ang = rc.nextFloat() * 6.2832f;
+                float rr = Math.max(hw, hd) + 0.55f + rc.nextFloat() * 1.1f;
+                float bx = cx + (float) Math.cos(ang) * rr, bz = cz + (float) Math.sin(ang) * rr;
+                if (bx * bx + bz * bz > 30f * 30f) continue;
+                if (onRoadXZ(bx, bz)) continue;                                 // keep off the carriageway
+                if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;     // spawn lane
+                if (!clearOfHouses(houses, bx, bz, 0.18f)) continue;
+                trees.add(new float[]{bx, bz, 0.40f + rc.nextFloat() * 0.40f});  // small garden bush / shrub
             }
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
