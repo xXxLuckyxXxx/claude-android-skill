@@ -763,7 +763,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private boolean clearOfBuildings(float x, float z, float r) {
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
-            if (b[1] + b[4] * 0.5f < 0.5f) continue;      // ignore anything you'd just step over
+            boolean interior = b.length > 10 && b[10] != 0f;   // furniture collider: steer around it even if low
+            if (!interior && b[1] + b[4] * 0.5f < 0.5f) continue;   // ignore anything you'd just step over
             if (b[1] - b[4] * 0.5f >= 1.8f) continue;     // overhead (door lintel / roof): enemy walks under
             if (x > b[0] - b[3] * 0.5f - r && x < b[0] + b[3] * 0.5f + r
              && z > b[2] - b[5] * 0.5f - r && z < b[2] + b[5] * 0.5f + r) return false;
@@ -3381,42 +3382,64 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** A cosy ground-floor room: wood floor, ceiling, rug, hanging lamp, a bed, a wardrobe and a table + chairs,
      *  laid out away from the doorway. Solid pieces also get a non-rendered collision box in L. */
     private void furnishHouse(List<float[]> L, float cx, float cz, float w, float dd, float h, int ds) {
-        float inx = w * 0.5f - 0.28f, inz = dd * 0.5f - 0.28f;       // interior half-extents (inside the walls)
+        float inx = w * 0.5f - 0.28f, inz = dd * 0.5f - 0.28f;       // interior half-extents (for furniture)
         if (inx < 0.7f || inz < 0.7f) return;                        // too small to furnish
+        float ceilH = Math.min(2.55f, h - 0.22f);
+        if (ceilH < 2.0f) return;                                    // too low to furnish sanely
         long seed = ((long) Float.floatToIntBits(cx)) * 73856093L ^ ((long) Float.floatToIntBits(cz)) * 19349663L;
         Random r = new Random(seed);
-        float ceilH = Math.min(2.55f, h - 0.22f);
         float dox = (ds == 2 ? 1 : (ds == 3 ? -1 : 0)), doz = (ds == 0 ? 1 : (ds == 1 ? -1 : 0));   // door points OUT
-        addPiece(L, cx, 0.05f, cz, inx * 2f, 0.05f, inz * 2f, 0, false);                       // wood floor
-        addPiece(L, cx, ceilH, cz, inx * 2f - 0.04f, 0.10f, inz * 2f - 0.04f, 1, false);       // ceiling
-        addPiece(L, cx, 0.09f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
+        // floor + ceiling sized to the wall inner face (close the seam to the walls)
+        float slx = w * 0.5f - 0.13f, slz = dd * 0.5f - 0.13f;
+        addPiece(L, cx, 0.012f, cz, slx * 2f, 0.05f, slz * 2f, 0, false);                      // wood floor (top ~0.037)
+        addPiece(L, cx, ceilH, cz, slx * 2f, 0.10f, slz * 2f, 1, false);                       // ceiling
+        addPiece(L, cx, 0.058f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
         addPiece(L, cx, ceilH - 0.18f, cz, 0.06f, 0.30f, 0.06f, 6, false);                     // lamp cord
         addPiece(L, cx, ceilH - 0.40f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
-        // score the four corners by distance from the doorway; bed + wardrobe take the two farthest
-        float[] sgx = {-1, 1, -1, 1}, sgz = {-1, -1, 1, 1};
-        int c1 = 0, c2 = 1; float s1 = -1e9f, s2 = -1e9f;
-        for (int ci = 0; ci < 4; ci++) {
-            float score = -(sgx[ci] * dox + sgz[ci] * doz) + (r.nextFloat() - 0.5f) * 0.4f;
-            if (score > s1) { s2 = s1; c2 = c1; s1 = score; c1 = ci; }
-            else if (score > s2) { s2 = score; c2 = ci; }
+        // small entry passage just inside the doorway that furniture must keep clear (so the player can always pass)
+        float lane = 1.0f, pass = 0.95f;
+        float koX = cx + dox * (inx - lane * 0.5f), koZ = cz + doz * (inz - lane * 0.5f);
+        float koW = dox != 0 ? lane : pass, koD = doz != 0 ? lane : pass;
+        float[] sgx = {-1, 1, -1, 1}, sgz = {-1, -1, 1, 1};         // corners: 0=(-,-) 1=(+,-) 2=(-,+) 3=(+,+)
+        // BED: corner farthest from the door
+        int bedC = 0; float bestB = -1e9f;
+        for (int ci = 0; ci < 4; ci++) { float sc = -(sgx[ci] * dox + sgz[ci] * doz) + (r.nextFloat() - 0.5f) * 0.3f; if (sc > bestB) { bestB = sc; bedC = ci; } }
+        boolean bedAlongX = w >= dd;
+        float bedW = bedAlongX ? Math.min(1.7f, inx * 1.35f) : 0.9f;
+        float bedD = bedAlongX ? 0.9f : Math.min(1.7f, inz * 1.35f);
+        float bx = cx + sgx[bedC] * (inx - bedW * 0.5f - 0.04f), bz = cz + sgz[bedC] * (inz - bedD * 0.5f - 0.04f);
+        boolean bedPlaced = !aabbOverlap(bx, bz, bedW, bedD, koX, koZ, koW, koD);
+        if (bedPlaced) {
+            addPiece(L, bx, 0.22f, bz, bedW, 0.30f, bedD, 2, true);                            // frame (solid)
+            addPiece(L, bx, 0.42f, bz, bedW - 0.08f, 0.14f, bedD - 0.08f, 4, false);           // duvet
+            addPiece(L, bx - sgx[bedC] * bedW * 0.30f, 0.46f, bz - sgz[bedC] * bedD * 0.30f, 0.40f, 0.12f, 0.28f, 5, false); // pillow
         }
-        boolean bedAlongX = w >= dd;                                  // bed long side along the longer interior axis
-        float bedW = bedAlongX ? Math.min(1.9f, inx * 1.5f) : 0.95f;
-        float bedD = bedAlongX ? 0.95f : Math.min(1.9f, inz * 1.5f);
-        float bx = cx + sgx[c1] * (inx - bedW * 0.5f - 0.04f), bz = cz + sgz[c1] * (inz - bedD * 0.5f - 0.04f);
-        addPiece(L, bx, 0.24f, bz, bedW, 0.30f, bedD, 2, true);                                 // bed frame (solid)
-        addPiece(L, bx, 0.44f, bz, bedW - 0.08f, 0.14f, bedD - 0.08f, 4, false);               // duvet
-        addPiece(L, bx - sgx[c1] * bedW * 0.32f, 0.48f, bz - sgz[c1] * bedD * 0.32f, 0.42f, 0.12f, 0.30f, 5, false); // pillow
-        float wx = cx + sgx[c2] * (inx - 0.30f), wz = cz + sgz[c2] * (inz - 0.24f);
-        addPiece(L, wx, 0.92f, wz, 0.62f, 1.70f, 0.42f, 3, true);                               // wardrobe (solid)
-        if (inx > 0.95f && inz > 0.95f) {                            // table + chairs if the room has room
-            float tx = cx - dox * (inx * 0.30f), tz = cz - doz * (inz * 0.30f);
-            addPiece(L, tx, 0.72f, tz, 0.80f, 0.07f, 0.60f, 2, true);                           // table top (solid)
-            for (int lg = 0; lg < 4; lg++)
-                addPiece(L, tx + ((lg & 1) == 0 ? -0.32f : 0.32f), 0.37f, tz + ((lg & 2) == 0 ? -0.24f : 0.24f), 0.06f, 0.72f, 0.06f, 3, false);
-            addPiece(L, tx - 0.52f, 0.46f, tz, 0.38f, 0.48f, 0.38f, 2, false);                  // chair
-            addPiece(L, tx + 0.52f, 0.46f, tz, 0.38f, 0.48f, 0.38f, 2, false);                  // chair
+        // WARDROBE: prefer the diagonal corner, else an adjacent one — never blocking the entry, never into the bed
+        float wardH = Math.min(1.70f, ceilH - 0.15f);
+        for (int cand : new int[]{bedC ^ 3, bedC ^ 1, bedC ^ 2}) {
+            float wx = cx + sgx[cand] * (inx - 0.30f), wz = cz + sgz[cand] * (inz - 0.24f);
+            if (aabbOverlap(wx, wz, 0.70f, 0.50f, koX, koZ, koW, koD)) continue;               // blocks the door lane
+            if (bedPlaced && aabbOverlap(wx, wz, 0.70f, 0.50f, bx, bz, bedW, bedD)) continue;  // into the bed
+            addPiece(L, wx, wardH * 0.5f + 0.04f, wz, 0.62f, wardH, 0.42f, 3, true);
+            break;
         }
+        // TABLE + chairs: centred, pushed away from the door, only if the room is roomy and the spot is clear
+        if (inx > 1.1f && inz > 1.05f) {
+            float tx = cx - dox * (inx * 0.35f), tz = cz - doz * (inz * 0.35f);
+            if (!aabbOverlap(tx, tz, 0.95f, 0.75f, koX, koZ, koW, koD)
+             && !(bedPlaced && aabbOverlap(tx, tz, 0.95f, 0.75f, bx, bz, bedW, bedD))) {
+                addPiece(L, tx, 0.70f, tz, 0.80f, 0.07f, 0.60f, 2, true);                       // table top (solid)
+                for (int lg = 0; lg < 4; lg++)
+                    addPiece(L, tx + ((lg & 1) == 0 ? -0.32f : 0.32f), 0.35f, tz + ((lg & 2) == 0 ? -0.24f : 0.24f), 0.06f, 0.66f, 0.06f, 3, false);
+                addPiece(L, tx - 0.52f, 0.27f, tz, 0.38f, 0.46f, 0.38f, 2, false);             // chair (sits on the floor)
+                addPiece(L, tx + 0.52f, 0.27f, tz, 0.38f, 0.46f, 0.38f, 2, false);
+            }
+        }
+    }
+
+    /** True if two XZ footprints (centre + full extents) overlap — used to keep furniture off the door + each other. */
+    private static boolean aabbOverlap(float ax, float az, float aw, float ad, float bx, float bz, float bw, float bd) {
+        return Math.abs(ax - bx) < (aw + bw) * 0.5f && Math.abs(az - bz) < (ad + bd) * 0.5f;
     }
 
     private void addPiece(List<float[]> L, float x, float y, float z, float w, float h, float d, int colorIdx, boolean solid) {
@@ -3449,16 +3472,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 256;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFEAE0CF);                                    // near-neutral warm base so uColor sets the real tone
+        c.drawColor(0xFFF2EEE6);                                    // light near-white base so uColor sets the real tone (incl. white ceiling/fabric)
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(91);
-        for (int plank = 1; plank < 6; plank++) {                  // plank seams
+        for (int plank = 1; plank < 6; plank++) {                  // plank seams (subtle)
             float y = plank * N / 6f;
-            p.setColor(0x33000000); c.drawRect(0, y, N, y + 2.5f, p);
+            p.setColor(0x22000000); c.drawRect(0, y, N, y + 2.0f, p);
         }
-        for (int k = 0; k < 1400; k++) {                           // fine grain streaks
-            int v = rnd.nextInt(36);
-            p.setColor((0x22 << 24) | ((0xCC - v) << 16) | ((0xBE - v) << 8) | (0xA6 - v));
+        for (int k = 0; k < 1100; k++) {                           // fine grain streaks (subtle)
+            int v = rnd.nextInt(30);
+            p.setColor((0x16 << 24) | ((0xCC - v) << 16) | ((0xBE - v) << 8) | (0xA6 - v));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 8 + rnd.nextInt(20), y + 1, p);
         }
