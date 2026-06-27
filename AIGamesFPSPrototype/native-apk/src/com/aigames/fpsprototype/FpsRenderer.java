@@ -1539,6 +1539,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         comboTimer = COMBO_WINDOW;
         score += combo * (head ? 2 : 1);
 
+        // combo rank banner at milestone kills
+        String rank = null;
+        if (combo == 2) rank = "DOUBLE KILL";
+        else if (combo == 3) rank = "TRIPLE KILL";
+        else if (combo == 5) rank = "MULTI KILL";
+        else if (combo == 7) rank = "RAMPAGE";
+        else if (combo == 9) rank = "UNSTOPPABLE";
+        if (rank != null) spawnPopup(rank, width * 0.5f, height * 0.37f, 1f, 0.66f, 0.18f, 30f);
+
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 15 : 10;
         long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]) * (1f + 0.06f * (wave - 1)));
@@ -1980,11 +1989,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (lp > 0.001f) drawRoundRect(xbX + xbW * lp * 0.5f, 150f * us, xbW * lp, 10f * us, 5f * us, 0.4f, 0.75f, 1f, 0.95f);
 
             if (combo > 1) {
-                float ct = comboTimer / COMBO_WINDOW;
-                drawRectPx(width * 0.5f, 188f * us, 150f * ct, 8f * us, 1f, 0.78f, 0.2f, 0.9f);
-                float mg = combo >= 5 ? 0.42f : (combo >= 3 ? 0.75f : 1f);
-                float mb = combo >= 3 ? 0.2f : 0.5f;
-                drawTextCenteredShadow("x" + combo, width * 0.5f, 218f * us, 26f, 1f, mg, mb, 0.97f);
+                float ct = comboTimer / COMBO_WINDOW, cy2 = 210f * us;
+                float mg = combo >= 5 ? 0.35f : (combo >= 3 ? 0.7f : 1f), mb = combo >= 3 ? 0.2f : 0.5f;
+                String cs = "x" + combo;
+                float cw = measureText(cs, 30f) + 64f * us, ch = 46f * us;
+                if (combo >= 3) drawGlow(width * 0.5f, cy2, cw, ch, ch * 0.5f, 1f, mg, mb, 0.7f);
+                drawRoundRect(width * 0.5f, cy2, cw, ch, ch * 0.5f, 0.06f, 0.07f, 0.12f, 0.78f);
+                drawRoundRect(width * 0.5f - (cw - 18f * us) * 0.5f + (cw - 18f * us) * ct * 0.5f, cy2 + ch * 0.5f - 5f * us,
+                        (cw - 18f * us) * ct, 4f * us, 2f * us, 1f, mg, mb, 0.92f);
+                drawTextCenteredShadow(cs, width * 0.5f, cy2 - 2f * us, 30f, 1f, mg, mb, 0.97f);
             }
 
             // ammo: magazine (big) + reserve (small), or a reload bar
@@ -2031,6 +2044,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawRoundRect(width * 0.5f, bnY, tw, bh2, bh2 * 0.5f, 0.05f, 0.07f, 0.13f, ba * 0.9f);
                 drawRoundRect(width * 0.5f, bnY - bh2 * 0.5f + 16f * us * scale, tw * 0.96f, 3f * us, 1.5f * us, gr, gg, gb, ba * 0.7f);
                 drawTextCenteredShadow(waveBannerText, width * 0.5f, bnY, sz, 1f, boss ? 0.55f : 0.95f, boss ? 0.4f : 0.6f, ba);
+            }
+            // between-wave countdown to the next wave
+            if (waveBreak > 0f) {
+                int cd = Math.max(1, (int) Math.ceil(waveBreak));
+                drawTextCenteredShadow("NEXT WAVE IN " + cd, width * 0.5f, height * 0.40f, 22f, 0.85f, 0.92f, 1f, 0.92f);
             }
 
             drawPopups();   // floating "+$" / HEADSHOT / combo reward texts
