@@ -220,6 +220,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // Game state machine: HUB (between runs, spend cash) / PLAYING / SUMMARY (run-over recap).
     private static final int ST_HUB = 0, ST_PLAYING = 1, ST_SUMMARY = 2;
     private int state = ST_HUB;
+    private float deathAnim = 0f;      // >0 = playing the death sequence before the summary
+    private boolean newBest = false;   // this run beat the high score
     private int hubTab = 0;              // 0 = weapons, 1 = upgrades, 2 = abilities
     private int hubTabShown = -1;        // tab whose content-reveal is currently animating
     private float hubTabAnim = 1f;       // 0..1 content-reveal progress for the active tab
@@ -460,12 +462,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (dt > 0.1f) dt = 0.1f;
         timeAcc += dt;
 
-        updateDoors(dt);
-        updateCamera(dt);
-        updateEnemies(dt);
-        updateParticles(dt);
-        updatePopups(dt);
-        tickTimers(dt);
+        if (deathAnim > 0f) {                 // death sequence: freeze the scene, keep FX ticking
+            deathAnim -= dt;
+            updateParticles(dt);
+            updatePopups(dt);
+            if (deathAnim <= 0f) state = ST_SUMMARY;
+        } else {
+            updateDoors(dt);
+            updateCamera(dt);
+            updateEnemies(dt);
+            updateParticles(dt);
+            updatePopups(dt);
+            tickTimers(dt);
+        }
 
         float adsZoom = (curWeapon == 3) ? 46f : 30f;   // sniper zooms much harder through its scope
         float fov = 72f - adsZoom * aim + 6f * sprintAnim;
@@ -792,15 +801,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void triggerGameOver() {
-        if (state != ST_PLAYING) return;
-        state = ST_SUMMARY;
+        if (state != ST_PLAYING || deathAnim > 0f) return;
         aimOn = false;
         sfx.over();
-        if (score > highScore) {
+        newBest = score > highScore;
+        if (newBest) {
             highScore = score;
             prefs.edit().putInt("highscore", highScore).apply();
         }
         saveMeta();
+        deathAnim = 1.5f;            // play the death sequence, then hand off to the summary
     }
 
     // Steering: try headings fanned out from "straight at the player" and take the first one whose
@@ -1407,7 +1417,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // --- shooting & weapons ---
 
     private void fire() {
-        if (state != ST_PLAYING) return;
+        if (state != ST_PLAYING || deathAnim > 0f) return;
         if (sprinting) return;             // gun is lowered while sprinting
         if (reloadTimer > 0f) return;
         if (fireCd > 0f) return;
@@ -2097,6 +2107,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawRoundRect(bchx, 32f * us, bcw, 32f * us, 16f * us, 0.06f, 0.08f, 0.13f, 0.45f);
         drawTextCentered(bstr, bchx, 32f * us, 15f, 0.66f, 0.72f, 0.8f, 0.8f);
 
+        // death sequence overlay: darkening red wash + "ELIMINATED" punching in
+        if (deathAnim > 0f) {
+            float t = 1f - deathAnim / 1.5f;                       // 0 → 1
+            drawQuadNDC(0f, 0f, 1f, 1f, 0.45f, 0.02f, 0.02f, 0.35f + 0.45f * t);
+            drawEdgeVignette(0.7f, 0.05f, 0.05f, 0.4f + 0.3f * t);
+            float sc = 0.55f + 0.5f * Math.min(1f, t * 2.2f);
+            drawTextCenteredShadow("ELIMINATED", width * 0.5f, height * 0.43f, 56f * sc, 1f, 0.28f, 0.24f, Math.min(1f, t * 3f));
+        }
+
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
@@ -2124,7 +2143,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         drawTextCenteredShadow("RUN OVER", cx, height * 0.14f, 56f, 1f, 0.45f, 0.3f, 1f);
         drawTextCenteredShadow("SCORE " + score, cx, height * 0.14f + 86f * us, 30f, 1f, 1f, 1f, 0.95f);
-        drawTextCenteredShadow("BEST " + highScore, cx, height * 0.14f + 130f * us, 22f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.9f);
+        if (newBest) {
+            float nb = pulse01(4f, 0f);
+            String nbs = "NEW BEST!";
+            float nbw = measureText(nbs, 24f) + 50f * us, nby = height * 0.14f + 130f * us;
+            drawGlow(cx, nby, nbw, 40f * us, 20f * us, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.6f + 0.4f * nb);
+            drawRoundRect(cx, nby, nbw, 40f * us, 20f * us, 0.18f, 0.14f, 0.04f, 0.9f);
+            drawTextCenteredShadow(nbs, cx, nby, 24f, 1f, 0.86f, 0.3f, 1f);
+        } else {
+            drawTextCenteredShadow("BEST " + highScore, cx, height * 0.14f + 130f * us, 22f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.9f);
+        }
 
         // earnings card
         float y = height * 0.44f;
