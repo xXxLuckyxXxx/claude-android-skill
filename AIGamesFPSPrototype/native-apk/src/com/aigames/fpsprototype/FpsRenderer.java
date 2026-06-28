@@ -58,7 +58,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float[]   W_SPREAD    = {0.0f, 0.018f, 0.085f, 0.0f};
     private static final float[]   W_BODYDMG   = {55f, 26f, 20f, 90f};
     private static final float[]   W_HEADDMG   = {120f, 60f, 46f, 260f};
-    private static final float[]   W_RECOIL    = {0.030f, 0.016f, 0.075f, 0.10f};
+    private static final float[]   W_RECOIL    = {0.040f, 0.022f, 0.090f, 0.13f};   // punchier kick (recovers fast)
     private static final float[]   W_SHAKE     = {0.55f, 0.32f, 1.00f, 1.20f};
     private static final int[]     W_KILL_REWARD = {6, 10, 4, 3};
     private static final boolean[] W_AUTO      = {false, true, false, false};
@@ -702,7 +702,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         sfx.swap();
         spawnCoinRain();
         wave++;
-        waveBreak = 1.8f;
+        waveBreak = 2.6f;   // a longer breather to grab drops between waves
     }
 
     /** Celebratory gold-coin shower around the player on a wave clear. */
@@ -1511,7 +1511,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (fireCd > 0f) fireCd -= dt;
         if (shake > 0f) { shake -= dt * 6f; if (shake < 0f) shake = 0f; }
         if (switchAnim > 0f) { switchAnim -= dt * 4f; if (switchAnim < 0f) switchAnim = 0f; }
-        if (recoil > 0f) { recoil -= dt * 0.25f; if (recoil < 0f) recoil = 0f; }
+        if (recoil > 0f) { recoil -= recoil * Math.min(1f, dt * 9f) + dt * 0.04f; if (recoil < 0f) recoil = 0f; }   // snappy exp. recovery
         if (comboTimer > 0f) { comboTimer -= dt; if (comboTimer <= 0f) combo = 1; }
         if (reloadTimer > 0f) { reloadTimer -= dt; if (reloadTimer <= 0f) finishReload(); }
         aim += (((aimOn && state == ST_PLAYING) ? 1f : 0f) - aim) * Math.min(1f, dt * 12f);
@@ -1613,7 +1613,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHurt[idx] = 0.12f;
                 float dmg = head ? effHeadDmg(curWeapon) : effBodyDmg(curWeapon);
                 enHP[idx] -= dmg;
-                float kf = (head ? 3.6f : 2.3f) * (enBoss[idx] > 0 ? 0.22f : 1f);   // knockback impulse along the bullet
+                float kf = (head ? 4.6f : 2.3f) * (enBoss[idx] > 0 ? 0.22f : 1f);   // knockback (headshots hit harder)
                 enKx[idx] += dx * kf; enKz[idx] += dz * kf;
                 spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (head ? 1.6f : 0.95f) * enScale[idx], enZ[idx], head, dx, dy, dz);
                 // floating damage number at the enemy (projected to screen)
@@ -1735,7 +1735,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else { float drop = rng.nextFloat(); if (drop < 0.15f) spawnPickup(enX[idx], enZ[idx], 0); else if (drop < 0.33f) spawnPickup(enX[idx], enZ[idx], 1); }
 
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
-        int baseGain = head ? 15 : 10;
+        int baseGain = head ? 18 : 10;   // headshots pay better
         long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]) * (1f + 0.06f * (wave - 1)));
         cash += cashGain; runCash += cashGain;
         xp += baseGain; runXp += baseGain; runKills++;
