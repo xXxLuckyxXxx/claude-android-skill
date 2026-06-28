@@ -277,6 +277,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int pkNext = 0;
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
+    private final float[] enWind = new float[MAX_ENEMIES];   // >0 = winding up to strike, <0 = post-whiff recovery
+    private static final float WINDUP = 0.42f;                // telegraph time before a zombie's hit lands
     private final int[] enOutfit = new int[MAX_ENEMIES];
     private final int[] enType = new int[MAX_ENEMIES];   // 0 = normal, 1 = runner (fast/weak), 2 = brute (slow/tanky)
     private final int[] enFaceType = new int[MAX_ENEMIES];
@@ -633,24 +635,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float facing = -dx * sinYaw + dz * cosYaw;     // forward · (enemy - player); high = dead ahead
                 if (facing < d * 0.74f && spawnPointNear(spawnTmp)) { enX[i] = spawnTmp[0]; enZ[i] = spawnTmp[1]; continue; }
             }
-            if (d < REACH_DIST * enScale[i]) {
-                enAlive[i] = false;
-                playerHP -= ENEMY_DMG * dmgMul * (enBoss[i] > 0 ? 2.5f : 1f);
-                hurtFlash = 0.6f;
-                if (optShake) shake = Math.max(shake, enBoss[i] > 0 ? 0.45f : 0.28f);   // jolt when hit
-                // remember where the hit came from (relative to where we're looking)
-                {
-                    float ddx = enX[i] - px, ddz = enZ[i] - pz;
-                    float fX = camFwd[0], fZ = camFwd[2];
-                    float fl = (float) Math.sqrt(fX * fX + fZ * fZ); if (fl < 1e-4f) fl = 1f; fX /= fl; fZ /= fl;
-                    hurtDirAngle = (float) Math.atan2(ddx * (-fZ) + ddz * fX, ddx * fX + ddz * fZ);
-                    hurtDirTimer = 0.85f;
+            float reach = REACH_DIST * enScale[i];
+            if (enWind[i] < 0f) { enWind[i] += dt; if (enWind[i] > 0f) enWind[i] = 0f; }   // post-whiff recovery
+            if (enWind[i] > 0f) {                              // telegraphing a strike — frozen, facing the player
+                enFace[i] = (float) Math.atan2(dx, dz);
+                enWind[i] -= dt;
+                if (enWind[i] <= 0f) {                         // strike resolves
+                    enWind[i] = 0f;
+                    if (d < reach * 1.3f) {                    // still in range → the hit lands
+                        enAlive[i] = false;
+                        playerHP -= ENEMY_DMG * dmgMul * (enBoss[i] > 0 ? 2.5f : 1f);
+                        hurtFlash = 0.6f;
+                        if (optShake) shake = Math.max(shake, enBoss[i] > 0 ? 0.45f : 0.28f);
+                        {
+                            float ddx = enX[i] - px, ddz = enZ[i] - pz;
+                            float fX = camFwd[0], fZ = camFwd[2];
+                            float fl = (float) Math.sqrt(fX * fX + fZ * fZ); if (fl < 1e-4f) fl = 1f; fX /= fl; fZ /= fl;
+                            hurtDirAngle = (float) Math.atan2(ddx * (-fZ) + ddz * fX, ddx * fX + ddz * fZ);
+                            hurtDirTimer = 0.85f;
+                        }
+                        combo = 1; comboTimer = 0f;
+                        sfx.hurt();
+                        waveRemaining--;
+                        if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
+                        else if (waveRemaining <= 0) clearWave();
+                    } else {
+                        enWind[i] = -0.5f;                     // player dodged the wind-up → recover, then re-chase
+                    }
                 }
-                combo = 1; comboTimer = 0f;
-                sfx.hurt();
-                waveRemaining--;
-                if (playerHP <= 0f) { playerHP = 0f; triggerGameOver(); }
-                else if (waveRemaining <= 0) clearWave();
+            } else if (enWind[i] == 0f && d < reach) {         // reached the player → begin the wind-up telegraph
+                enWind[i] = WINDUP;
+                enFace[i] = (float) Math.atan2(dx, dz);
+                sfx.swap();
             } else if (d > 1e-4f) {
                 float typeMul = enBoss[i] > 0 ? 0.6f : (enType[i] == 1 ? 1.7f : (enType[i] == 2 ? 0.6f : 1f));
                 float es = speed * typeMul;                        // runners rush, brutes/bosses lumber
@@ -747,7 +763,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                        enX[i] = px + (float) Math.cos(a) * 20f; enZ[i] = pz + (float) Math.sin(a) * 20f; }
                 enFace[i] = 0f;
                 enPhase[i] = rng.nextFloat() * 6.2832f;
-                enHurt[i] = 0f;
+                enHurt[i] = 0f; enWind[i] = 0f;
                 enKx[i] = 0f; enKz[i] = 0f;
                 enFaceType[i] = rng.nextInt(6);
                 float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
@@ -945,16 +961,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (!enAlive[i]) continue;
             float sw = (float) Math.sin(enPhase[i]);          // limb swing
             float bob = Math.abs(sw) * 0.045f;                // gait bob
-            float k = enHurt[i] > 0f ? 1.8f : 1f;             // hit flash
+            float hf = enHurt[i] > 0f ? 0.8f : 0f;            // hit flash (brighten)
+            float wr = 0f;                                     // attack-telegraph red blend
+            if (enWind[i] > 0f) {                              // reared up + flashing red, telegraphing the strike
+                bob += 0.18f + 0.05f * (float) Math.sin(timeAcc * 12f);
+                wr = 0.58f + 0.32f * (float) Math.sin(timeAcc * 18f);   // pulsing but always strongly red
+            }
             float[] o = OUTFITS[enOutfit[i]];
-            float shR = o[0] * k, shG = o[1] * k, shB = o[2] * k;   // shirt (torso + arms)
-            float paR = o[3] * k, paG = o[4] * k, paB = o[5] * k;   // pants (legs)
+            float shR = (o[0] + hf) * (1f - wr) + 1.00f * wr, shG = (o[1] + hf) * (1f - wr) + 0.16f * wr, shB = (o[2] + hf) * (1f - wr) + 0.13f * wr;
+            float paR = (o[3] + hf) * (1f - wr) + 1.00f * wr, paG = (o[4] + hf) * (1f - wr) + 0.16f * wr, paB = (o[5] + hf) * (1f - wr) + 0.13f * wr;
+            float hdR = (0.97f + hf) * (1f - wr) + 1.00f * wr, hdG = (0.83f + hf) * (1f - wr) + 0.16f * wr, hdB = (0.30f + hf) * (1f - wr) + 0.13f * wr;
             Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
             Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
             if (enScale[i] != 1f) Matrix.scaleM(gunBase, 0, enScale[i], enScale[i], enScale[i]);  // bosses are bigger
             enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, shR, shG, shB);                       // torso (shirt)
-            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, 0.97f * k, 0.83f * k, 0.30f * k);     // yellow head
+            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, hdR, hdG, hdB);                      // head
             enemyFace(enFaceType[i]);                                                           // goofy face (varies)
             enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, paR, paG, paB); // leg L
             enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, paR, paG, paB); // leg R
@@ -1535,7 +1557,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
-        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; }
+        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; enWind[i] = 0f; }
         for (int i = 0; i < MAX_PICKUPS; i++) pkLife[i] = 0f;
         hitStop = 0f;
         for (int i = 0; i < MAX_PARTICLES; i++) pLife[i] = 0f;
