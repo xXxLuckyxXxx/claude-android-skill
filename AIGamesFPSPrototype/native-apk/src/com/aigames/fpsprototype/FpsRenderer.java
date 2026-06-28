@@ -4150,6 +4150,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             L.add(new float[]{fcx, fy, dcz + (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
             L.add(new float[]{fcx, doorH + 0.09f, dcz, t + pr, 0.18f, doorW + jb * 2f, fr, fg, fb});
         }
+        if (doorStyle == 3) {                              // striped shop awning over the storefront door
+            float awY = Math.min(doorH + 0.22f, h - 0.15f), aw = doorW + 0.5f, proj = 0.85f;
+            for (int s = 0; s < 3; s++) {
+                boolean red = (s % 2 == 0);
+                float cr = red ? 0.72f : 0.90f, cg = red ? 0.27f : 0.86f, cb = red ? 0.23f : 0.78f;
+                float out = t * 0.5f + (s + 0.5f) * proj / 3f, yy = awY - s * 0.05f;
+                if (axis == 0) L.add(new float[]{dcx, yy, dcz + nnz * out, aw, 0.07f, proj / 3f + 0.02f, cr, cg, cb});
+                else           L.add(new float[]{dcx + nnx * out, yy, dcz, proj / 3f + 0.02f, 0.07f, aw, cr, cg, cb});
+            }
+            float vy = awY - 0.16f, vo = t * 0.5f + proj;   // front valance (hanging edge)
+            if (axis == 0) L.add(new float[]{dcx, vy, dcz + nnz * vo, aw, 0.20f, 0.05f, 0.72f, 0.27f, 0.23f});
+            else           L.add(new float[]{dcx + nnx * vo, vy, dcz, 0.05f, 0.20f, aw, 0.72f, 0.27f, 0.23f});
+        }
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
             L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f});
