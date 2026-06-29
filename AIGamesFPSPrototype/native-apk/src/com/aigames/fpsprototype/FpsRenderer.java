@@ -131,7 +131,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
     private int uSunInt, uAmbient, uFogRange, uWorldUV;
+    private int uLampPos, uLampCol, uLampRange, uRoomLit;        // warm lamp room-lighting (interiors)
+    private final float[] lampUniform = new float[9];           // 3 nearest lamp positions, packed (xyz×3)
+    private java.util.List<float[]> lampList; private float[][] lamps;   // hanging-lamp world positions
     private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime, uSkyHorizon, uSkyZenith, uSkyOvercast;
+    private int sceneFbo, sceneTex, sceneDepth;                  // offscreen target for the bloom post pass
+    private int progBloom, aPBloom, uBloomScene, uBloomTexel, uBloomAmt;
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
@@ -139,6 +144,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
     private int brickTex, stoneTex, sidingTex, gravelTex, winBackTex;   // per-archetype facade materials, gravel path + dark window-interior
+    private int fabricTex, gunTex;                              // woven cloth (rugs/upholstery) + brushed-metal gun viewmodel detail
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh, revealMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts, revealVerts;
@@ -399,6 +405,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uAmbient = GLES20.glGetUniformLocation(prog3, "uAmbient");
         uFogRange = GLES20.glGetUniformLocation(prog3, "uFogRange");
         uWorldUV = GLES20.glGetUniformLocation(prog3, "uWorldUV");
+        uLampPos = GLES20.glGetUniformLocation(prog3, "uLampPos[0]");
+        uLampCol = GLES20.glGetUniformLocation(prog3, "uLampCol");
+        uLampRange = GLES20.glGetUniformLocation(prog3, "uLampRange");
+        uRoomLit = GLES20.glGetUniformLocation(prog3, "uRoomLit");
+
+        progBloom = buildProgram(VERT_BLOOM_SRC, FRAG_BLOOM_SRC);
+        aPBloom = GLES20.glGetAttribLocation(progBloom, "aP");
+        uBloomScene = GLES20.glGetUniformLocation(progBloom, "uScene");
+        uBloomTexel = GLES20.glGetUniformLocation(progBloom, "uTexel");
+        uBloomAmt = GLES20.glGetUniformLocation(progBloom, "uAmt");
 
         progSky = buildProgram(VERT_SKY_SRC, FRAG_SKY_SRC);
         aPSky = GLES20.glGetAttribLocation(progSky, "aP");
@@ -482,6 +498,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         sidingTex = uploadTexture(makeSidingBitmap());
         gravelTex = uploadTexture(makeGravelBitmap());
         woodTex = uploadTexture(makeWoodBitmap());
+        fabricTex = uploadTexture(makeFabricBitmap());   // woven cloth for rugs / bedcovers / upholstery
+        gunTex = uploadTexture(makeGunBitmap());         // brushed-metal / wood-grain detail for the viewmodel
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
 
         restart();
@@ -497,6 +515,54 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, w, h);
         aspect = (float) w / height;
         Matrix.perspectiveM(proj, 0, 68f, aspect, 0.05f, 300f);
+        ensureSceneFbo();
+    }
+
+    /** (Re)create the offscreen colour+depth target the 3D scene renders into for the bloom pass. */
+    private void ensureSceneFbo() {
+        int[] t = new int[1];
+        if (sceneFbo != 0) {
+            GLES20.glDeleteFramebuffers(1, new int[]{sceneFbo}, 0);
+            GLES20.glDeleteTextures(1, new int[]{sceneTex}, 0);
+            GLES20.glDeleteRenderbuffers(1, new int[]{sceneDepth}, 0);
+        }
+        GLES20.glGenTextures(1, t, 0); sceneTex = t[0];
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sceneTex);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGB, width, height, 0, GLES20.GL_RGB, GLES20.GL_UNSIGNED_BYTE, null);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glGenRenderbuffers(1, t, 0); sceneDepth = t[0];
+        GLES20.glBindRenderbuffer(GLES20.GL_RENDERBUFFER, sceneDepth);
+        GLES20.glRenderbufferStorage(GLES20.GL_RENDERBUFFER, GLES20.GL_DEPTH_COMPONENT16, width, height);
+        GLES20.glGenFramebuffers(1, t, 0); sceneFbo = t[0];
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, sceneFbo);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, sceneTex, 0);
+        GLES20.glFramebufferRenderbuffer(GLES20.GL_FRAMEBUFFER, GLES20.GL_DEPTH_ATTACHMENT, GLES20.GL_RENDERBUFFER, sceneDepth);
+        if (GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) != GLES20.GL_FRAMEBUFFER_COMPLETE) {
+            GLES20.glDeleteFramebuffers(1, new int[]{sceneFbo}, 0); sceneFbo = 0;   // unsupported → fall back to direct-to-screen
+        }
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+    }
+
+    /** Composite the offscreen 3D scene to the screen, adding a soft additive bloom around bright areas. */
+    private void drawBloom() {
+        if (sceneFbo == 0) return;
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        GLES20.glViewport(0, 0, width, height);
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glDepthMask(false);
+        GLES20.glUseProgram(progBloom);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sceneTex);
+        GLES20.glUniform1i(uBloomScene, 0);
+        GLES20.glUniform2f(uBloomTexel, 1f / width, 1f / height);
+        GLES20.glUniform1f(uBloomAmt, 0.20f);
+        quad.position(0);
+        GLES20.glEnableVertexAttribArray(aPBloom);
+        GLES20.glVertexAttribPointer(aPBloom, 2, GLES20.GL_FLOAT, false, 8, quad);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
     }
 
     @Override
@@ -529,6 +595,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float fov = 72f - adsZoom * aim + 6f * sprintAnim;
         Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
 
+        if (sceneFbo != 0) { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, sceneFbo); GLES20.glViewport(0, 0, width, height); }  // render 3D scene offscreen for bloom
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
         // Sky
@@ -562,6 +629,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform2f(uFogRange, effFogStart, effFogEnd);
         GLES20.glUniform1f(uTime, timeAcc);
         GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
+        // warm room lighting: feed the 3 lamps nearest the camera (others pushed far away → no contribution)
+        for (int i = 0; i < 9; i++) lampUniform[i] = 1e6f;
+        if (lamps != null && lamps.length > 0) {
+            float d0 = 1e18f, d1 = 1e18f, d2 = 1e18f; int i0 = -1, i1 = -1, i2 = -1;
+            for (int i = 0; i < lamps.length; i++) {
+                float dx = lamps[i][0] - px, dy = lamps[i][1] - py, dz = lamps[i][2] - pz, dd = dx * dx + dy * dy + dz * dz;
+                if (dd < d0)      { d2 = d1; i2 = i1; d1 = d0; i1 = i0; d0 = dd; i0 = i; }
+                else if (dd < d1) { d2 = d1; i2 = i1; d1 = dd; i1 = i; }
+                else if (dd < d2) { d2 = dd; i2 = i; }
+            }
+            if (i0 >= 0) { lampUniform[0] = lamps[i0][0]; lampUniform[1] = lamps[i0][1]; lampUniform[2] = lamps[i0][2]; }
+            if (i1 >= 0) { lampUniform[3] = lamps[i1][0]; lampUniform[4] = lamps[i1][1]; lampUniform[5] = lamps[i1][2]; }
+            if (i2 >= 0) { lampUniform[6] = lamps[i2][0]; lampUniform[7] = lamps[i2][1]; lampUniform[8] = lamps[i2][2]; }
+        }
+        GLES20.glUniform3fv(uLampPos, 3, lampUniform, 0);
+        GLES20.glUniform3f(uLampCol, 1.30f, 0.85f, 0.42f);     // warm tungsten
+        GLES20.glUniform1f(uLampRange, 6.0f);
+        GLES20.glUniform1f(uRoomLit, 0f);                      // default off; enabled only for interior geometry
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, terrainTex);
@@ -632,8 +717,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (float[] gp : bandGroups) drawWorldRange(bandMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
         }
         if (interiorGroups != null) {                          // baked walk-in interiors (floors/ceilings/furniture)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, woodTex);
-            for (float[] gp : interiorGroups) drawWorldRange(interiorMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            GLES20.glUniform1f(uRoomLit, 1f);                  // lamps illuminate interior surfaces
+            for (float[] gp : interiorGroups) {
+                int ci = gp.length > 5 ? (int) gp[5] : 0;
+                if (ci == 7) {                                  // self-lit lampshade glow (warm), pulled back so it reads as a shade
+                    drawWorldRange(interiorMesh, (int) gp[0], (int) gp[1], 4f, 0.92f, 0.84f, 0.62f);
+                    continue;
+                }
+                int tex;                                        // material-appropriate texture per group (was all woodTex)
+                if (ci == 1 || ci == 11) tex = wallTex;         // ceiling / picture-mirror → painted board (no wood planks overhead)
+                else if (ci == 4 || ci == 5 || ci == 8 || ci == 9) tex = fabricTex;   // rug / bedcover / mattress / sofa / accent cloth
+                else tex = woodTex;                             // floor + wood furniture + dark wood + lamp cord + plant
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+                drawWorldRange(interiorMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            }
+            GLES20.glUniform1f(uRoomLit, 0f);
         }
 
         drawDoors();
@@ -644,6 +742,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         if (state == ST_PLAYING) drawGun();
+
+        drawBloom();   // resolve offscreen scene → screen with additive bloom, then HUD draws on top
 
         if (state == ST_PLAYING) drawHud();
         else if (state == ST_SUMMARY) drawSummary();
@@ -1320,6 +1420,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // --- weapon viewmodels ---
 
     private void drawGun() {
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, gunTex);     // brushed-metal / wood-grain detail for the viewmodel (mode 6 parts)
         float a = aim, s = sprintAnim;
         Matrix.setIdentityM(gunBase, 0);
         // hip -> ADS: slide to centre, raise so the sights sit on the screen centre.
@@ -1472,7 +1573,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        submit(cube, 36, mvp, tmpA, 3f, r, g, b);
+        submit(cube, 36, mvp, tmpA, 6f, r, g, b);
     }
 
     /** Like gunPart but pitched about its X axis (for raked grips, angled/curved magazines, stocks). */
@@ -1484,7 +1585,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        submit(cube, 36, mvp, tmpA, 3f, r, g, b);
+        submit(cube, 36, mvp, tmpA, 6f, r, g, b);
     }
 
     private void updateCamera(float dt) {
@@ -4642,7 +4743,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Furnish every house once: store visual pieces for the baked mesh, add solid colliders to L. */
     private void furnishAll(List<float[]> L, List<float[]> houses) {
         interiorPieces = new java.util.ArrayList<float[]>();
+        lampList = new java.util.ArrayList<float[]>();
         for (float[] h : houses) furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5]);
+        lamps = lampList.toArray(new float[0][]);
     }
 
     /** A cosy ground-floor room: wood floor, ceiling, rug, hanging lamp, a bed, a wardrobe and a table + chairs,
@@ -4662,6 +4765,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addPiece(L, cx, 0.058f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
         addPiece(L, cx, ceilH - 0.18f, cz, 0.06f, 0.30f, 0.06f, 6, false);                     // lamp cord
         addPiece(L, cx, ceilH - 0.40f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
+        lampList.add(new float[]{cx, ceilH - 0.45f, cz});                                      // point-light source just under the shade
         // small entry passage just inside the doorway that furniture must keep clear (so the player can always pass)
         float lane = 1.3f, pass = 1.05f;
         float koX = cx + dox * (inx - lane * 0.5f), koZ = cz + doz * (inz - lane * 0.5f);
@@ -4788,7 +4892,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 o = box6(d, o, p[0], p[1], p[2], p[3] * 0.5f, p[4] * 0.5f, p[5] * 0.5f);
             }
             int cnt = o / 8 - start;
-            if (cnt > 0) groups.add(new float[]{start, cnt, INT_COLS[ci][0], INT_COLS[ci][1], INT_COLS[ci][2]});
+            if (cnt > 0) groups.add(new float[]{start, cnt, INT_COLS[ci][0], INT_COLS[ci][1], INT_COLS[ci][2], ci});
         }
         interiorGroups = groups.toArray(new float[0][]);
         interiorVerts = o / 8;
@@ -4813,6 +4917,65 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 8 + rnd.nextInt(20), y + 1, p);
         }
+        return b;
+    }
+
+    /** Soft woven fabric for rugs / bedcovers / upholstery — near-white so uColor sets the tone.
+     *  A fine two-direction thread weave + gentle cloth noise; no hard lines so it never looks like planks. */
+    private static Bitmap makeFabricBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFF0EEEC);
+        Paint p = new Paint();
+        Random rnd = new Random(37);
+        int step = 4;
+        for (int y = 0; y < N; y += step) {                        // horizontal weft threads (alternating light/shadow)
+            p.setColor(0x14000000); c.drawRect(0, y, N, y + step * 0.5f, p);
+            p.setColor(0x10FFFFFF); c.drawRect(0, y + step * 0.5f, N, y + step, p);
+        }
+        for (int x = 0; x < N; x += step) {                        // vertical warp threads → cross-hatch weave
+            p.setColor(0x10000000); c.drawRect(x, 0, x + step * 0.5f, N, p);
+            p.setColor(0x0CFFFFFF); c.drawRect(x + step * 0.5f, 0, x + step, N, p);
+        }
+        for (int k = 0; k < 1400; k++) {                           // fibre noise so the weave isn't a perfect grid
+            int v = rnd.nextInt(22);
+            p.setColor((0x14 << 24) | ((0xE0 - v) << 16) | ((0xDC - v) << 8) | (0xD6 - v));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 1, y + 1, p);
+        }
+        return b;
+    }
+
+    /** Brightness-neutral surface detail for the viewmodel: multiplies onto each gun part's solid uColor.
+     *  Average ~0.95 so it adds brushed striations, micro-scratches and an edge sheen without darkening the part.
+     *  Works for both metal parts (grey uColor) and wood parts (brown uColor: the striations read as grain). */
+    private static Bitmap makeGunBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFF0F0F0);                                     // near-white base (keeps part colour bright)
+        Paint p = new Paint();
+        Random rnd = new Random(91);
+        for (int y = 0; y < N; y++) {                               // fine horizontal brushed striations along the barrel axis
+            int v = 0xE2 + rnd.nextInt(0x22);                       // 0xE2..0x103 → some lighter than base, some darker
+            v = Math.min(v, 0xFF);
+            p.setColor(0xFF000000 | (v << 16) | (v << 8) | v);
+            c.drawLine(0, y, N, y, p);
+        }
+        p.setStyle(Paint.Style.STROKE);                             // a few crisp machined grooves
+        p.setStrokeWidth(1.4f); p.setColor(0x44000000);
+        for (int k = 0; k < 7; k++) { float y = 8 + rnd.nextInt(N - 16); c.drawLine(0, y, N, y, p); }
+        p.setStrokeWidth(1f);                                       // scattered micro-scratches (brighter, angled)
+        for (int k = 0; k < 40; k++) {
+            int a = 0x20 + rnd.nextInt(0x40);
+            p.setColor((a << 24) | 0x00FFFFFF);
+            float x0 = rnd.nextInt(N), y0 = rnd.nextInt(N), ln = 6 + rnd.nextInt(26);
+            c.drawLine(x0, y0, x0 + ln, y0 + (rnd.nextInt(5) - 2), p);
+        }
+        p.setStyle(Paint.Style.FILL);                               // soft top-edge sheen and a faint bottom shade → rounder form
+        p.setColor(0x2AFFFFFF); c.drawRect(0, 0, N, N * 0.16f, p);
+        p.setColor(0x22000000); c.drawRect(0, N * 0.84f, N, N, p);
         return b;
     }
 
@@ -5173,6 +5336,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
         "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange; uniform float uWorldUV;" +
+        "uniform vec3 uLampPos[3]; uniform vec3 uLampCol; uniform float uLampRange; uniform float uRoomLit;" +
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
         "vec3 grade(vec3 c){ float l=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(l),c,1.20); return clamp((c-0.5)*1.08+0.5,0.0,1.0); }" +  // richer + a little more contrast
         "void main(){" +
@@ -5196,6 +5360,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    vec3 base=tex*uColor;" +
         "    col=(base*(uAmbient*vec3(0.14,0.16,0.21)+uSunInt*df*vec3(1.30,1.17,0.95)+fl*vec3(0.22,0.29,0.42))" +   // deeper ambient + punchier warm key = more contrast, less washed out
         "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30))*ao;" +
+        "    if(uRoomLit>0.5){ for(int i=0;i<3;i++){ vec3 Lp=uLampPos[i]-vWorld; float dl=length(Lp);" +      // warm point-light pools from hanging lamps
+        "      float att=clamp(1.0-dl/uLampRange,0.0,1.0); att*=att; float nd=max(dot(N,normalize(Lp)),0.0);" +
+        "      col+=base*uLampCol*att*(0.30+0.70*nd); } }" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
@@ -5208,7 +5375,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
         "  } else if(uMode<4.5){" +
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
-        "  } else {" +                                          // mode 5: real glass — reflects the sky, slightly see-through, frame stays solid
+        "  } else if(uMode<5.5){" +                             // mode 5: real glass — reflects the sky, slightly see-through, frame stays solid
         "    vec3 tex=texture2D(uTex,vUV).rgb; vec3 N2=normalize(vNormal);" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         "    float gx=step(0.20,vUV.x)*step(vUV.x,0.80)*step(0.20,vUV.y)*step(vUV.y,0.80);" +
@@ -5221,10 +5388,36 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "    col2=mix(col2,uFogColor,fog);" +
         "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)), mix(1.0,0.42,glass)); return;" +   // frame opaque, glass see-through (shows the dim room behind)
+        "  } else {" +                                          // mode 6: textured viewmodel (brushed metal / wood grain, brightness-neutral)
+        "    vec3 tex=texture2D(uTex,vUV).rgb;" +
+        "    vec3 L=normalize(vec3(-0.3,0.55,0.75)); vec3 V=vec3(0.0,0.0,1.0);" +
+        "    float df=max(dot(N,L),0.0); vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),40.0);" +
+        "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
+        "    col=uColor*tex*(vec3(0.18,0.20,0.26)+df*vec3(1.1))+sp*vec3(0.8)*tex.r+rim*vec3(0.15);" +
+        "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
         "  gl_FragColor=vec4(pow(grade(aces(col)),vec3(0.4545)),1.0);" +
+        "}";
+
+    // Bloom composite: draw the offscreen scene back to screen and add a soft glow bled from its bright areas.
+    private static final String VERT_BLOOM_SRC =
+        "attribute vec2 aP; varying vec2 vT; void main(){ vT=aP*0.5+0.5; gl_Position=vec4(aP,0.0,1.0); }";
+
+    private static final String FRAG_BLOOM_SRC =
+        "precision mediump float;" +
+        "varying vec2 vT; uniform sampler2D uScene; uniform vec2 uTexel; uniform float uAmt;" +
+        "vec3 bright(vec3 c){ float l=dot(c,vec3(0.299,0.587,0.114)); return c*smoothstep(0.86,1.0,l); }" +   // only near-white highlights bloom (sun glints, lamp glow, bright glass), not the broad sky
+        "void main(){" +
+        "  vec3 base=texture2D(uScene,vT).rgb;" +
+        "  vec3 b=vec3(0.0);" +
+        "  for(int x=-2;x<=2;x++){ for(int y=-2;y<=2;y++){" +
+        "    vec2 o=vec2(float(x),float(y))*uTexel*1.8;" +
+        "    b+=bright(texture2D(uScene,vT+o).rgb);" +
+        "  }}" +
+        "  b*=0.04;" +                                          // /25 taps
+        "  gl_FragColor=vec4(base+b*uAmt*2.4,1.0);" +
         "}";
 
     private static final String VERT_SKY_SRC =
