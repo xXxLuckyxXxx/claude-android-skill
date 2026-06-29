@@ -1153,7 +1153,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         for (int i = 0; i < doorData.length; i++) {
             float[] dd = doorData[i];
-            float ang = doorOpen[i] * 85f;                  // swing open up to ~85°
+            float ang = doorOpen[i] * 85f * (dd.length > 12 ? dd[12] : 1f);   // signed so every leaf swings OUTWARD into the cleared front
             int axis = (int) dd[6];
             float tH = dd[3], vH = dd[4], pH = dd[5];        // half tangent / vertical / depth of the leaf
             Matrix.setIdentityM(doorBase, 0);               // hinge: origin ends at the leaf centre
@@ -1190,7 +1190,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     doorBit(axis, 0f, vH * 0.45f, ld * 1.1f, pH * 0.6f, vH * 1.0f, pH * 0.6f, lr, lg, lb);
                 }
             }
-            doorBit(axis, -tH * 0.72f, 0f, pH * 1.0f, pH * 0.9f, vH * 0.18f, pH * 0.9f, 0.72f, 0.73f, 0.55f);   // handle
+            for (int f2 = -1; f2 <= 1; f2 += 2) {                          // lever handle on BOTH faces, on a back-plate
+                float hd2 = f2 * pH * 1.05f;
+                doorBit(axis, -tH * 0.70f, 0.0f, hd2, pH * 1.1f, vH * 0.34f, pH * 0.7f, 0.34f, 0.34f, 0.36f);          // dark back-plate
+                doorBit(axis, -tH * 0.72f, 0.02f, hd2 * 1.3f, pH * 1.5f, vH * 0.12f, pH * 0.9f, 0.80f, 0.74f, 0.50f);  // brass lever
+            }
         }
     }
 
@@ -3943,7 +3947,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (rc.nextFloat() < 0.45f) {                      // a barrel / crate / planter tucked against a wall
                     float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.3f);
                     float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.3f);
-                    if (!onStreetXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)) addClutter(L, rc, ax, az);
+                    if (!onStreetXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)
+                        && !blocksDoor(new float[]{cx, cz, w, d, 0f, doorSide}, ax, az)) addClutter(L, rc, ax, az);
                 }
             }
         }
@@ -3964,6 +3969,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     if (sx * sx + sz * sz > 30f * 30f) continue;
                     if (Math.abs(sx) < 3.2f && sz > 1.5f && sz < 13f) continue;     // spawn lane
                     if (onRoadXZ(sx, sz) || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
+                    if (blocksAnyDoor(houses, sx, sz)) continue;                    // never plant in front of a doorway
                     boolean near = false;
                     for (float[] pp : placed) if (Math.abs(pp[0] - sx) < 3f && Math.abs(pp[1] - sz) < 3f) { near = true; break; }
                     if (near) continue;
@@ -3985,7 +3991,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float tx = nz, tz = nx;
                 float front = (nx != 0 ? hw : hd) + 1.1f, span = (nx != 0 ? hd : hw) + 0.5f;
                 for (float s = -span; s <= span + 0.01f; s += 0.7f) {
-                    if (Math.abs(s) < 0.75f) continue;                          // path gap
+                    if (Math.abs(s) < 1.4f) continue;                           // wide path gap so even shop doors stay clear
                     float bx = cx + nx * front + tx * s, bz = cz + nz * front + tz * s;
                     if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                     if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
@@ -4001,6 +4007,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                 if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
                 if (!clearOfHouses(houses, bx, bz, 0.18f)) continue;
+                if (blocksDoor(h, bx, bz)) continue;                        // keep the doorway clear
                 trees.add(new float[]{bx, bz, 0.42f + rc.nextFloat() * 0.38f});
             }
         }
@@ -4013,9 +4020,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             else if (ds == 1) { bx = cx; bz = cz - hd - 0.7f; }
             else if (ds == 2) { bx = cx + hw + 0.7f; bz = cz; }
             else              { bx = cx - hw - 0.7f; bz = cz; }
-            if (Math.abs(bx) < 3.2f && bz > 1.5f && bz < 13f) continue;
-            if (onRoadXZ(bx, bz) || !clearOfHouses(houses, bx, bz, 0.5f)) continue;
-            addBench(L, bx, bz, ds);
+            float tnx = (ds == 0 || ds == 1) ? 1f : 0f, tnz = (ds == 2 || ds == 3) ? 1f : 0f;   // tangent along the wall
+            for (float sgn : new float[]{1f, -1f}) {                        // sit the bench BESIDE the door, never across it
+                float bxx = bx + tnx * sgn * 1.7f, bzz = bz + tnz * sgn * 1.7f;
+                if (Math.abs(bxx) < 3.2f && bzz > 1.5f && bzz < 13f) continue;
+                if (onRoadXZ(bxx, bzz) || !clearOfHouses(houses, bxx, bzz, 0.5f) || blocksDoor(h, bxx, bzz)) continue;
+                addBench(L, bxx, bzz, ds); break;
+            }
         }
         // 3. the reserved open lots form a market square: two stalls flanking a well
         addStall(L, MARKET_LOTS[0][0], MARKET_LOTS[0][1], 0.78f, 0.32f, 0.27f);   // red awning
@@ -4045,6 +4056,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     /** True if (x,z) is well clear of every house footprint (plus margin) — used to keep props off buildings. */
+    /** True if (x,z) sits in the approach + swing corridor in front of a house's door — i.e. it would block the entrance. */
+    private static boolean blocksDoor(float[] h, float x, float z) {
+        float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f; int ds = (int) h[5];
+        float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);
+        float fx = cx + nx * hw, fz = cz + nz * hd;              // door-wall face centre
+        float outD = (x - fx) * nx + (z - fz) * nz;             // metres out from the wall face (covers the swing arc)
+        float lat  = (x - fx) * (-nz) + (z - fz) * nx;          // metres sideways along the wall
+        return outD > -0.25f && outD < 2.3f && Math.abs(lat) < 1.4f;
+    }
+    private static boolean blocksAnyDoor(List<float[]> houses, float x, float z) {
+        for (float[] h : houses) if (blocksDoor(h, x, z)) return true;
+        return false;
+    }
+
     private static boolean clearOfHouses(List<float[]> houses, float x, float z, float margin) {
         for (float[] h : houses)
             if (Math.abs(x - h[0]) < h[2] * 0.5f + margin && Math.abs(z - h[1]) < h[3] * 0.5f + margin) return false;
@@ -4170,8 +4195,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (doorSide == 1) { dcx = cx; dcz = cz - d * 0.5f; axis = 0; }
         else if (doorSide == 2) { dcx = cx + w * 0.5f; dcz = cz; axis = 1; }
         else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
+        float swing = (doorSide == 1 || doorSide == 2) ? -1f : 1f;   // sign that makes the leaf swing OUTWARD (away from interior furniture)
         doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
-                dr, dg, db, doorStyle});
+                dr, dg, db, doorStyle, swing});
         // door surround (architrave: jambs + lintel), slightly proud, in a light stone trim — frames the opening
         float fr = 0.84f, fg = 0.82f, fb = 0.76f, jb = 0.13f, pr = 0.10f, fy = doorH * 0.5f;
         float nnx = doorSide == 2 ? 1 : (doorSide == 3 ? -1 : 0), nnz = doorSide == 0 ? 1 : (doorSide == 1 ? -1 : 0);
@@ -4180,11 +4206,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             L.add(new float[]{dcx - (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
             L.add(new float[]{dcx + (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
             L.add(new float[]{dcx, doorH + 0.09f, fcz, doorW + jb * 2f, 0.18f, t + pr, fr, fg, fb});
+            L.add(new float[]{dcx, 0.02f, fcz, doorW + jb * 2f, 0.04f, t + pr + 0.10f, 0.55f, 0.53f, 0.49f}); // low stone doorstep
         } else {
             float fcx = dcx + nnx * (t * 0.5f - 0.02f);
             L.add(new float[]{fcx, fy, dcz - (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
             L.add(new float[]{fcx, fy, dcz + (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
             L.add(new float[]{fcx, doorH + 0.09f, dcz, t + pr, 0.18f, doorW + jb * 2f, fr, fg, fb});
+            L.add(new float[]{fcx, 0.02f, dcz, t + pr + 0.10f, 0.04f, doorW + jb * 2f, 0.55f, 0.53f, 0.49f}); // low stone doorstep
         }
         if (doorStyle == 3) {                              // striped shop awning over the storefront door
             float awY = Math.min(doorH + 0.22f, h - 0.15f), aw = doorW + 0.5f, proj = 0.85f;
@@ -4380,7 +4408,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addPiece(L, cx, ceilH - 0.18f, cz, 0.06f, 0.30f, 0.06f, 6, false);                     // lamp cord
         addPiece(L, cx, ceilH - 0.40f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
         // small entry passage just inside the doorway that furniture must keep clear (so the player can always pass)
-        float lane = 1.0f, pass = 0.95f;
+        float lane = 1.3f, pass = 1.05f;
         float koX = cx + dox * (inx - lane * 0.5f), koZ = cz + doz * (inz - lane * 0.5f);
         float koW = dox != 0 ? lane : pass, koD = doz != 0 ? lane : pass;
         java.util.List<float[]> occ = new java.util.ArrayList<float[]>();        // placed footprints, for later furniture
