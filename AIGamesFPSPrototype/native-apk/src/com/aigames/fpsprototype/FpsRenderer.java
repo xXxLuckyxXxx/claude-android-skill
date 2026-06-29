@@ -131,7 +131,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
     private int uSunInt, uAmbient, uFogRange, uWorldUV;
-    private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime, uSkyHorizon, uSkyZenith;
+    private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime, uSkyHorizon, uSkyZenith, uSkyOvercast;
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
@@ -342,6 +342,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] sunDir = {-0.35f, 0.55f, -0.62f}, fog = {0.72f, 0.80f, 0.90f}, ground = {1f, 1f, 1f};
     private float sunInt = 1f, ambient = 1f, fogStart = 10f, fogEnd = 70f;
 
+    // --- Weather: auto-cycles Sun -> Rain -> Fog -> Snow with smooth crossfades, plus rain/snow particles ---
+    private static final int WX_SUN = 0, WX_FOG = 1, WX_RAIN = 2, WX_SNOW = 3;
+    private static final int[] WX_ORDER = {WX_SUN, WX_RAIN, WX_FOG, WX_SNOW};   // rain & snow never adjacent -> particle pool is only ever one kind
+    private static final String[] WX_NAME = {"SONNE", "NEBEL", "REGEN", "SCHNEE"};
+    private static final float WX_HOLD = 55f;          // seconds each weather lingers before the next
+    private int wxIdx = 0;                              // index into WX_ORDER
+    private float wxTimer = 20f, weatherLabelT = 0f;    // first change comes a bit sooner, then settle into WX_HOLD
+    private final float[] effHorizon = {0.76f, 0.85f, 0.95f}, effZenith = {0.16f, 0.41f, 0.74f}, effFog = {0.72f, 0.80f, 0.90f};
+    private float effSunInt = 1f, effAmbient = 1f, effFogStart = 10f, effFogEnd = 70f, wOvercast = 0f, wRain = 0f, wSnow = 0f;
+    private static final int MAX_WX = 180;
+    private final float[] wxX = new float[MAX_WX], wxY = new float[MAX_WX], wxZ = new float[MAX_WX], wxP = new float[MAX_WX];
+    private boolean wxInit = false;
+    private final java.util.Random wxRnd = new java.util.Random(12345);
+
     public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
         this.buildNumber = buildNumber;
@@ -395,6 +409,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uSkyTime = GLES20.glGetUniformLocation(progSky, "uTime");
         uSkyHorizon = GLES20.glGetUniformLocation(progSky, "uHorizon");
         uSkyZenith = GLES20.glGetUniformLocation(progSky, "uZenith");
+        uSkyOvercast = GLES20.glGetUniformLocation(progSky, "uOvercast");
 
         progVig = buildProgram(VERT_VIG_SRC, FRAG_VIG_SRC);
         aPVig = GLES20.glGetAttribLocation(progVig, "aP");
@@ -488,6 +503,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         lastNanos = now;
         if (dt > 0.1f) dt = 0.1f;
         timeAcc += dt;
+        updateWeather(dt);
 
         if (deathAnim > 0f) {                 // death sequence: freeze the scene, keep FX ticking
             deathAnim -= dt;
@@ -520,8 +536,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform3f(uSkyRight, camRight[0], camRight[1], camRight[2]);
         GLES20.glUniform3f(uSkyUp, camUp[0], camUp[1], camUp[2]);
         GLES20.glUniform3f(uSkySun, sunDir[0], sunDir[1], sunDir[2]);
-        GLES20.glUniform3f(uSkyHorizon, skyHorizon[0], skyHorizon[1], skyHorizon[2]);
-        GLES20.glUniform3f(uSkyZenith, skyZenith[0], skyZenith[1], skyZenith[2]);
+        GLES20.glUniform3f(uSkyHorizon, effHorizon[0], effHorizon[1], effHorizon[2]);
+        GLES20.glUniform3f(uSkyZenith, effZenith[0], effZenith[1], effZenith[2]);
+        GLES20.glUniform1f(uSkyOvercast, wOvercast);
         float skyTanY = (float) Math.tan(Math.toRadians(fov) * 0.5);
         GLES20.glUniform2f(uSkyHalfFov, skyTanY * aspect, skyTanY);
         GLES20.glUniform1f(uSkyTime, timeAcc);
@@ -536,10 +553,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUseProgram(prog3);
         GLES20.glUniform3f(uLightDir, sunDir[0], sunDir[1], sunDir[2]);
         GLES20.glUniform3f(uCamPos, px, py, pz);
-        GLES20.glUniform3f(uFogColor, fog[0], fog[1], fog[2]);
-        GLES20.glUniform1f(uSunInt, sunInt);
-        GLES20.glUniform1f(uAmbient, ambient);
-        GLES20.glUniform2f(uFogRange, fogStart, fogEnd);
+        GLES20.glUniform3f(uFogColor, effFog[0], effFog[1], effFog[2]);
+        GLES20.glUniform1f(uSunInt, effSunInt);
+        GLES20.glUniform1f(uAmbient, effAmbient);
+        GLES20.glUniform2f(uFogRange, effFogStart, effFogEnd);
         GLES20.glUniform1f(uTime, timeAcc);
         GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
@@ -610,6 +627,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawDoors();
         drawEnemies();
         drawParticles();
+        drawWeather();
         drawPickups();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
@@ -871,6 +889,84 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 pVX[i] *= 0.6f; pVZ[i] *= 0.6f;
             }
         }
+    }
+
+    // --- Weather: cycle the look + tick/draw rain or snow ----------------------
+    private void updateWeather(float dt) {
+        wxTimer -= dt;
+        if (wxTimer <= 0f) { wxIdx = (wxIdx + 1) % WX_ORDER.length; wxTimer = WX_HOLD; weatherLabelT = 4.5f; }
+        if (weatherLabelT > 0f) weatherLabelT -= dt;
+        int w = WX_ORDER[wxIdx];
+        // per-weather targets (Sun reads the level's base look so clear days are unchanged)
+        float tHr, tHg, tHb, tZr, tZg, tZb, tFr, tFg, tFb, tOver, tFs, tFe, tSun, tAmb, tRain, tSnow;
+        if (w == WX_SUN) {
+            tHr = skyHorizon[0]; tHg = skyHorizon[1]; tHb = skyHorizon[2];
+            tZr = skyZenith[0];  tZg = skyZenith[1];  tZb = skyZenith[2];
+            tFr = fog[0]; tFg = fog[1]; tFb = fog[2];
+            tOver = 0f; tFs = fogStart; tFe = fogEnd; tSun = sunInt; tAmb = ambient; tRain = 0f; tSnow = 0f;
+        } else if (w == WX_FOG) {
+            tHr = 0.74f; tHg = 0.77f; tHb = 0.80f; tZr = 0.66f; tZg = 0.70f; tZb = 0.74f;
+            tFr = 0.78f; tFg = 0.81f; tFb = 0.84f; tOver = 0.88f; tFs = 3f; tFe = 28f; tSun = 0.70f; tAmb = 1.15f; tRain = 0f; tSnow = 0f;
+        } else if (w == WX_RAIN) {
+            tHr = 0.50f; tHg = 0.53f; tHb = 0.58f; tZr = 0.39f; tZg = 0.43f; tZb = 0.49f;
+            tFr = 0.54f; tFg = 0.57f; tFb = 0.62f; tOver = 1f; tFs = 8f; tFe = 52f; tSun = 0.55f; tAmb = 0.90f; tRain = 1f; tSnow = 0f;
+        } else {
+            tHr = 0.82f; tHg = 0.84f; tHb = 0.88f; tZr = 0.74f; tZg = 0.78f; tZb = 0.84f;
+            tFr = 0.85f; tFg = 0.87f; tFb = 0.90f; tOver = 0.95f; tFs = 6f; tFe = 40f; tSun = 0.78f; tAmb = 1.10f; tRain = 0f; tSnow = 1f;
+        }
+        float k = Math.min(1f, dt * 0.5f);                  // exponential crossfade (~2 s time constant)
+        effHorizon[0] += (tHr - effHorizon[0]) * k; effHorizon[1] += (tHg - effHorizon[1]) * k; effHorizon[2] += (tHb - effHorizon[2]) * k;
+        effZenith[0]  += (tZr - effZenith[0]) * k;  effZenith[1]  += (tZg - effZenith[1]) * k;  effZenith[2]  += (tZb - effZenith[2]) * k;
+        effFog[0] += (tFr - effFog[0]) * k; effFog[1] += (tFg - effFog[1]) * k; effFog[2] += (tFb - effFog[2]) * k;
+        wOvercast += (tOver - wOvercast) * k; effFogStart += (tFs - effFogStart) * k; effFogEnd += (tFe - effFogEnd) * k;
+        effSunInt += (tSun - effSunInt) * k; effAmbient += (tAmb - effAmbient) * k;
+        wRain += (tRain - wRain) * k; wSnow += (tSnow - wSnow) * k;
+        updateWeatherParticles(dt);
+    }
+
+    private void updateWeatherParticles(float dt) {
+        float inten = Math.max(wRain, wSnow);
+        if (inten < 0.02f) return;
+        if (!wxInit) { for (int i = 0; i < MAX_WX; i++) respawnWx(i, true); wxInit = true; }
+        boolean rainy = wRain >= wSnow;
+        float fall = rainy ? 17f : 1.4f;
+        int active = (int) (MAX_WX * inten);
+        for (int i = 0; i < active; i++) {
+            wxY[i] -= fall * dt;
+            if (rainy) { wxX[i] += 1.6f * dt; wxZ[i] += 1.0f * dt; }                       // wind slant
+            else { wxP[i] += dt; wxX[i] += (float) Math.sin(wxP[i] * 2f + i) * 0.5f * dt; wxZ[i] += (float) Math.cos(wxP[i] * 1.6f + i) * 0.5f * dt; }
+            if (wxY[i] < py - 2.5f || Math.abs(wxX[i] - px) > 17f || Math.abs(wxZ[i] - pz) > 17f) respawnWx(i, false);
+        }
+    }
+
+    private void respawnWx(int i, boolean anywhere) {
+        wxX[i] = px + (wxRnd.nextFloat() - 0.5f) * 32f;
+        wxZ[i] = pz + (wxRnd.nextFloat() - 0.5f) * 32f;
+        wxY[i] = anywhere ? py + (wxRnd.nextFloat() - 0.3f) * 16f : py + 9f + wxRnd.nextFloat() * 7f;
+        wxP[i] = wxRnd.nextFloat() * 6.28f;
+    }
+
+    private void drawWeather() {
+        float inten = Math.max(wRain, wSnow);
+        if (!wxInit || inten < 0.02f) return;
+        boolean rainy = wRain >= wSnow;
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);   // mode 3 ignores the texture
+        GLES20.glDepthMask(false);                             // flakes/streaks don't occlude pickups or each other
+        int active = (int) (MAX_WX * inten);
+        float br = 0.7f + 0.6f * inten;
+        for (int i = 0; i < active; i++) {
+            Matrix.setIdentityM(model, 0);
+            Matrix.translateM(model, 0, wxX[i], wxY[i], wxZ[i]);
+            if (rainy) {
+                Matrix.scaleM(model, 0, 0.015f, 0.5f, 0.015f);
+                drawWorld(cube, 36, 3f, 0.60f * br, 0.70f * br, 0.95f * br);     // cool rain streak
+            } else {
+                Matrix.scaleM(model, 0, 0.07f, 0.07f, 0.07f);
+                drawWorld(cube, 36, 3f, 0.95f * br, 0.96f * br, 1.0f * br);      // white snowflake
+            }
+        }
+        GLES20.glDepthMask(true);
     }
 
     private void drawParticles() {
@@ -2062,6 +2158,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glEnableVertexAttribArray(aPVig);
         GLES20.glVertexAttribPointer(aPVig, 2, GLES20.GL_FLOAT, false, 8, quad);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+
+        if (weatherLabelT > 0f) {                          // brief name announced when the weather changes
+            float a = Math.max(0f, Math.min(1f, Math.min(weatherLabelT, 4.5f - weatherLabelT) * 2f));
+            int wc = WX_ORDER[wxIdx];
+            float lr = wc == WX_SUN ? 1.0f : wc == WX_RAIN ? 0.62f : wc == WX_SNOW ? 0.95f : 0.82f;
+            float lg = wc == WX_SUN ? 0.85f : wc == WX_RAIN ? 0.76f : wc == WX_SNOW ? 0.97f : 0.85f;
+            float lb = wc == WX_SUN ? 0.45f : wc == WX_RAIN ? 0.98f : wc == WX_SNOW ? 1.0f : 0.88f;
+            drawTextCentered(WX_NAME[wc], width * 0.5f, height * 0.155f, 30f, lr, lg, lb, a * 0.92f);
+        }
 
         GLES20.glUseProgram(prog2);
 
@@ -5068,7 +5173,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
         "varying vec2 vP;" +
         "uniform vec3 uFwd; uniform vec3 uRight; uniform vec3 uUp; uniform vec3 uSun;" +
-        "uniform vec2 uHalfFov; uniform float uTime; uniform vec3 uHorizon; uniform vec3 uZenith;" +
+        "uniform vec2 uHalfFov; uniform float uTime; uniform vec3 uHorizon; uniform vec3 uZenith; uniform float uOvercast;" +
         "float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }" +
         "float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f);" +
         "  float a=hash(i); float b=hash(i+vec2(1.0,0.0)); float c=hash(i+vec2(0.0,1.0)); float d=hash(i+vec2(1.0,1.0));" +
@@ -5081,18 +5186,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  vec3 col=mix(uHorizon,uZenith,pow(t,0.55));" +                            // horizon -> zenith (level-driven)
         "  col=mix(col,vec3(0.55,0.60,0.63),smoothstep(0.0,-0.18,h));" +             // haze just below horizon
         "  float sd=max(dot(dir,sun),0.0);" +
-        "  float halo=pow(sd,5.0)*0.45 + pow(sd,180.0)*0.7;" +
+        "  float halo=(pow(sd,5.0)*0.45 + pow(sd,180.0)*0.7)*(1.0-0.85*uOvercast);" +   // sun veiled by cloud
         "  col+=halo*vec3(1.0,0.86,0.58);" +
-        "  col=mix(col,vec3(1.05,1.0,0.92),smoothstep(0.9988,0.9994,sd));" +          // sun disc
+        "  col=mix(col,vec3(1.05,1.0,0.92),smoothstep(0.9988,0.9994,sd)*(1.0-uOvercast));" +   // sun disc (hidden when overcast)
         "  float fade=smoothstep(0.05,0.25,h);" +
         "  if(fade>0.001){" +
         "    vec2 cp=dir.xz/max(h,0.07);" +
         "    float d=fbm(cp*1.3+vec2(uTime*0.010,uTime*0.004));" +
         "    d=d*1.7-0.45;" +
-        "    float cov=smoothstep(0.30,0.95,d)*fade;" +
+        "    float cov=smoothstep(mix(0.30,-0.05,uOvercast),mix(0.95,0.55,uOvercast),d)*fade;" +   // overcast -> denser cover
+        "    cov=max(cov,uOvercast*0.78*fade);" +                                       // heavy overcast fills the sky
         "    float shade=smoothstep(0.2,1.0,d);" +
-        "    vec3 cloud=mix(vec3(0.72,0.75,0.82),vec3(1.0,1.0,1.0),shade)+halo*0.6*vec3(1.0,0.9,0.7);" +
-        "    col=mix(col,cloud,cov*0.92);" +
+        "    vec3 cloud=mix(vec3(0.72,0.75,0.82),vec3(1.0,1.0,1.0),shade);" +
+        "    cloud=mix(cloud,vec3(0.60,0.63,0.68),uOvercast*0.7)+halo*0.6*vec3(1.0,0.9,0.7);" +   // greyer storm cloud
+        "    col=mix(col,cloud,cov*mix(0.92,0.98,uOvercast));" +
         "  }" +
         "  gl_FragColor=vec4(pow(min(col,vec3(1.0)),vec3(0.4545)),1.0);" +
         "}";
