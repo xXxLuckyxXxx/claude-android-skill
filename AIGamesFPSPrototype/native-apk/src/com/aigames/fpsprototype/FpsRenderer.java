@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
@@ -104,6 +105,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final String[] AB_NAME = {"MAX HEALTH", "FAST RELOAD", "DAMAGE UP", "HEADSHOT UP",
                                              "ADRENALINE", "MOVE SPEED", "DOUBLE JUMP", "GREED"};
 
+    // DEBUG test build: no zombies + jump button teleports between furnished house interiors (for verifying interiors).
+    private static final boolean DEBUG_TEST = false;
+    private int tpIdx = 0;
+
     // Enemies / survival.
     private static final int MAX_ENEMIES = 12;         // more of the horde on the field at once
     private static final float LEASH_DIST = 46f;       // a zombie further than this (and out of view) is pulled back near you
@@ -145,6 +150,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
     private int brickTex, stoneTex, sidingTex, gravelTex, winBackTex;   // per-archetype facade materials, gravel path + dark window-interior
     private int fabricTex, gunTex;                              // woven cloth (rugs/upholstery) + brushed-metal gun viewmodel detail
+    private int plankTex, canvasTex, ceramicTex, leafTex;       // prop materials: weathered planks, striped awning canvas, terracotta, foliage
+    // prop material indices for box[11] (0-4 are facade materials handled by the wall loop)
+    private static final int MAT_PLASTER = 0, MAT_BRICK = 1, MAT_STONE = 2, MAT_TIMBER = 3, MAT_GRAVEL = 4;
+    private static final int MAT_PLANK = 5, MAT_METAL = 6, MAT_CANVAS = 7, MAT_CERAMIC = 8, MAT_LEAF = 9;
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh, revealMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts, revealVerts;
@@ -154,6 +163,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private java.util.List<float[]> clutterPts;    // barrel/crate/planter positions, so benches never spawn on top of them
     private boolean hasCustomRoads;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
+    private float[] shutterData;                   // window shutters + headers (full casing), built alongside the window mesh
+    private FloatBuffer shutterMesh;
+    private int shutterVerts;
+    private float[] flowerData;                     // leafy window-box greenery under ground-floor windows
+    private FloatBuffer flowerMesh;
+    private int flowerVerts;
     // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize,
     //  glassR,glassG,glassB, foundH,foundR,foundG,foundB, trimR,trimG,trimB, storeys} per house (roof/window/band meshes)
     private java.util.List<float[]> houseRects;
@@ -487,6 +502,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
         windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData + winGroups + revealData)
         trimMesh = makeBuffer(trimData);             // window sills
+        shutterMesh = makeBuffer(shutterData);       // window shutters + headers
+        flowerMesh = makeBuffer(flowerData);         // window-box greenery
         revealMesh = makeBuffer(revealData);         // dark recessed interior behind each pane
         bandMesh = makeBuffer(makeBandMesh());       // per-house foundation / trim / storey bands (sets bandVerts)
         roofTex = uploadTexture(makeRoofBitmap());
@@ -500,6 +517,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         woodTex = uploadTexture(makeWoodBitmap());
         fabricTex = uploadTexture(makeFabricBitmap());   // woven cloth for rugs / bedcovers / upholstery
         gunTex = uploadTexture(makeGunBitmap());         // brushed-metal / wood-grain detail for the viewmodel
+        plankTex = uploadTexture(makeExtPlankBitmap());  // weathered exterior boards (benches, crates, stalls, fences)
+        canvasTex = uploadTexture(makeCanvasBitmap());   // striped awning canvas
+        ceramicTex = uploadTexture(makeCeramicBitmap()); // terracotta / glazed pots
+        leafTex = uploadTexture(makeLeafBitmap());       // clustered foliage for planters / bushes
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
 
         restart();
@@ -670,24 +691,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glUseProgram(prog3);
         GLES20.glUniform1f(uWorldUV, 1f);                      // walls: world-scale facade tiling + ground-contact AO
-        int lastMat = -1;
+        int lastMat = -1; float lastWuv = 1f;
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
             if (b.length > 10 && b[10] != 0f) continue;       // collision-only proxy (interior furniture) — drawn via interiorMesh
-            int mat = (b.length > 11) ? (int) b[11] : 0;      // 0 plaster (palette-tinted) · 1 brick · 2 stone · 3 timber
+            int mat = (b.length > 11) ? (int) b[11] : 0;      // 0 plaster · 1 brick · 2 stone · 3 timber · 4 gravel · 5 plank · 6 metal · 7 canvas · 8 ceramic · 9 leaf
             if (mat != lastMat) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, mat == 1 ? brickTex : mat == 2 ? stoneTex : mat == 3 ? sidingTex : mat == 4 ? gravelTex : wallTex);
+                int tex = mat == 1 ? brickTex : mat == 2 ? stoneTex : mat == 3 ? sidingTex : mat == 4 ? gravelTex
+                        : mat == 5 ? plankTex : mat == 6 ? metalTex : mat == 7 ? canvasTex : mat == 8 ? ceramicTex
+                        : mat == 9 ? leafTex : wallTex;
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
                 lastMat = mat;
             }
+            float wuv = mat >= 5 ? 0f : 1f;                    // small props tile per-face (0..1); structures tile by world scale
+            if (wuv != lastWuv) { GLES20.glUniform1f(uWorldUV, wuv); lastWuv = wuv; }
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
             if (b.length > 9 && b[9] != 0f) Matrix.rotateM(model, 0, b[9], 0f, 1f, 0f);   // props/fences carry a yaw
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
             float boost = (i == hitBox && hitTimer > 0f) ? 1.6f : 1f;
-            float cr = mat == 0 ? b[6] : 1f, cg = mat == 0 ? b[7] : 1f, cb = mat == 0 ? b[8] : 1f;   // brick/stone/timber carry their own colour
+            boolean tint = (mat == 0 || (mat >= 5 && mat != 6));  // plaster + plank/canvas/ceramic/leaf keep box colour; metal (6) & facades show baked texture colour
+            float cr = tint ? b[6] : 1f, cg = tint ? b[7] : 1f, cb = tint ? b[8] : 1f;
             drawWorld(cube, 36, 0f, cr * boost, cg * boost, cb * boost);
         }
-        GLES20.glUniform1f(uWorldUV, 0f);                      // restore mesh UVs for roofs/windows/bands/interiors
+        if (lastWuv != 0f) GLES20.glUniform1f(uWorldUV, 0f);   // restore mesh UVs for roofs/windows/bands/interiors
 
         Matrix.setIdentityM(model, 0);                         // pitched roofs + windows (baked, world-space)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);    // neutral-grey shingle; per-house colour via uColor
@@ -713,6 +740,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stone window sills
         drawWorld(trimMesh, trimVerts, 0f, 0.95f, 0.93f, 0.86f);
+        if (shutterVerts > 0) drawWorld(shutterMesh, shutterVerts, 0f, 0.22f, 0.34f, 0.24f);   // painted shutters + header (classic dark shutter-green)
+        if (flowerVerts > 0) {                                  // leafy greenery in the ground-floor window boxes
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, leafTex);
+            drawWorld(flowerMesh, flowerVerts, 0f, 0.34f, 0.50f, 0.28f);
+        }
         if (bandGroups != null) {                              // per-house foundation / trim / storey bands
             for (float[] gp : bandGroups) drawWorldRange(bandMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
         }
@@ -846,7 +878,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void beginWave(int w) {
         wave = w;
         int size = Math.max(3, Math.round(4 + (w - 1) * 1.8f));   // gentler opening waves
-        waveToSpawn = size;
+        waveToSpawn = DEBUG_TEST ? 0 : size;           // DEBUG: no zombies spawn
         waveRemaining = size;
         waveSize = size;
         bossPending = (w % 10 == 0) ? 2 : (w % 5 == 0 ? 1 : 0);
@@ -1628,7 +1660,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         // --- vertical movement: jump / climb / gravity ---
         boolean wasGrounded = grounded;
-        if (input.consumeJump()) doJump();
+        if (input.consumeJump()) { if (DEBUG_TEST) debugTeleport(); else doJump(); }
         vy -= GRAVITY * dt;
         feetY += vy * dt;
         float support = groundSupport();
@@ -1697,6 +1729,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (need > vy) vy = need;
             grounded = false;
         }
+    }
+
+    /** DEBUG: teleport the player to the centre of the next furnished house interior (cycles). */
+    private void debugTeleport() {
+        if (lamps == null || lamps.length == 0) return;
+        float[] L = lamps[tpIdx % lamps.length];
+        tpIdx = (tpIdx + 1) % lamps.length;
+        px = L[0]; pz = L[2];                          // lamps store the room centre (cx, _, cz)
+        feetY = 0f; vy = 0f; grounded = true; py = EYE_H;
+        pitch = -0.05f;                                // look roughly level into the room
     }
 
     /** Highest support under the player: the terrain, or a box top they're standing over. */
@@ -4132,10 +4174,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         this.clutterPts = new java.util.ArrayList<float[]>();   // record props so benches don't spawn on top of them
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two stone pillars
-        L.add(new float[]{-2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
-        L.add(new float[]{ 2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
-        L.add(new float[]{-2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
-        L.add(new float[]{ 2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
+        L.add(mat(new float[]{-2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f}, MAT_PLANK));   // climbable crate
+        L.add(mat(new float[]{ 2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f}, MAT_PLANK));
+        L.add(mat(new float[]{-2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f}, MAT_STONE));    // stone pillar
+        L.add(mat(new float[]{ 2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f}, MAT_STONE));
         // Houses on a 10 m block grid, each set back behind the sidewalks so the streets + kerbs stay clear.
         Random rc = new Random(73);
         float[] gs = {-30f, -20f, -10f, 0f, 10f, 20f, 30f};   // block centres; roads run between them at +/-5,15,25
@@ -4320,15 +4362,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** A stone fountain: an octagonal basin with water, a central pedestal, bowl and spout. */
     private static void addFountain(List<float[]> L, float x, float z) {
         float sr = 0.73f, sg = 0.72f, sb = 0.68f;
-        L.add(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr, sg, sb, 0f});              // basin (octagon)
-        L.add(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr - 0.05f, sg - 0.05f, sb - 0.05f, 45f});
+        L.add(mat(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr, sg, sb, 0f}, MAT_STONE));              // basin (octagon)
+        L.add(mat(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr - 0.05f, sg - 0.05f, sb - 0.05f, 45f}, MAT_STONE));
         L.add(new float[]{x, 0.50f, z, 1.9f, 0.08f, 1.9f, 0.34f, 0.52f, 0.62f, 0f});     // water surface
         L.add(new float[]{x, 0.50f, z, 1.9f, 0.08f, 1.9f, 0.30f, 0.49f, 0.61f, 45f});
-        L.add(new float[]{x, 0.86f, z, 0.46f, 1.1f, 0.46f, sr, sg, sb, 0f});             // pedestal
-        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr, sg, sb, 0f});            // upper bowl
-        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr - 0.04f, sg - 0.04f, sb - 0.04f, 45f});
+        L.add(mat(new float[]{x, 0.86f, z, 0.46f, 1.1f, 0.46f, sr, sg, sb, 0f}, MAT_STONE));             // pedestal
+        L.add(mat(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr, sg, sb, 0f}, MAT_STONE));            // upper bowl
+        L.add(mat(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr - 0.04f, sg - 0.04f, sb - 0.04f, 45f}, MAT_STONE));
         L.add(new float[]{x, 1.50f, z, 0.78f, 0.05f, 0.78f, 0.34f, 0.52f, 0.62f, 0f});   // bowl water
-        L.add(new float[]{x, 1.74f, z, 0.16f, 0.55f, 0.16f, sr, sg, sb, 0f});            // spout
+        L.add(mat(new float[]{x, 1.74f, z, 0.16f, 0.55f, 0.16f, sr, sg, sb, 0f}, MAT_STONE));            // spout
     }
 
     private static final float[][] MARKET_LOTS = {{-10f, -20f}, {0f, -20f}, {10f, -20f}};
@@ -4402,12 +4444,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // A wooden barrel: a square + a 45°-rotated twin make a round-ish 8-sided body, plus two iron hoops + a lid.
+    /** Tag a prop box `{cx,cy,cz,w,h,d,r,g,b,(yaw)}` with a material index (box[11]); keeps yaw, render-on. */
+    private static float[] mat(float[] b, int m) {
+        float[] o = new float[12];
+        System.arraycopy(b, 0, o, 0, Math.min(b.length, 10));   // copy through yaw (idx 9); missing yaw stays 0
+        o[10] = 0f;                                             // render (not a collision-only proxy)
+        o[11] = m;
+        return o;
+    }
+
     private static void addBarrel(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.46f, 0.33f, 0.21f, 0f});
-        L.add(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.44f, 0.31f, 0.19f, 45f});
-        L.add(new float[]{x, 0.25f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f});   // lower hoop
-        L.add(new float[]{x, 0.60f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f});   // upper hoop
-        L.add(new float[]{x, 0.78f, z, 0.34f, 0.05f, 0.34f, 0.40f, 0.28f, 0.18f, 0f});   // lid
+        L.add(mat(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.46f, 0.33f, 0.21f, 0f}, MAT_PLANK));   // wood staves
+        L.add(mat(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.44f, 0.31f, 0.19f, 45f}, MAT_PLANK));
+        L.add(mat(new float[]{x, 0.25f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f}, MAT_METAL));   // lower hoop
+        L.add(mat(new float[]{x, 0.60f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f}, MAT_METAL));   // upper hoop
+        L.add(mat(new float[]{x, 0.78f, z, 0.34f, 0.05f, 0.34f, 0.40f, 0.28f, 0.18f, 0f}, MAT_PLANK));   // lid
     }
 
     // A crate: lighter plank panels framed by four dark corner posts plus a bottom rail and a lid.
@@ -4415,24 +4466,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static void addCrate(List<float[]> L, Random r, float x, float z) {
         float yaw = r.nextInt(40) - 20f;
         double a = Math.toRadians(yaw), ca = Math.cos(a), sa = Math.sin(a);
-        L.add(new float[]{x, 0.26f, z, 0.52f, 0.52f, 0.52f, 0.58f, 0.46f, 0.30f, yaw});   // plank body
-        L.add(new float[]{x, 0.05f, z, 0.58f, 0.09f, 0.58f, 0.34f, 0.24f, 0.15f, yaw});   // bottom rail
-        L.add(new float[]{x, 0.54f, z, 0.56f, 0.06f, 0.56f, 0.36f, 0.26f, 0.17f, yaw});   // top lid
+        L.add(mat(new float[]{x, 0.26f, z, 0.52f, 0.52f, 0.52f, 0.58f, 0.46f, 0.30f, yaw}, MAT_PLANK));   // plank body
+        L.add(mat(new float[]{x, 0.05f, z, 0.58f, 0.09f, 0.58f, 0.34f, 0.24f, 0.15f, yaw}, MAT_PLANK));   // bottom rail
+        L.add(mat(new float[]{x, 0.54f, z, 0.56f, 0.06f, 0.56f, 0.36f, 0.26f, 0.17f, yaw}, MAT_PLANK));   // top lid
         float c = 0.24f;                                                                  // corner posts at the body's rotated corners
         for (int sx = -1; sx <= 1; sx += 2) for (int sz = -1; sz <= 1; sz += 2) {
             float ox = (float) (c * sx * ca + c * sz * sa), oz = (float) (-c * sx * sa + c * sz * ca);
-            L.add(new float[]{x + ox, 0.28f, z + oz, 0.10f, 0.56f, 0.10f, 0.34f, 0.24f, 0.15f, yaw});
+            L.add(mat(new float[]{x + ox, 0.28f, z + oz, 0.10f, 0.56f, 0.10f, 0.34f, 0.24f, 0.15f, yaw}, MAT_PLANK));
         }
     }
 
     // A stone planter: a rimmed pot of dark soil with three leafy lobes and a scatter of flowers (axis-aligned, so offsets are safe).
     private static void addPlanter(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 0.24f, z, 0.56f, 0.44f, 0.50f, 0.52f, 0.49f, 0.45f, 0f});           // stone pot
-        L.add(new float[]{x, 0.46f, z, 0.62f, 0.07f, 0.56f, 0.58f, 0.55f, 0.51f, 0f});           // rim
+        L.add(mat(new float[]{x, 0.24f, z, 0.56f, 0.44f, 0.50f, 0.74f, 0.46f, 0.34f, 0f}, MAT_CERAMIC));  // terracotta pot
+        L.add(mat(new float[]{x, 0.46f, z, 0.62f, 0.07f, 0.56f, 0.80f, 0.51f, 0.38f, 0f}, MAT_CERAMIC));  // rim
         L.add(new float[]{x, 0.49f, z, 0.48f, 0.05f, 0.42f, 0.20f, 0.14f, 0.10f, 0f});           // dark soil
-        L.add(new float[]{x, 0.62f, z, 0.34f, 0.26f, 0.30f, 0.27f, 0.43f, 0.25f, 0f});           // foliage — centre mound
-        L.add(new float[]{x - 0.16f, 0.57f, z + 0.04f, 0.24f, 0.20f, 0.24f, 0.31f, 0.47f, 0.29f, 0f});   // leafy lobe (l)
-        L.add(new float[]{x + 0.16f, 0.58f, z - 0.05f, 0.24f, 0.18f, 0.24f, 0.25f, 0.41f, 0.24f, 0f});   // leafy lobe (r)
+        L.add(mat(new float[]{x, 0.62f, z, 0.34f, 0.26f, 0.30f, 0.27f, 0.43f, 0.25f, 0f}, MAT_LEAF));     // foliage — centre mound
+        L.add(mat(new float[]{x - 0.16f, 0.57f, z + 0.04f, 0.24f, 0.20f, 0.24f, 0.31f, 0.47f, 0.29f, 0f}, MAT_LEAF));   // leafy lobe (l)
+        L.add(mat(new float[]{x + 0.16f, 0.58f, z - 0.05f, 0.24f, 0.18f, 0.24f, 0.25f, 0.41f, 0.24f, 0f}, MAT_LEAF));   // leafy lobe (r)
         L.add(new float[]{x - 0.12f, 0.71f, z + 0.07f, 0.09f, 0.09f, 0.09f, 0.86f, 0.32f, 0.30f, 0f});   // red bloom
         L.add(new float[]{x + 0.11f, 0.72f, z - 0.04f, 0.09f, 0.09f, 0.09f, 0.93f, 0.82f, 0.33f, 0f});   // yellow bloom
         L.add(new float[]{x + 0.02f, 0.73f, z + 0.13f, 0.08f, 0.08f, 0.08f, 0.82f, 0.50f, 0.78f, 0f});   // violet bloom
@@ -4440,18 +4491,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static void addWoodpile(List<float[]> L, Random r, float x, float z) {
         float yaw = r.nextInt(30) - 15f;
-        L.add(new float[]{x, 0.16f, z, 0.95f, 0.20f, 0.24f, 0.50f, 0.36f, 0.22f, yaw});
-        L.add(new float[]{x, 0.37f, z, 0.95f, 0.20f, 0.24f, 0.46f, 0.33f, 0.20f, yaw});
-        L.add(new float[]{x, 0.30f, z + 0.26f, 0.95f, 0.20f, 0.24f, 0.48f, 0.35f, 0.21f, yaw});
+        L.add(mat(new float[]{x, 0.16f, z, 0.95f, 0.20f, 0.24f, 0.50f, 0.36f, 0.22f, yaw}, MAT_PLANK));
+        L.add(mat(new float[]{x, 0.37f, z, 0.95f, 0.20f, 0.24f, 0.46f, 0.33f, 0.20f, yaw}, MAT_PLANK));
+        L.add(mat(new float[]{x, 0.30f, z + 0.26f, 0.95f, 0.20f, 0.24f, 0.48f, 0.35f, 0.21f, yaw}, MAT_PLANK));
     }
 
     // A street lamp: stone base, slim post, a glowing lantern head with a little cap (head + cap sit overhead -> no collision).
     private static void addLamp(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 0.13f, z, 0.34f, 0.26f, 0.34f, 0.20f, 0.20f, 0.22f, 0f});   // base
-        L.add(new float[]{x, 1.55f, z, 0.12f, 2.60f, 0.12f, 0.23f, 0.23f, 0.26f, 0f});   // post
-        L.add(new float[]{x, 2.92f, z, 0.30f, 0.10f, 0.30f, 0.20f, 0.20f, 0.22f, 0f});   // collar
+        L.add(mat(new float[]{x, 0.13f, z, 0.34f, 0.26f, 0.34f, 0.42f, 0.42f, 0.45f, 0f}, MAT_STONE));   // stone base
+        L.add(mat(new float[]{x, 1.55f, z, 0.12f, 2.60f, 0.12f, 0.23f, 0.23f, 0.26f, 0f}, MAT_METAL));   // iron post
+        L.add(mat(new float[]{x, 2.92f, z, 0.30f, 0.10f, 0.30f, 0.20f, 0.20f, 0.22f, 0f}, MAT_METAL));   // collar
         L.add(new float[]{x, 3.14f, z, 0.26f, 0.34f, 0.26f, 0.99f, 0.90f, 0.62f, 0f});   // warm lantern glass
-        L.add(new float[]{x, 3.38f, z, 0.36f, 0.12f, 0.36f, 0.19f, 0.19f, 0.21f, 0f});   // cap
+        L.add(mat(new float[]{x, 3.38f, z, 0.36f, 0.12f, 0.36f, 0.19f, 0.19f, 0.21f, 0f}, MAT_METAL));   // cap
     }
 
     // A park bench: two solid end frames, a slatted seat, and a two-rail backrest carried on vertical end posts.
@@ -4459,42 +4510,42 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean ax = (dir == 0 || dir == 1);                    // bench length runs along X for +z/-z fronts
         float ex = ax ? 0.62f : 0f, ez = ax ? 0f : 0.62f;       // end-frame offset along the length
         float esx = ax ? 0.10f : 0.50f, esz = ax ? 0.50f : 0.10f;
-        L.add(new float[]{x - ex, 0.24f, z - ez, esx, 0.48f, esz, 0.34f, 0.25f, 0.16f, 0f});    // end frames
-        L.add(new float[]{x + ex, 0.24f, z + ez, esx, 0.48f, esz, 0.34f, 0.25f, 0.16f, 0f});
-        L.add(new float[]{x, 0.46f, z, ax ? 1.45f : 0.48f, 0.09f, ax ? 0.48f : 1.45f, 0.48f, 0.34f, 0.22f, 0f});  // seat
+        L.add(mat(new float[]{x - ex, 0.24f, z - ez, esx, 0.48f, esz, 0.34f, 0.25f, 0.16f, 0f}, MAT_PLANK));    // end frames
+        L.add(mat(new float[]{x + ex, 0.24f, z + ez, esx, 0.48f, esz, 0.34f, 0.25f, 0.16f, 0f}, MAT_PLANK));
+        L.add(mat(new float[]{x, 0.46f, z, ax ? 1.45f : 0.48f, 0.09f, ax ? 0.48f : 1.45f, 0.48f, 0.34f, 0.22f, 0f}, MAT_PLANK));  // seat
         float bX = 0f, bZ = 0f;                                 // backrest sits behind the seat (toward the wall)
         if (dir == 0) bZ = -0.18f; else if (dir == 1) bZ = 0.18f; else if (dir == 2) bX = -0.18f; else bX = 0.18f;
         float ep = ax ? 0.58f : 0f, epz = ax ? 0f : 0.58f;      // upright posts at each end carry the backrest off the seat
         float psx = ax ? 0.09f : 0.10f, psz = ax ? 0.10f : 0.09f;
-        L.add(new float[]{x - ep + bX, 0.70f, z - epz + bZ, psx, 0.50f, psz, 0.40f, 0.28f, 0.18f, 0f});  // back posts
-        L.add(new float[]{x + ep + bX, 0.70f, z + epz + bZ, psx, 0.50f, psz, 0.40f, 0.28f, 0.18f, 0f});
+        L.add(mat(new float[]{x - ep + bX, 0.70f, z - epz + bZ, psx, 0.50f, psz, 0.40f, 0.28f, 0.18f, 0f}, MAT_PLANK));  // back posts
+        L.add(mat(new float[]{x + ep + bX, 0.70f, z + epz + bZ, psx, 0.50f, psz, 0.40f, 0.28f, 0.18f, 0f}, MAT_PLANK));
         float rw = ax ? 1.45f : 0.06f, rd = ax ? 0.06f : 1.45f;
-        L.add(new float[]{x + bX, 0.68f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});       // back rails
-        L.add(new float[]{x + bX, 0.88f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});
+        L.add(mat(new float[]{x + bX, 0.68f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f}, MAT_PLANK));       // back rails
+        L.add(mat(new float[]{x + bX, 0.88f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f}, MAT_PLANK));
     }
 
     // A market stall: a wooden counter with four posts and a striped awning roof (awning overhead -> no collision).
     private static void addStall(List<float[]> L, float x, float z, float ar, float ag, float ab) {
-        L.add(new float[]{x, 0.55f, z, 1.90f, 1.00f, 1.00f, 0.50f, 0.38f, 0.24f, 0f});   // counter
-        L.add(new float[]{x, 1.08f, z, 2.00f, 0.08f, 1.10f, 0.42f, 0.32f, 0.20f, 0f});   // counter top
-        L.add(new float[]{x - 0.9f, 1.55f, z + 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});  // posts
-        L.add(new float[]{x + 0.9f, 1.55f, z + 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
-        L.add(new float[]{x - 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
-        L.add(new float[]{x + 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
-        L.add(new float[]{x, 2.18f, z, 2.10f, 0.10f, 1.30f, ar, ag, ab, 0f});            // awning
-        L.add(new float[]{x, 2.30f, z, 0.55f, 0.12f, 1.30f, ar * 1.12f, ag * 1.12f, ab * 1.12f, 0f});  // awning crest
+        L.add(mat(new float[]{x, 0.55f, z, 1.90f, 1.00f, 1.00f, 0.50f, 0.38f, 0.24f, 0f}, MAT_PLANK));   // counter
+        L.add(mat(new float[]{x, 1.08f, z, 2.00f, 0.08f, 1.10f, 0.42f, 0.32f, 0.20f, 0f}, MAT_PLANK));   // counter top
+        L.add(mat(new float[]{x - 0.9f, 1.55f, z + 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f}, MAT_PLANK));  // posts
+        L.add(mat(new float[]{x + 0.9f, 1.55f, z + 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f}, MAT_PLANK));
+        L.add(mat(new float[]{x - 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f}, MAT_PLANK));
+        L.add(mat(new float[]{x + 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f}, MAT_PLANK));
+        L.add(mat(new float[]{x, 2.18f, z, 2.10f, 0.10f, 1.30f, ar, ag, ab, 0f}, MAT_CANVAS));           // striped awning
+        L.add(mat(new float[]{x, 2.30f, z, 0.55f, 0.12f, 1.30f, ar * 1.12f, ag * 1.12f, ab * 1.12f, 0f}, MAT_CANVAS));  // awning crest
     }
 
     // A roofed stone well: a square stone kerb ring, two posts and a little gable roof (roof overhead -> no collision).
     private static void addWell(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 0.40f, z + 0.55f, 1.20f, 0.80f, 0.18f, 0.55f, 0.54f, 0.51f, 0f});  // kerb +z
-        L.add(new float[]{x, 0.40f, z - 0.55f, 1.20f, 0.80f, 0.18f, 0.55f, 0.54f, 0.51f, 0f});  // kerb -z
-        L.add(new float[]{x + 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f});  // kerb +x
-        L.add(new float[]{x - 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f});  // kerb -x
-        L.add(new float[]{x - 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f});  // post
-        L.add(new float[]{x + 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f});  // post
-        L.add(new float[]{x, 1.95f, z, 0.10f, 0.10f, 0.70f, 0.30f, 0.24f, 0.20f, 0f});          // crossbeam
-        L.add(new float[]{x, 2.25f, z, 1.50f, 0.12f, 0.95f, 0.34f, 0.27f, 0.22f, 0f});          // roof
+        L.add(mat(new float[]{x, 0.40f, z + 0.55f, 1.20f, 0.80f, 0.18f, 0.55f, 0.54f, 0.51f, 0f}, MAT_STONE));  // kerb +z
+        L.add(mat(new float[]{x, 0.40f, z - 0.55f, 1.20f, 0.80f, 0.18f, 0.55f, 0.54f, 0.51f, 0f}, MAT_STONE));  // kerb -z
+        L.add(mat(new float[]{x + 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f}, MAT_STONE));  // kerb +x
+        L.add(mat(new float[]{x - 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f}, MAT_STONE));  // kerb -x
+        L.add(mat(new float[]{x - 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f}, MAT_PLANK));  // post
+        L.add(mat(new float[]{x + 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f}, MAT_PLANK));  // post
+        L.add(mat(new float[]{x, 1.95f, z, 0.10f, 0.10f, 0.70f, 0.30f, 0.24f, 0.20f, 0f}, MAT_PLANK));          // crossbeam
+        L.add(mat(new float[]{x, 2.25f, z, 1.50f, 0.12f, 0.95f, 0.34f, 0.27f, 0.22f, 0f}, MAT_TIMBER));         // shingled roof
     }
 
     /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
@@ -4563,6 +4614,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
             L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f, 0f, 0f, 1f}); // brick chimney
+        }
+        // Roofline drainage: a dark metal eave gutter hugging all four walls + one corner downpipe to the ground.
+        float gy = h - 0.02f, gp = 0.09f;                  // gutter sits at the eave; sits above head height -> no collision
+        L.add(new float[]{cx, gy, cz + d * 0.5f + gp * 0.5f, w + 0.12f, 0.11f, gp, 0.30f, 0.30f, 0.32f, 0f, 0f, MAT_METAL});
+        L.add(new float[]{cx, gy, cz - d * 0.5f - gp * 0.5f, w + 0.12f, 0.11f, gp, 0.30f, 0.30f, 0.32f, 0f, 0f, MAT_METAL});
+        L.add(new float[]{cx + w * 0.5f + gp * 0.5f, gy, cz, gp, 0.11f, d + 0.12f, 0.30f, 0.30f, 0.32f, 0f, 0f, MAT_METAL});
+        L.add(new float[]{cx - w * 0.5f - gp * 0.5f, gy, cz, gp, 0.11f, d + 0.12f, 0.30f, 0.30f, 0.32f, 0f, 0f, MAT_METAL});
+        L.add(new float[]{cx + w * 0.5f + 0.05f, h * 0.5f, cz + d * 0.5f - 0.12f, 0.09f, h, 0.09f, 0.30f, 0.30f, 0.32f, 0f, 0f, MAT_METAL}); // downpipe at +x/+z corner
+        // Stone corner quoins: slim dressed-stone strips up each of the four corners (light stone, world-tiled).
+        float qx = 0.20f, qy = h * 0.5f, qoff = 0.04f;
+        for (int sxk = -1; sxk <= 1; sxk += 2) for (int szk = -1; szk <= 1; szk += 2) {
+            L.add(new float[]{cx + sxk * (w * 0.5f + qoff), qy, cz + szk * (d * 0.5f + qoff), qx, h - 0.1f, qx, 0.66f, 0.64f, 0.60f, 0f, 0f, MAT_STONE});
         }
     }
 
@@ -4648,7 +4711,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] wd = new float[1200000];   // headroom for dense windows on a large custom village
         float[] td = new float[1600000];
         float[] rv = new float[1200000];   // dark recessed interior behind every pane
-        int[] off = {0, 0, 0};
+        float[] sd = new float[4800000];   // shutters + header per window (3 boxes each)
+        float[] fd = new float[1200000];   // leafy window-box greenery (ground-floor windows only)
+        int[] off = {0, 0, 0, 0, 0};
         Random rng = new Random(202);   // irregular per-house omission so no two facades match
         java.util.List<float[]> winG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
@@ -4657,10 +4722,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float wsc = hh[12], foundH = hh[16];
             if (dens == 0) continue;                       // "none" -> this house has no windows
             int wstart = off[0] / 8;
-            wallWindows(wd, td, rv, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, rv, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, rv, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, rv, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, sd, fd, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, sd, fd, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, sd, fd, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, sd, fd, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
             int wcount = off[0] / 8 - wstart;
             if (wcount > 0) winG.add(new float[]{wstart, wcount, hh[13], hh[14], hh[15]});  // glass tint
         }
@@ -4670,6 +4735,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         trimData = java.util.Arrays.copyOf(td, off[1]);
         revealVerts = off[2] / 8;
         revealData = java.util.Arrays.copyOf(rv, off[2]);
+        shutterVerts = off[3] / 8;
+        shutterData = java.util.Arrays.copyOf(sd, off[3]);
+        flowerVerts = off[4] / 8;
+        flowerData = java.util.Arrays.copyOf(fd, off[4]);
         return java.util.Arrays.copyOf(wd, off[0]);
     }
 
@@ -4947,6 +5016,112 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return b;
     }
 
+    /** Weathered exterior boards for props (benches, crates, stalls, fences) — near-white so uColor sets the tone.
+     *  Horizontal planks with dark seams, per-board tone, lengthwise grain streaks and a couple of knots. */
+    private static Bitmap makeExtPlankBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFF0EAE0);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(53);
+        int planks = 5; float ph = N / (float) planks;
+        for (int i = 0; i < planks; i++) {
+            float y0 = i * ph;
+            int t = rnd.nextInt(30);                                // per-board tone (some boards greyer/darker)
+            p.setColor((0xFF << 24) | ((0xF0 - t) << 16) | ((0xE6 - t) << 8) | (0xD8 - t));
+            c.drawRect(0, y0, N, y0 + ph, p);
+            for (int k = 0; k < 30; k++) {                          // lengthwise grain streaks
+                int v = rnd.nextInt(40);
+                p.setColor((0x26 << 24) | ((0xB8 - v) << 16) | ((0xA0 - v) << 8) | (0x82 - v));
+                float gy = y0 + 2 + rnd.nextInt((int) Math.max(1, ph - 4));
+                float gx = rnd.nextInt(N), gl = 18 + rnd.nextInt(60);
+                c.drawRect(gx, gy, gx + gl, gy + 1.2f, p);
+            }
+            if (rnd.nextBoolean()) {                                // an occasional knot
+                float kx = 14 + rnd.nextInt(N - 28), ky = y0 + ph * (0.35f + rnd.nextFloat() * 0.3f);
+                p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(1.4f); p.setColor(0x33000000);
+                c.drawCircle(kx, ky, 4.5f, p); p.setStyle(Paint.Style.FILL);
+                p.setColor(0x33000000); c.drawCircle(kx, ky, 1.6f, p);
+            }
+        }
+        for (int i = 0; i <= planks; i++) {                        // dark seam + a thin lit lip below it (relief)
+            float y = i * ph;
+            p.setColor(0x55000000); c.drawRect(0, y - 1.3f, N, y + 1.3f, p);
+            p.setColor(0x16FFFFFF); c.drawRect(0, y + 1.3f, N, y + 2.8f, p);
+        }
+        return b;
+    }
+
+    /** Striped awning canvas — bold alternating bands (multiplicative, so any uColor gives a two-tone stripe)
+     *  plus a faint cloth weave. Vertical stripes across the U axis. */
+    private static Bitmap makeCanvasBitmap() {
+        int N = 128;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        Paint p = new Paint();
+        int stripes = 8; float sw = N / (float) stripes;
+        for (int i = 0; i < stripes; i++) {                        // alternating bright / off-white bands
+            p.setColor((i & 1) == 0 ? 0xFFFFFFFF : 0xFFCBC6C0);
+            c.drawRect(i * sw, 0, (i + 1) * sw, N, p);
+        }
+        Random rnd = new Random(71);
+        for (int y = 0; y < N; y += 3) { p.setColor(0x0E000000); c.drawRect(0, y, N, y + 1f, p); }   // weft weave
+        for (int k = 0; k < 500; k++) {                            // cloth noise
+            int v = rnd.nextInt(18);
+            p.setColor((0x10 << 24) | ((0xF0 - v) << 16) | ((0xF0 - v) << 8) | (0xF0 - v));
+            c.drawRect(rnd.nextInt(N), rnd.nextInt(N), rnd.nextInt(N) + 1, rnd.nextInt(N) + 1, p);
+        }
+        p.setColor(0x18000000); c.drawRect(0, N - 4, N, N, p);     // shaded bottom valance edge
+        return b;
+    }
+
+    /** Terracotta / glazed pot — near-white so uColor sets the clay tone; subtle vertical throwing rings,
+     *  speckle, and a darker base shadow so the pot reads as round. */
+    private static Bitmap makeCeramicBitmap() {
+        int N = 96;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFF2ECE6);
+        Paint p = new Paint();
+        Random rnd = new Random(29);
+        for (int x = 0; x < N; x += 6) {                           // vertical throwing rings (gentle light/shadow)
+            p.setColor(0x10000000); c.drawRect(x, 0, x + 2.4f, N, p);
+            p.setColor(0x12FFFFFF); c.drawRect(x + 2.4f, 0, x + 5f, N, p);
+        }
+        for (int k = 0; k < 600; k++) {                            // fine clay speckle
+            int v = rnd.nextInt(26);
+            p.setColor((0x1C << 24) | ((0xC8 - v) << 16) | ((0xB0 - v) << 8) | (0x98 - v));
+            c.drawRect(rnd.nextInt(N), rnd.nextInt(N), rnd.nextInt(N) + 1, rnd.nextInt(N) + 1, p);
+        }
+        p.setColor(0x26000000); c.drawRect(0, N * 0.86f, N, N, p); // base shadow
+        p.setColor(0x1AFFFFFF); c.drawRect(0, 0, N, N * 0.12f, p); // rim highlight
+        return b;
+    }
+
+    /** Clustered foliage for planters / bushes — near-white base so the green uColor sets the hue;
+     *  many small light/dark leaf ovals give a leafy, broken-up surface (no flat blocks). */
+    private static Bitmap makeLeafBitmap() {
+        int N = 96;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFE8EEE0);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(83);
+        for (int k = 0; k < 220; k++) {                            // overlapping leaf blobs, varied value
+            int v = rnd.nextInt(60);
+            boolean light = rnd.nextBoolean();
+            int a = 0x40 + rnd.nextInt(0x40);
+            if (light) p.setColor((a << 24) | ((0xF0) << 16) | ((0xFF) << 8) | (0xE0));
+            else       p.setColor((a << 24) | ((0x90 - v) << 16) | ((0xA8 - v) << 8) | (0x80 - v));
+            float lx = rnd.nextInt(N), ly = rnd.nextInt(N), r1 = 3 + rnd.nextInt(7), r2 = 2 + rnd.nextInt(5);
+            c.save(); c.rotate(rnd.nextInt(180), lx, ly);
+            c.drawOval(new RectF(lx - r1, ly - r2, lx + r1, ly + r2), p);   // leaf-ish oval (RectF overload — vendored android.jar lacks the float variant)
+            c.restore();
+        }
+        return b;
+    }
+
     /** Brightness-neutral surface detail for the viewmodel: multiplies onto each gun part's solid uColor.
      *  Average ~0.95 so it adds brushed striations, micro-scratches and an edge sheen without darkening the part.
      *  Works for both metal parts (grey uColor) and wood parts (brown uColor: the striations read as grain). */
@@ -4980,7 +5155,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
-    private static void wallWindows(float[] wd, float[] td, float[] rv, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc, int storeys, float foundH) {
+    private static void wallWindows(float[] wd, float[] td, float[] rv, float[] sd, float[] fd, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc, int storeys, float foundH) {
         // One row of windows per FLOOR, centred in its storey -> the building visibly reads as having Etagen.
         wsc = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f);
         if (storeys < 1) storeys = 1;
@@ -5006,6 +5181,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
                 if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
                 else           off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
+                // Painted casing: a header board over the pane + a shutter flanking each side (own coloured baked mesh).
+                float shW = winW * 0.30f, shHy = winH * 0.5f, sOut = winW * 0.5f + shW * 0.5f;   // shutter half-width / height / offset from centre
+                float pp = 0.10f, hdrY = wy + winH * 0.5f + 0.08f;   // proud of the wall; header sits just above the lintel
+                if (axis == 0) {
+                    float zf = b + sign * pp;
+                    off[3] = box6(sd, off[3], a + t,        hdrY, zf, winW * 0.5f + shW + 0.04f, 0.06f, 0.06f);  // header
+                    off[3] = box6(sd, off[3], a + t - sOut, wy,   zf, shW * 0.5f, shHy, 0.05f);                  // left shutter
+                    off[3] = box6(sd, off[3], a + t + sOut, wy,   zf, shW * 0.5f, shHy, 0.05f);                  // right shutter
+                } else {
+                    float xf = a + sign * pp;
+                    off[3] = box6(sd, off[3], xf, hdrY, b + t,        0.06f, 0.06f, winW * 0.5f + shW + 0.04f);  // header
+                    off[3] = box6(sd, off[3], xf, wy,   b + t - sOut, 0.05f, shHy, shW * 0.5f);                 // left shutter
+                    off[3] = box6(sd, off[3], xf, wy,   b + t + sOut, 0.05f, shHy, shW * 0.5f);                 // right shutter
+                }
+                if (fi == 0) {                                       // ground-floor window box: a painted planter (shutter mesh) + a leafy tuft (flower mesh)
+                    float by = wy - winH * 0.5f - 0.16f;             // box hangs just under the sill
+                    if (axis == 0) {
+                        off[3] = box6(sd, off[3], a + t, by,        b + sign * 0.14f, winW * 0.5f, 0.07f, 0.09f);   // planter trough
+                        off[4] = box6(fd, off[4], a + t, by + 0.10f, b + sign * 0.18f, winW * 0.5f + 0.03f, 0.09f, 0.12f); // greenery
+                    } else {
+                        off[3] = box6(sd, off[3], a + sign * 0.14f, by,        b + t, 0.09f, 0.07f, winW * 0.5f);
+                        off[4] = box6(fd, off[4], a + sign * 0.18f, by + 0.10f, b + t, 0.12f, 0.09f, winW * 0.5f + 0.03f);
+                    }
+                }
             }
         }
     }
@@ -5049,21 +5248,36 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 256;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFEDEDED);                                    // near-white grey base -> uColor sets the hue
+        c.drawColor(0xFFEDEDED);                                    // near-white base -> uColor sets the hue
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(77);
-        for (int k = 0; k < 1500; k++) {                            // neutral tile grain (no hue)
-            int v = rnd.nextInt(40), s = 0xC4 + v;
-            p.setColor((0x33 << 24) | (s << 16) | (s << 8) | s);
-            float x = rnd.nextInt(N), y = rnd.nextInt(N);
-            c.drawRect(x, y, x + 2, y + 2, p);
-        }
-        p.setColor(0x55000000);                                     // horizontal tile rows
-        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y, N, y + 2.5f, p); }
-        p.setColor(0x33000000);                                     // staggered vertical seams
-        for (int row = 0; row < 12; row++) {
-            float y = row * N / 12f, off = (row % 2) * (N / 16f);
-            for (int col = 0; col <= 8; col++) { float x = col * N / 8f + off; c.drawRect(x, y, x + 1.5f, y + N / 12f, p); }
+        int courses = 9;                                            // overlapping pantile rows
+        float ch = N / (float) courses;                            // course height
+        int tiles = 7;                                             // pantiles across a course
+        float tw = N / (float) tiles;                             // tile width
+        for (int row = 0; row < courses; row++) {
+            float y0 = row * ch;
+            float off = (row % 2) * (tw * 0.5f);                  // stagger alternate courses
+            for (int col = -1; col <= tiles; col++) {             // weathered tile bodies (per-tile brightness)
+                float x0 = col * tw + off;
+                int s = cl255(0xE4 + rnd.nextInt(28) - 14);
+                p.setColor(0xFF000000 | (s << 16) | (s << 8) | s);
+                c.drawRect(x0, y0, x0 + tw, y0 + ch, p);
+            }
+            p.setColor(0x55FFFFFF);                               // crest highlight at the top of each course
+            c.drawRect(0, y0, N, y0 + ch * 0.16f, p);
+            p.setColor(0x78000000);                               // deep overlap shadow where the next course tucks under
+            c.drawRect(0, y0 + ch * 0.80f, N, y0 + ch, p);
+            p.setColor(0x4D000000);                               // vertical grooves between pantiles
+            for (int col = 0; col <= tiles; col++) {
+                float x = col * tw + off;
+                c.drawRect(x - 1.3f, y0, x + 1.3f, y0 + ch, p);
+            }
+            p.setColor(0x26FFFFFF);                               // barrel sheen down each tile centre
+            for (int col = -1; col <= tiles; col++) {
+                float x = col * tw + off + tw * 0.5f;
+                c.drawRect(x - tw * 0.10f, y0 + ch * 0.16f, x + tw * 0.10f, y0 + ch * 0.80f, p);
+            }
         }
         return b;
     }
