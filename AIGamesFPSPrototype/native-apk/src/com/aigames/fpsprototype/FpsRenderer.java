@@ -3954,7 +3954,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                        pfDef(t,27,0.30f),                                   // [26] foundation height (0 = none)
                                        pfDef(t,28,0.42f), pfDef(t,29,0.40f), pfDef(t,30,0.40f), // [27-29] foundation colour
                                        pfDef(t,31,-1f), pfDef(t,32,-1f), pfDef(t,33,-1f),   // [30-32] trim band colour (-1 = none)
-                                       pfDef(t,34,1f)});                                    // [33] storeys (1 = no dividers)
+                                       pfDef(t,34,1f),                                      // [33] storeys (1 = no dividers)
+                                       pfDef(t,35,0f)});                                    // [34] facade material 0 plaster·1 brick·2 stone·3 timber
                 } else if (t[0].equals("B") && t.length >= 9) {
                     // cx cz w h d r g b [yawDeg]  -> ground box centred at y = h/2 (yaw = visual rotation)
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
@@ -3988,8 +3989,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (rr < 0f) { rr = 0.69f; rg = 0.31f; rb = 0.16f; }     // default terracotta roof
                 float gr = hh[18], gg = hh[19], gb = hh[20];
                 if (gr < 0f) { gr = GLASS_DEF[0]; gg = GLASS_DEF[1]; gb = GLASS_DEF[2]; }   // default muted glass
+                int mat = (int) hh[34];                                  // facade material from the level (0 = plaster)
+                int dStyle = mat == 0 ? 1 : (mat == 1 ? 0 : (mat == 2 ? 2 : 3));   // door style follows the material, like the procedural town
                 addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
-                            hh[21], hh[22], hh[23], hh[24], hh[25]);      // doorW doorH doorR doorG doorB
+                            hh[21], hh[22], hh[23], hh[24], hh[25], dStyle, mat);      // doorW doorH doorR doorG doorB | doorStyle material
                 houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
                             gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21]});  // [24] door width
             }

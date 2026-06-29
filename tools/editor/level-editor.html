@@ -99,6 +99,7 @@
       <div class="row hOnly"><label>Überstand</label><input type="range" id="pOver" min="0" max="1" step="0.05" style="flex:1"><label style="width:auto;color:var(--mut)"><input type="checkbox" id="pOverAuto"> auto</label></div>
       <div class="row hOnly"><label>Fenster</label><select id="pWin"><option value="0">keine</option><option value="1">wenig</option><option value="2">normal</option><option value="3">viele</option></select></div>
       <div class="row hOnly"><label>Fenstergröße</label><input type="range" id="pWinSize" min="0.5" max="1.6" step="0.05" style="flex:1"></div>
+      <div class="row hOnly"><label>Material</label><select id="pMat"><option value="0">Putz</option><option value="1">Ziegel</option><option value="2">Stein</option><option value="3">Holz</option></select></div>
       <div class="row hOnly"><label>Schornstein</label><select id="pChim"><option value="-1">auto</option><option value="1">an</option><option value="0">aus</option></select></div>
       <div class="row hOnly"><label>Tür</label>
         <div class="door4">
@@ -260,7 +261,8 @@ function parse(text){
         foundH:(n.length>26?n[26]:0.30),
         foundC:(n.length>29)?[n[27],n[28],n[29]]:[0.42,0.40,0.40],
         trimOn:(n.length>32&&n[30]>=0), trimC:(n.length>32&&n[30]>=0)?[n[30],n[31],n[32]]:[0.95,0.93,0.86],
-        storeys:(n.length>33?(n[33]|0):1)}));
+        storeys:(n.length>33?(n[33]|0):1),
+        material:(n.length>34?(n[34]|0):0)}));   // v5 facade material
     }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]],yaw:(n.length>8?n[8]:0)});
     else if(t[0]==='R'&&n.length>=4) out.push({type:'road',x1:n[0],z1:n[1],x2:n[2],z2:n[3],width:(n.length>4?n[4]:3.4)});
@@ -270,7 +272,7 @@ function parse(text){
   return out;
 }
 function serialize(){
-  let s='# AIGames level v4 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys\n';
+  let s='# AIGames level v5 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys material(0Putz 1Ziegel 2Stein 3Holz)\n';
   const f=v=>(Math.round(v*1000)/1000).toString();
   const sv=sunVec();
   s+=`SET skyHorizon ${f(world.skyH[0])} ${f(world.skyH[1])} ${f(world.skyH[2])}\n`;
@@ -286,7 +288,7 @@ function serialize(){
   for(const o of objs) if(o.type==='fence') s+=`F ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
   for(const o of objs) if(o.type==='house'){ fillHouse(o); const rc=o.roofC||[0.69,0.31,0.16];
     const trim = o.trimOn ? `${f(o.trimC[0])} ${f(o.trimC[1])} ${f(o.trimC[2])}` : '-1 -1 -1';
-    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0}\n`; }
+    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0} ${o.material|0}\n`; }
   return s;
 }
 function newObj(kind,wx,wz){
@@ -310,6 +312,7 @@ function fillHouse(o){ if(o.type!=='house')return o;
   if(o.foundH==null)o.foundH=0.30; if(!o.foundC) o.foundC=[0.42,0.40,0.40];  // foundation plinth
   if(o.trimOn==null)o.trimOn=false; if(!o.trimC) o.trimC=[0.95,0.93,0.86];   // eave trim band
   if(o.storeys==null)o.storeys=1;                              // storey divider lines
+  if(o.material==null)o.material=0;                            // facade material 0 Putz·1 Ziegel·2 Stein·3 Holz
   return o; }
 const snap=v=>document.getElementById('snap').checked?Math.round(v*2)/2:Math.round(v*1000)/1000;
 
@@ -437,6 +440,28 @@ function gableRoof(o){
   if(ridgeX) m.rotation.y=Math.PI/2;
   return m;
 }
+// --- canvas textures shared by every window (match the game's baked bitmaps) ---
+let _winTex=null,_intTex=null,_matTex={};
+function winTexture(){ if(_winTex) return _winTex;
+  const N=128,cv=document.createElement('canvas'); cv.width=cv.height=N; const c=cv.getContext('2d');
+  c.fillStyle='#f2f0ea'; c.fillRect(0,0,N,N);                                 // bright frame (opaque)
+  const m=N*0.17,gl=m,gr=N-m,gt=m,gb=N-m,gw=gr-gl,gh=gb-gt;
+  c.fillStyle='#d2dae2'; c.fillRect(gl,gt,gw,gh);                             // light glass
+  c.fillStyle='rgba(255,255,255,0.40)'; c.fillRect(gl,gt,gw,N*0.5-gt);       // sky sheen on the upper panes
+  c.globalCompositeOperation='destination-out'; c.fillStyle='rgba(0,0,0,0.55)'; c.fillRect(gl,gt,gw,gh);  // punch glass alpha -> see-through
+  c.globalCompositeOperation='source-over';
+  c.fillStyle='#f2f0ea'; c.fillRect(N*0.5-3,gt,6,gh); c.fillRect(gl,N*0.5-3,gw,6);   // cross mullion (opaque, on top)
+  c.lineWidth=5; c.strokeStyle='#f2f0ea'; c.strokeRect(gl,gt,gw,gh);          // inner border
+  _winTex=new THREE.CanvasTexture(cv); return _winTex;
+}
+function intTexture(){ if(_intTex) return _intTex;
+  const N=64,cv=document.createElement('canvas'); cv.width=cv.height=N; const c=cv.getContext('2d');
+  const grd=c.createLinearGradient(0,0,0,N); grd.addColorStop(0,'#1c1e28'); grd.addColorStop(1,'#2b2d36');
+  c.fillStyle=grd; c.fillRect(0,0,N,N);                                       // dim room, darker near the ceiling
+  c.fillStyle='rgba(255,200,128,0.30)'; c.beginPath(); c.arc(N*0.52,N*0.60,N*0.20,0,7); c.fill();   // warm lamp glow
+  c.fillStyle='#14171f'; c.fillRect(N*0.16,N*0.74,N*0.70,N*0.26);            // furniture/sill silhouette
+  _intTex=new THREE.CanvasTexture(cv); return _intTex;
+}
 function houseWindows3D(o,g){
   if(o.win===0) return;
   const wsc=clamp(o.winSize||1,0.5,1.6), winW=0.85*wsc;
@@ -444,19 +469,30 @@ function houseWindows3D(o,g){
   const winH=Math.min(1.05*wsc, floorH*0.62);
   let colDiv; if(o.win===1) colDiv=2.3; else if(o.win>=3) colDiv=1.25; else colDiv=1.7;
   const gl=o.glass||[0.50,0.57,0.66];                          // per-house glass tint (matches game)
-  const mat=new THREE.MeshLambertMaterial({color:new THREE.Color(Math.min(1,gl[0]*1.15),Math.min(1,gl[1]*1.15),Math.min(1,gl[2]*1.15)),side:THREE.DoubleSide});
+  const glassMat=new THREE.MeshPhongMaterial({map:winTexture(),transparent:true,depthWrite:false,shininess:80,specular:0x556677,side:THREE.DoubleSide,
+    color:new THREE.Color(Math.min(1,gl[0]*1.3+0.25),Math.min(1,gl[1]*1.3+0.25),Math.min(1,gl[2]*1.3+0.25))});
+  const intMat=new THREE.MeshBasicMaterial({map:intTexture(),side:THREE.DoubleSide});   // dim room behind the glass
+  const sillMat=new THREE.MeshLambertMaterial({color:0xece7d8});
   const walls=[{ax:0,s:1,span:o.w},{ax:0,s:-1,span:o.w},{ax:1,s:1,span:o.d},{ax:1,s:-1,span:o.d}];  // +z -z +x -x = door 0..3
-  for(let wi=0;wi<4;wi++){ const W=walls[wi], doorWall=(o.door===wi);
+  for(let wi=0;wi<4;wi++){ const W=walls[wi], doorWall=(o.door===wi), wallO=(W.ax===0?o.d/2:o.w/2);
     const cols=Math.max(1,Math.floor((W.span-0.6)/colDiv)), colGap=W.span/cols;
     for(let fi=0;fi<storeys;fi++){ let wy=floorH*(fi+0.5);          // one window row per floor -> visible Etagen
       if(wy+winH/2>o.h-0.2) continue;
       if(wy-winH/2<foundH+0.12) wy=foundH+0.12+winH/2;
       for(let ci=0;ci<cols;ci++){ const t=-W.span/2+colGap*(ci+0.5);
         if(doorWall&&fi===0&&Math.abs(t)<1.4*Math.max(1,wsc)) continue;
-        const pane=new THREE.Mesh(new THREE.PlaneGeometry(winW,winH),mat);
-        if(W.ax===0) pane.position.set(t,wy,W.s*(o.d/2+0.06));
-        else { pane.position.set(W.s*(o.w/2+0.06),wy,t); pane.rotation.y=Math.PI/2; }
-        g.add(pane);
+        const intP=new THREE.Mesh(new THREE.PlaneGeometry(winW*0.86,winH*0.86),intMat);   // dark interior (recessed)
+        const pane=new THREE.Mesh(new THREE.PlaneGeometry(winW,winH),glassMat);           // glass + frame (proud)
+        const sill=new THREE.Mesh(new THREE.BoxGeometry(winW+0.18,0.08,0.16),sillMat);    // sill ledge below
+        if(W.ax===0){ const z=W.s*wallO;
+          intP.position.set(t,wy,z+W.s*0.02); pane.position.set(t,wy,z+W.s*0.10); sill.position.set(t,wy-winH/2-0.04,z+W.s*0.07);
+        } else { const x=W.s*wallO;
+          intP.position.set(x+W.s*0.02,wy,t); intP.rotation.y=Math.PI/2;
+          pane.position.set(x+W.s*0.10,wy,t); pane.rotation.y=Math.PI/2;
+          sill.position.set(x+W.s*0.07,wy-winH/2-0.04,t);
+        }
+        intP.userData.skip=true; sill.userData.skip=true;
+        g.add(intP); g.add(pane); g.add(sill);
       }
     }
   }
@@ -480,6 +516,20 @@ function houseBands3D(o,g){
   const st=Math.max(1,Math.min(8,o.storeys|0));
   if(st>=2){ const bc=o.trimOn?o.trimC:[0.86,0.83,0.77]; for(let k=1;k<st;k++) bandRing3D(g,o.h*k/st,o.w,o.d,0.06,0.04,bc); }
 }
+// facade material textures: 1 brick · 2 stone · 3 timber (match the game's makeBrick/Stone/Siding bitmaps)
+function matTexture(mat){ if(_matTex[mat]) return _matTex[mat];
+  const N=128,cv=document.createElement('canvas'); cv.width=cv.height=N; const c=cv.getContext('2d');
+  if(mat===1){ c.fillStyle='#9a5440'; c.fillRect(0,0,N,N); c.fillStyle='#7a3f30';
+    for(let row=0;row<10;row++){ const y=row*N/10, off=(row%2)*N/8; c.fillRect(0,y,N,2.5);
+      for(let k=0;k<=8;k++) c.fillRect((k*N/8+off)%N,y,2.5,N/10); } }
+  else if(mat===2){ c.fillStyle='#9e988d'; c.fillRect(0,0,N,N);
+    for(let i=0;i<46;i++){ const x=(i*53)%N, y=(i*31)%N, s=N/8; c.fillStyle=i%2?'#8c867c':'#aaa496'; c.fillRect(x,y,s,N/10);
+      c.strokeStyle='#6e685f'; c.lineWidth=1.5; c.strokeRect(x,y,s,N/10); } }
+  else { c.fillStyle='#86643f'; c.fillRect(0,0,N,N); c.fillStyle='#634a2e';
+    for(let k=0;k<8;k++) c.fillRect(k*N/8,0,2.5,N);
+    c.fillStyle='rgba(0,0,0,0.12)'; for(let i=0;i<28;i++) c.fillRect(0,(i*37)%N,N,1); }
+  const tx=new THREE.CanvasTexture(cv); tx.wrapS=tx.wrapT=THREE.RepeatWrapping; tx.repeat.set(2,2); _matTex[mat]=tx; return tx;
+}
 function mesh3D(o){
   if(o.type==='road'){ const dx=o.x2-o.x1, dz=o.z2-o.z1, len=Math.hypot(dx,dz)||0.01;
     const geo=new THREE.PlaneGeometry(o.width,len); geo.rotateX(-Math.PI/2);
@@ -498,7 +548,17 @@ function mesh3D(o){
   }
   if(o.type==='house'){
     const g=new THREE.Group(); g.position.set(o.x,0,o.z);
-    const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); body.position.y=o.h/2; g.add(body);
+    const mat=o.material|0;
+    const shadow=new THREE.Mesh(new THREE.CircleGeometry(Math.max(o.w,o.d)*0.62,22),new THREE.MeshBasicMaterial({color:0x101014,transparent:true,opacity:0.22,depthWrite:false}));
+    shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02; shadow.userData.skip=true; g.add(shadow);   // ground contact shadow
+    const bodyMat = mat>0 ? new THREE.MeshLambertMaterial({map:matTexture(mat)})   // brick/stone/timber carry their own colour
+                          : new THREE.MeshLambertMaterial({color:col(o.c)});       // plaster: per-house tint
+    const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),bodyMat); body.position.y=o.h/2; g.add(body);
+    // flagstone front path from the door out toward the street (context, like the game's auto-path)
+    const pmat=new THREE.MeshLambertMaterial({color:0x8d877b});
+    const pnx=(o.door===2?1:(o.door===3?-1:0)), pnz=(o.door===0?1:(o.door===1?-1:0));
+    for(let k=0;k<4;k++){ const u=0.55+k*0.72, tile=new THREE.Mesh(new THREE.BoxGeometry(pnx!==0?0.52:0.96,0.06,pnz!==0?0.52:0.96),pmat);
+      tile.position.set(pnx*(o.w/2)+pnx*u,0.04,pnz*(o.d/2)+pnz*u); tile.userData.skip=true; g.add(tile); }
     const cap=new THREE.Mesh(new THREE.BoxGeometry(o.w+0.3,0.3,o.d+0.3),new THREE.MeshLambertMaterial({color:col([o.c[0]*0.9,o.c[1]*0.9,o.c[2]*0.95])})); cap.position.y=o.h+0.15; g.add(cap);  // eave band (matches game)
     g.add(gableRoof(o));
     const ddw=clamp(o.doorW||1.9,0.8,Math.min(o.w,o.d)-0.6), ddh=clamp(o.doorH||2.3,1.6,o.h-0.3);
@@ -616,6 +676,7 @@ function refreshPanel(){
     pFoundH.value=sel.foundH; pFoundCol.value=hex(sel.foundC);
     pTrimOn.checked=sel.trimOn; pTrimCol.value=hex(sel.trimC); pTrimCol.disabled=!sel.trimOn;
     pStoreys.value=sel.storeys; document.getElementById('pStoreysV').textContent=sel.storeys;
+    pMat.value=sel.material||0;
   }
   document.querySelectorAll('#sw div').forEach((d,i)=>d.classList.toggle('on',i<PALETTE.length&&hex(PALETTE[i])===hex(sel.c)));
   document.querySelectorAll('.door4 button').forEach(b=>b.style.outline=(+b.dataset.door===sel.door)?'2px solid #39d4ff':'none');
@@ -647,6 +708,7 @@ pWin.onchange=()=>{ if(sel){ pushUndo(); sel.win=+pWin.value; live(); } };
 pWinSize.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pWinSize.oninput=()=>{ if(sel){ sel.winSize=parseFloat(pWinSize.value); live(); } };
 pChim.onchange=()=>{ if(sel){ pushUndo(); sel.chim=+pChim.value; live(); } };
+pMat.onchange=()=>{ if(sel&&sel.type==='house'){ pushUndo(); sel.material=+pMat.value; live(); } };
 // Etappe D per-house detail bindings (colour pickers + ranges, house-only)
 const hColBind=(id,key)=>{ const el=document.getElementById(id); el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
   el.oninput=()=>{ if(sel&&sel.type==='house'){ sel[key]=hex2c(el.value); live(); } }; };
