@@ -137,7 +137,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
-    private int brickTex, stoneTex, sidingTex;   // per-archetype facade materials (Stage 1 graphics upgrade)
+    private int brickTex, stoneTex, sidingTex, gravelTex;   // per-archetype facade materials + the gravel front path
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts;
@@ -460,6 +460,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         brickTex = uploadTexture(makeBrickBitmap());
         stoneTex = uploadTexture(makeStoneBitmap());
         sidingTex = uploadTexture(makeSidingBitmap());
+        gravelTex = uploadTexture(makeGravelBitmap());
         woodTex = uploadTexture(makeWoodBitmap());
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
 
@@ -568,7 +569,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (b.length > 10 && b[10] != 0f) continue;       // collision-only proxy (interior furniture) — drawn via interiorMesh
             int mat = (b.length > 11) ? (int) b[11] : 0;      // 0 plaster (palette-tinted) · 1 brick · 2 stone · 3 timber
             if (mat != lastMat) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, mat == 1 ? brickTex : mat == 2 ? stoneTex : mat == 3 ? sidingTex : wallTex);
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, mat == 1 ? brickTex : mat == 2 ? stoneTex : mat == 3 ? sidingTex : mat == 4 ? gravelTex : wallTex);
                 lastMat = mat;
             }
             Matrix.setIdentityM(model, 0);
@@ -3993,8 +3994,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float plen = frontPathLen(fx, fz, nx, nz);
             // the paved front path: a flat, walkable light slab from the door out to the street
             float pcx = fx + nx * plen * 0.5f, pcz = fz + nz * plen * 0.5f;
-            if (nx != 0f) L.add(new float[]{pcx, 0.02f, pcz, plen, 0.04f, 1.1f, 0.75f, 0.74f, 0.70f});
-            else          L.add(new float[]{pcx, 0.02f, pcz, 1.1f, 0.04f, plen, 0.75f, 0.74f, 0.70f});
+            if (nx != 0f) L.add(new float[]{pcx, 0.02f, pcz, plen, 0.04f, 1.1f, 1f, 1f, 1f, 0f, 0f, 4f});   // gravel path (material 4)
+            else          L.add(new float[]{pcx, 0.02f, pcz, 1.1f, 0.04f, plen, 1f, 1f, 1f, 0f, 0f, 4f});
             // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
             for (int side = -1; side <= 1; side += 2) {
                 float off = 1.5f * side;
@@ -4228,20 +4229,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         doors.add(new float[]{dcx, (leafGap + doorH) * 0.5f, dcz, doorW * 0.5f - 0.05f, (doorH - leafGap) * 0.5f, 0.07f, axis, 1f,
                 dr, dg, db, doorStyle, swing});
         // door surround (architrave: jambs + lintel), slightly proud, in a light stone trim — frames the opening
-        float fr = 0.84f, fg = 0.82f, fb = 0.76f, jb = 0.13f, pr = 0.10f, fy = doorH * 0.5f;
+        // a low stone doorstep only (no proud architrave bars — they read as beams left behind when the door swings)
+        float jb = 0.13f;
         float nnx = doorSide == 2 ? 1 : (doorSide == 3 ? -1 : 0), nnz = doorSide == 0 ? 1 : (doorSide == 1 ? -1 : 0);
         if (axis == 0) {
             float fcz = dcz + nnz * (t * 0.5f - 0.02f);
-            L.add(new float[]{dcx - (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
-            L.add(new float[]{dcx + (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
-            L.add(new float[]{dcx, doorH + 0.09f, fcz, doorW + jb * 2f, 0.18f, t + pr, fr, fg, fb});
-            L.add(new float[]{dcx, 0.015f, fcz, doorW + jb * 2f, 0.03f, t + 0.06f, 0.55f, 0.53f, 0.49f}); // flush low doorstep (leaf clears it)
+            L.add(new float[]{dcx, 0.015f, fcz, doorW + jb * 2f, 0.03f, t + 0.06f, 0.55f, 0.53f, 0.49f}); // flush low doorstep
         } else {
             float fcx = dcx + nnx * (t * 0.5f - 0.02f);
-            L.add(new float[]{fcx, fy, dcz - (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
-            L.add(new float[]{fcx, fy, dcz + (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
-            L.add(new float[]{fcx, doorH + 0.09f, dcz, t + pr, 0.18f, doorW + jb * 2f, fr, fg, fb});
-            L.add(new float[]{fcx, 0.015f, dcz, t + 0.06f, 0.03f, doorW + jb * 2f, 0.55f, 0.53f, 0.49f}); // flush low doorstep (leaf clears it)
+            L.add(new float[]{fcx, 0.015f, dcz, t + 0.06f, 0.03f, doorW + jb * 2f, 0.55f, 0.53f, 0.49f}); // flush low doorstep
         }
         if (doorStyle == 3) {                              // striped shop awning over the storefront door
             float awY = Math.min(doorH + 0.22f, h - 0.15f), aw = doorW + 0.5f, proj = 0.85f;
@@ -4794,6 +4790,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         p.setColor(0x1C000000);                                     // vertical grain streaks
         for (int k = 0; k < 220; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N), len = 8 + rnd.nextInt(26); c.drawRect(x, y, x + 1.2f, y + len, p); }
+        return b;
+    }
+
+    /** Grey gravel for the front paths (carries its own colour; world-UV tiled). */
+    private static Bitmap makeGravelBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFF6F6E6A);                                    // dark grey substrate between the stones
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(31);
+        for (int k = 0; k < 1500; k++) {                            // packed pebbles, varied grey
+            int g = 0x82 + rnd.nextInt(58) - 24;
+            p.setColor(0xFF000000 | (cl255(g + 6) << 16) | (cl255(g) << 8) | cl255(g - 8));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 1.6f + rnd.nextFloat() * 3.4f, p);
+        }
+        p.setColor(0x33000000);                                     // dark gaps
+        for (int k = 0; k < 320; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 0.8f + rnd.nextFloat() * 1.8f, p);
+        p.setColor(0x44FFFFFF);                                     // bright flecks
+        for (int k = 0; k < 320; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 0.7f + rnd.nextFloat() * 1.4f, p);
         return b;
     }
 
