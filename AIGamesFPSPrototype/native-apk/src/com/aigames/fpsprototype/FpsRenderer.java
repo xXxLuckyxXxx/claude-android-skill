@@ -3979,7 +3979,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     if (pick < 0.26f)      addLamp(L, sx, sz);                       // a lamp every few slots
                     else if (pick < 0.86f) {                                          // street tree — shrink near houses so the crown ends at the wall
                         float ts = Math.min(0.8f + rc.nextFloat() * 0.7f, houseClearance(houses, sx, sz) / 1.9f);
-                        if (ts >= 0.5f) trees.add(new float[]{sx, sz, ts}); }
+                        if (ts >= 0.5f && !blocksAnyDoorCrown(houses, sx, sz, 1.45f * ts)) trees.add(new float[]{sx, sz, ts}); }
                     // else: leave a gap so it isn't a solid wall of furniture
                 }
             }
@@ -3998,14 +3998,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             else          L.add(new float[]{pcx, 0.02f, pcz, 1.1f, 0.04f, plen, 1f, 1f, 1f, 0f, 0f, 4f});
             // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
             for (int side = -1; side <= 1; side += 2) {
-                float off = 1.5f * side;
-                for (float u = 0.7f; u <= plen + 0.25f; u += 0.8f) {        // start out from the wall so the near unit isn't crown-capped away
+                float off = 1.9f * side;                                    // far enough that a low-hedge crown can't reach the doorway
+                for (float u = 0.7f; u <= plen + 0.25f; u += 0.8f) {
                     float bx = fx + nx * u + tnx * off, bz = fz + nz * u + tnz * off;
                     if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                     if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;                          // spawn lane
                     if (!clearOfHouses(houses, bx, bz, 0.05f)) continue;
-                    float ss = Math.min(0.30f + rc.nextFloat() * 0.12f, houseClearance(houses, bx, bz) / 1.9f);
-                    if (ss < 0.22f) continue;
+                    float ss = Math.min(0.26f + rc.nextFloat() * 0.08f, houseClearance(houses, bx, bz) / 1.9f);
+                    if (ss < 0.20f) continue;
+                    if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                        // crown must never reach a doorway
                     trees.add(new float[]{bx, bz, ss});
                 }
             }
@@ -4018,9 +4019,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float bx = cx + tnx * off + nx * out, bz = cz + tnz * off + nz * out;
                 if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                 if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
-                if (blocksDoor(h, bx, bz)) continue;                                                     // never on the door/path
                 float ss = Math.min(0.42f + rc.nextFloat() * 0.38f, houseClearance(houses, bx, bz) / 1.9f);
                 if (ss < 0.3f) continue;
+                if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                            // crown (not just centre) must clear every doorway
                 trees.add(new float[]{bx, bz, ss});
             }
         }
@@ -4080,6 +4081,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
     private static boolean blocksAnyDoor(List<float[]> houses, float x, float z) {
         for (float[] h : houses) if (blocksDoor(h, x, z)) return true;
+        return false;
+    }
+    /** Like blocksDoor but inflated by a crown radius cr — true if a plant's CROWN would reach into the doorway. */
+    private static boolean blocksDoorCrown(float[] h, float x, float z, float cr) {
+        float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f; int ds = (int) h[5];
+        float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);
+        float fx = cx + nx * hw, fz = cz + nz * hd;
+        float outD = (x - fx) * nx + (z - fz) * nz, lat = (x - fx) * (-nz) + (z - fz) * nx;
+        return outD > -0.25f - cr && outD < 2.3f + cr && Math.abs(lat) < 1.4f + cr;
+    }
+    private static boolean blocksAnyDoorCrown(List<float[]> houses, float x, float z, float cr) {
+        for (float[] h : houses) if (blocksDoorCrown(h, x, z, cr)) return true;
         return false;
     }
     /** Gap from (x,z) to the nearest house footprint (>0 = outside). Used to cap a tree's crown so it ends at the wall. */
