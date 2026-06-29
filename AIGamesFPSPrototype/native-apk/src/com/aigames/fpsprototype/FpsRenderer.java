@@ -3998,7 +3998,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
             for (int side = -1; side <= 1; side += 2) {
                 float off = 1.5f * side;
-                for (float u = 0.4f; u <= plen + 0.2f; u += 0.85f) {
+                for (float u = 0.7f; u <= plen + 0.25f; u += 0.8f) {        // start out from the wall so the near unit isn't crown-capped away
                     float bx = fx + nx * u + tnx * off, bz = fz + nz * u + tnz * off;
                     if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                     if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;                          // spawn lane
