@@ -4130,6 +4130,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
         }
         // 1b. front gardens: a paved path from each door to the street, plants flanking it + on the side grass
+        java.util.Random pathRnd = new java.util.Random(99173);   // dedicated stream so paving doesn't shift plant/bench RNG
         for (float[] h : houses) {
             float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f;
             int ds = (int) h[5];
@@ -4137,10 +4138,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float tnx = nz, tnz = nx;                                                                    // tangent along the wall
             float fx = cx + nx * hw, fz = cz + nz * hd;                                                  // door face centre
             float plen = frontPathLen(fx, fz, nx, nz);
-            // the paved front path: a flat, walkable light slab from the door out to the street
-            float pcx = fx + nx * plen * 0.5f, pcz = fz + nz * plen * 0.5f;
-            if (nx != 0f) L.add(new float[]{pcx, 0.02f, pcz, plen, 0.04f, 1.1f, 1f, 1f, 1f, 0f, 0f, 4f});   // gravel path (material 4)
-            else          L.add(new float[]{pcx, 0.02f, pcz, 1.1f, 0.04f, plen, 1f, 1f, 1f, 0f, 0f, 4f});
+            // a flagstone front path: stone slabs evenly fitted between door and kerb (varied grey, grass gaps, slight jitter) -> paving, not a laid-out rug
+            float u0 = 0.22f, span = Math.max(0.3f, (plen - 0.22f) - u0), pw = 1.06f;
+            int nslab = Math.max(1, Math.round(span / 0.72f));
+            float seg = span / nslab;
+            for (int sIx = 0; sIx < nslab; sIx++) {
+                float u = u0 + (sIx + 0.5f) * seg;                           // slab centre, door -> kerb (stays off the asphalt)
+                float jx = (pathRnd.nextFloat() - 0.5f) * 0.06f;            // slight hand-laid lateral jitter
+                float scx = fx + nx * u + tnx * jx, scz = fz + nz * u + tnz * jx;
+                float sl = seg * 0.80f;                                      // ~20% grass gap between slabs
+                float g = 0.55f + pathRnd.nextFloat() * 0.17f;              // varied grey stone (slightly warm)
+                if (nx != 0f) L.add(new float[]{scx, 0.02f, scz, sl, 0.05f, pw, g, g * 0.98f, g * 0.93f, 0f, 0f, 0f});
+                else          L.add(new float[]{scx, 0.02f, scz, pw, 0.05f, sl, g, g * 0.98f, g * 0.93f, 0f, 0f, 0f});
+            }
             // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
             float flankBase = (h.length > 24 ? h[24] : 1.9f) * 0.5f + 0.7f;   // just outside THIS door's real corridor + a low-hedge crown
             for (int side = -1; side <= 1; side += 2) {
