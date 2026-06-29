@@ -4196,7 +4196,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (doorSide == 2) { dcx = cx + w * 0.5f; dcz = cz; axis = 1; }
         else                    { dcx = cx - w * 0.5f; dcz = cz; axis = 1; }
         float swing = (doorSide == 1 || doorSide == 2) ? -1f : 1f;   // sign that makes the leaf swing OUTWARD (away from interior furniture)
-        doors.add(new float[]{dcx, doorH * 0.5f, dcz, doorW * 0.5f - 0.05f, doorH * 0.5f, 0.07f, axis, 1f,
+        float leafGap = 0.06f;                                       // small gap under the leaf so it clears the doorstep when it swings
+        doors.add(new float[]{dcx, (leafGap + doorH) * 0.5f, dcz, doorW * 0.5f - 0.05f, (doorH - leafGap) * 0.5f, 0.07f, axis, 1f,
                 dr, dg, db, doorStyle, swing});
         // door surround (architrave: jambs + lintel), slightly proud, in a light stone trim — frames the opening
         float fr = 0.84f, fg = 0.82f, fb = 0.76f, jb = 0.13f, pr = 0.10f, fy = doorH * 0.5f;
@@ -4206,13 +4207,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             L.add(new float[]{dcx - (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
             L.add(new float[]{dcx + (doorW * 0.5f + jb * 0.5f), fy, fcz, jb, doorH + 0.06f, t + pr, fr, fg, fb});
             L.add(new float[]{dcx, doorH + 0.09f, fcz, doorW + jb * 2f, 0.18f, t + pr, fr, fg, fb});
-            L.add(new float[]{dcx, 0.02f, fcz, doorW + jb * 2f, 0.04f, t + pr + 0.10f, 0.55f, 0.53f, 0.49f}); // low stone doorstep
+            L.add(new float[]{dcx, 0.015f, fcz, doorW + jb * 2f, 0.03f, t + 0.06f, 0.55f, 0.53f, 0.49f}); // flush low doorstep (leaf clears it)
         } else {
             float fcx = dcx + nnx * (t * 0.5f - 0.02f);
             L.add(new float[]{fcx, fy, dcz - (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
             L.add(new float[]{fcx, fy, dcz + (doorW * 0.5f + jb * 0.5f), t + pr, doorH + 0.06f, jb, fr, fg, fb});
             L.add(new float[]{fcx, doorH + 0.09f, dcz, t + pr, 0.18f, doorW + jb * 2f, fr, fg, fb});
-            L.add(new float[]{fcx, 0.02f, dcz, t + pr + 0.10f, 0.04f, doorW + jb * 2f, 0.55f, 0.53f, 0.49f}); // low stone doorstep
+            L.add(new float[]{fcx, 0.015f, dcz, t + 0.06f, 0.03f, doorW + jb * 2f, 0.55f, 0.53f, 0.49f}); // flush low doorstep (leaf clears it)
         }
         if (doorStyle == 3) {                              // striped shop awning over the storefront door
             float awY = Math.min(doorH + 0.22f, h - 0.15f), aw = doorW + 0.5f, proj = 0.85f;
