@@ -3983,34 +3983,43 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 }
             }
         }
-        // 1b. front-garden hedges + a few shrubs around each house (vegetation mesh → non-colliding)
+        // 1b. front gardens: a paved path from each door to the street, plants flanking it + on the side grass
         for (float[] h : houses) {
             float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f;
             int ds = (int) h[5];
-            // a tidy hedge along the street-facing (door) edge for ~40% of houses, with a gap for the path
-            if (rc.nextFloat() < 0.4f) {
-                float nx = ds == 2 ? 1 : (ds == 3 ? -1 : 0), nz = ds == 0 ? 1 : (ds == 1 ? -1 : 0);
-                float tx = nz, tz = nx;
-                float front = (nx != 0 ? hw : hd) + 1.1f, span = (nx != 0 ? hd : hw) + 0.5f;
-                for (float s = -span; s <= span + 0.01f; s += 0.7f) {
-                    if (Math.abs(s) < 1.4f) continue;                           // wide path gap so even shop doors stay clear
-                    float bx = cx + nx * front + tx * s, bz = cz + nz * front + tz * s;
+            float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);   // door normal (outward)
+            float tnx = nz, tnz = nx;                                                                    // tangent along the wall
+            float fx = cx + nx * hw, fz = cz + nz * hd;                                                  // door face centre
+            float plen = frontPathLen(fx, fz, nx, nz);
+            // the paved front path: a flat, walkable light slab from the door out to the street
+            float pcx = fx + nx * plen * 0.5f, pcz = fz + nz * plen * 0.5f;
+            if (nx != 0f) L.add(new float[]{pcx, 0.02f, pcz, plen, 0.04f, 1.1f, 0.75f, 0.74f, 0.70f});
+            else          L.add(new float[]{pcx, 0.02f, pcz, 1.1f, 0.04f, plen, 0.75f, 0.74f, 0.70f});
+            // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
+            for (int side = -1; side <= 1; side += 2) {
+                float off = 1.5f * side;
+                for (float u = 0.4f; u <= plen + 0.2f; u += 0.85f) {
+                    float bx = fx + nx * u + tnx * off, bz = fz + nz * u + tnz * off;
                     if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
-                    if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
-                    if (!clearOfHouses(houses, bx, bz, 0f)) continue;
-                    trees.add(new float[]{bx, bz, 0.34f});                       // low hedge unit
+                    if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;                          // spawn lane
+                    if (!clearOfHouses(houses, bx, bz, 0.05f)) continue;
+                    float ss = Math.min(0.30f + rc.nextFloat() * 0.12f, houseClearance(houses, bx, bz) / 1.9f);
+                    if (ss < 0.22f) continue;
+                    trees.add(new float[]{bx, bz, ss});
                 }
             }
-            // a couple of scattered shrubs for the rest of the lot
+            // a couple of fuller shrubs out on the SIDE grass (off the door + path, crown sized to clear walls)
             int n = 1 + rc.nextInt(2);
             for (int b = 0; b < n; b++) {
-                float ang = rc.nextFloat() * 6.2832f, rr = Math.max(hw, hd) + 0.6f + rc.nextFloat() * 1.0f;
-                float bx = cx + (float) Math.cos(ang) * rr, bz = cz + (float) Math.sin(ang) * rr;
+                float side = rc.nextBoolean() ? 1f : -1f;
+                float off = (Math.max(hw, hd) + 0.8f + rc.nextFloat() * 0.8f) * side;                    // out past the house side
+                float out = 0.3f + rc.nextFloat() * 1.6f;                                                // a bit toward the front
+                float bx = cx + tnx * off + nx * out, bz = cz + tnz * off + nz * out;
                 if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                 if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
-                float ss = Math.min(0.42f + rc.nextFloat() * 0.38f, houseClearance(houses, bx, bz) / 1.9f);  // crown ends at the wall, not through it
-                if (ss < 0.3f) continue;                                    // too close to a wall — drop it
-                if (blocksDoor(h, bx, bz)) continue;                        // keep the doorway clear
+                if (blocksDoor(h, bx, bz)) continue;                                                     // never on the door/path
+                float ss = Math.min(0.42f + rc.nextFloat() * 0.38f, houseClearance(houses, bx, bz) / 1.9f);
+                if (ss < 0.3f) continue;
                 trees.add(new float[]{bx, bz, ss});
             }
         }
@@ -4080,6 +4089,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             m = Math.min(m, Math.max(dx, dz));
         }
         return m;
+    }
+    /** Length of the front path: from a door face outward (along its normal) to the kerb of the street it faces. */
+    private static float frontPathLen(float fx, float fz, float nx, float nz) {
+        float coord = nx != 0f ? fx : fz, dir = nx != 0f ? nx : nz, best = 1e9f;
+        for (float s : STREETS) { float dd = (s - coord) * dir; if (dd > 0.2f) best = Math.min(best, dd); }
+        if (best > 1e8f) return 2.0f;                       // no street ahead (map edge)
+        return clamp(best - ROAD_HALF, 1.0f, 5.0f);         // run out to the road edge
     }
 
     private static boolean clearOfHouses(List<float[]> houses, float x, float z, float margin) {
@@ -4908,7 +4924,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "      else if(an.x>an.z)       uv=vWorld.zy;" +                 // +/-X wall
         "      else                     uv=vWorld.xy;" +                 // +/-Z wall
         "      uv*=0.5;" +                                               // ~2 m per texture tile
-        "      ao=mix(0.55,1.0,smoothstep(0.0,0.6,vWorld.y));" +         // ground-contact darkening so houses sit in the world
+        "      if(abs(N.y)<0.5) ao=mix(0.55,1.0,smoothstep(0.0,0.6,vWorld.y));" +   // contact shade on WALLS only (not floors/paths)
         "    }" +
         "    vec3 tex=texture2D(uTex,uv).rgb;" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
