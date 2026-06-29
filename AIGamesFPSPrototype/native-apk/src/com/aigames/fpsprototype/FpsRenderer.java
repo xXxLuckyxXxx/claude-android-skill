@@ -3860,7 +3860,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
                             hh[21], hh[22], hh[23], hh[24], hh[25]);      // doorW doorH doorR doorG doorB
                 houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
-                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33]});
+                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21]});  // [24] door width
             }
             return true;
         } catch (Exception e) {
@@ -3944,7 +3944,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, 1, p[0], p[1], p[2], chimney ? 1 : 0,
                             doorW, doorH, dc[0], dc[1], dc[2], doorStyle, arch);   // arch -> facade material: 0 plaster·1 brick·2 stone·3 timber
                 houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
-                        GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
+                        GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys, doorW});  // [24] door width
                 if (rc.nextFloat() < 0.45f) {                      // a barrel / crate / planter tucked against a wall
                     float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.3f);
                     float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.3f);
@@ -3997,15 +3997,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (nx != 0f) L.add(new float[]{pcx, 0.02f, pcz, plen, 0.04f, 1.1f, 1f, 1f, 1f, 0f, 0f, 4f});   // gravel path (material 4)
             else          L.add(new float[]{pcx, 0.02f, pcz, 1.1f, 0.04f, plen, 1f, 1f, 1f, 0f, 0f, 4f});
             // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
+            float flankBase = (h.length > 24 ? h[24] : 1.9f) * 0.5f + 0.7f;   // just outside THIS door's real corridor + a low-hedge crown
             for (int side = -1; side <= 1; side += 2) {
-                float off = 1.9f * side;                                    // far enough that a low-hedge crown can't reach the doorway
+                float off = flankBase * side;
                 for (float u = 0.7f; u <= plen + 0.25f; u += 0.8f) {
                     float bx = fx + nx * u + tnx * off, bz = fz + nz * u + tnz * off;
                     if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                     if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;                          // spawn lane
                     if (!clearOfHouses(houses, bx, bz, 0.05f)) continue;
-                    float ss = Math.min(0.26f + rc.nextFloat() * 0.08f, houseClearance(houses, bx, bz) / 1.9f);
-                    if (ss < 0.20f) continue;
+                    float ss = Math.min(0.22f + rc.nextFloat() * 0.07f, houseClearance(houses, bx, bz) / 1.9f);
+                    if (ss < 0.18f) continue;
                     if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                        // crown must never reach a doorway
                     trees.add(new float[]{bx, bz, ss});
                 }
@@ -4077,7 +4078,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float fx = cx + nx * hw, fz = cz + nz * hd;              // door-wall face centre
         float outD = (x - fx) * nx + (z - fz) * nz;             // metres out from the wall face (covers the swing arc)
         float lat  = (x - fx) * (-nz) + (z - fz) * nx;          // metres sideways along the wall
-        return outD > -0.25f && outD < 2.3f && Math.abs(lat) < 1.4f;
+        float doorW = h.length > 24 ? h[24] : 1.9f;             // the real door width drives a tight, correct corridor
+        return outD > -0.25f && outD < doorW + 0.35f && Math.abs(lat) < doorW * 0.5f + 0.2f;
     }
     private static boolean blocksAnyDoor(List<float[]> houses, float x, float z) {
         for (float[] h : houses) if (blocksDoor(h, x, z)) return true;
@@ -4089,7 +4091,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);
         float fx = cx + nx * hw, fz = cz + nz * hd;
         float outD = (x - fx) * nx + (z - fz) * nz, lat = (x - fx) * (-nz) + (z - fz) * nx;
-        return outD > -0.25f - cr && outD < 2.3f + cr && Math.abs(lat) < 1.4f + cr;
+        float doorW = h.length > 24 ? h[24] : 1.9f;
+        return outD > -0.25f - cr && outD < doorW + 0.35f + cr && Math.abs(lat) < doorW * 0.5f + 0.2f + cr;
     }
     private static boolean blocksAnyDoorCrown(List<float[]> houses, float x, float z, float cr) {
         for (float[] h : houses) if (blocksDoorCrown(h, x, z, cr)) return true;
