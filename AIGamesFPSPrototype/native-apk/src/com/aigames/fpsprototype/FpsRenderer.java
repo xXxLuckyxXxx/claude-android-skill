@@ -143,6 +143,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts;
     private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
     private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
+    private java.util.List<float[]> clutterPts;    // barrel/crate/planter positions, so benches never spawn on top of them
     private boolean hasCustomRoads;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
     // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize,
@@ -3897,6 +3898,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
+        this.clutterPts = new java.util.ArrayList<float[]>();   // record props so benches don't spawn on top of them
         // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two stone pillars
         L.add(new float[]{-2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
         L.add(new float[]{ 2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
@@ -3959,7 +3961,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.3f);
                     float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.3f);
                     if (!onStreetXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)
-                        && !blocksDoor(new float[]{cx, cz, w, d, 0f, doorSide}, ax, az)) addClutter(L, rc, ax, az);
+                        && !blocksDoor(new float[]{cx, cz, w, d, 0f, doorSide}, ax, az)) {
+                        addClutter(L, rc, ax, az);
+                        clutterPts.add(new float[]{ax, az});
+                    }
                 }
             }
         }
@@ -3995,6 +4000,27 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 }
             }
         }
+        // 1a. a bench out on the sidewalk beside ~1 in 6 houses' doors — placed BEFORE the gardens so the plants fill in around it
+        java.util.List<float[]> benchPts = new java.util.ArrayList<float[]>();
+        for (float[] h : houses) {
+            if (rc.nextFloat() >= 0.24f) continue;
+            int ds = (int) h[5]; float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f, bx, bz;
+            if (ds == 0)      { bx = cx; bz = cz + hd + 0.7f; }
+            else if (ds == 1) { bx = cx; bz = cz - hd - 0.7f; }
+            else if (ds == 2) { bx = cx + hw + 0.7f; bz = cz; }
+            else              { bx = cx - hw - 0.7f; bz = cz; }
+            float tnx = (ds == 0 || ds == 1) ? 1f : 0f, tnz = (ds == 2 || ds == 3) ? 1f : 0f;   // tangent along the wall
+            for (float sgn : new float[]{1f, -1f}) {                        // sit the bench BESIDE the door, never across it
+                float bxx = bx + tnx * sgn * 1.7f, bzz = bz + tnz * sgn * 1.7f;
+                if (Math.abs(bxx) < 3.2f && bzz > 1.5f && bzz < 13f) continue;
+                if (onRoadXZ(bxx, bzz) || !clearOfHouses(houses, bxx, bzz, 0.5f) || blocksDoor(h, bxx, bzz)) continue;
+                if (clutterPts != null && !clearOfPts(clutterPts, bxx, bzz, 1.15f)) continue;   // never sit on a barrel/crate/planter
+                if (!clearOfPts(trees, bxx, bzz, 1.0f)) continue;                                // nor on a street tree (gardens come later and dodge the bench)
+                if (!clearOfPts(benchPts, bxx, bzz, 1.7f)) continue;                             // nor on another bench
+                if (!clearOfPts(lampPts, bxx, bzz, 0.85f)) continue;                             // nor clipping a lamp base
+                addBench(L, bxx, bzz, ds); benchPts.add(new float[]{bxx, bzz}); break;
+            }
+        }
         // 1b. front gardens: a paved path from each door to the street, plants flanking it + on the side grass
         for (float[] h : houses) {
             float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f;
@@ -4020,6 +4046,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     if (ss < 0.18f) continue;
                     if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                        // crown must never reach a doorway
                     if (!clearOfPts(lampPts, bx, bz, 0.3f + 1.45f * ss)) continue;                       // never wrap a lamp post
+                    if (!clearOfPts(benchPts, bx, bz, 1.0f)) continue;                                   // nor grow into a bench
                     trees.add(new float[]{bx, bz, ss});
                 }
             }
@@ -4036,26 +4063,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (ss < 0.3f) continue;
                 if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                            // crown (not just centre) must clear every doorway
                 if (!clearOfPts(lampPts, bx, bz, 0.3f + 1.45f * ss)) continue;                           // never wrap a lamp post
+                if (!clearOfPts(benchPts, bx, bz, 1.1f)) continue;                                       // nor grow into a bench
                 trees.add(new float[]{bx, bz, ss});
             }
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
-        // 2. a bench out on the sidewalk in front of ~1 in 6 houses, backed onto the front (door) wall
-        for (float[] h : houses) {
-            if (rc.nextFloat() >= 0.16f) continue;
-            int ds = (int) h[5]; float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f, bx, bz;
-            if (ds == 0)      { bx = cx; bz = cz + hd + 0.7f; }
-            else if (ds == 1) { bx = cx; bz = cz - hd - 0.7f; }
-            else if (ds == 2) { bx = cx + hw + 0.7f; bz = cz; }
-            else              { bx = cx - hw - 0.7f; bz = cz; }
-            float tnx = (ds == 0 || ds == 1) ? 1f : 0f, tnz = (ds == 2 || ds == 3) ? 1f : 0f;   // tangent along the wall
-            for (float sgn : new float[]{1f, -1f}) {                        // sit the bench BESIDE the door, never across it
-                float bxx = bx + tnx * sgn * 1.7f, bzz = bz + tnz * sgn * 1.7f;
-                if (Math.abs(bxx) < 3.2f && bzz > 1.5f && bzz < 13f) continue;
-                if (onRoadXZ(bxx, bzz) || !clearOfHouses(houses, bxx, bzz, 0.5f) || blocksDoor(h, bxx, bzz)) continue;
-                addBench(L, bxx, bzz, ds); break;
-            }
-        }
         // 3. the reserved open lots form a market square: two stalls flanking a well
         addStall(L, MARKET_LOTS[0][0], MARKET_LOTS[0][1], 0.78f, 0.32f, 0.27f);   // red awning
         addWell (L, MARKET_LOTS[1][0], MARKET_LOTS[1][1]);
@@ -4156,16 +4168,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 0.78f, z, 0.34f, 0.05f, 0.34f, 0.40f, 0.28f, 0.18f, 0f});   // lid
     }
 
+    // A crate: lighter plank panels framed by four dark corner posts plus a bottom rail and a lid.
+    // The corner posts are placed at the body's rotated corners (and carry the same yaw) so the frame stays aligned.
     private static void addCrate(List<float[]> L, Random r, float x, float z) {
         float yaw = r.nextInt(40) - 20f;
-        L.add(new float[]{x, 0.28f, z, 0.54f, 0.54f, 0.54f, 0.52f, 0.40f, 0.26f, yaw});  // body
-        L.add(new float[]{x, 0.56f, z, 0.58f, 0.06f, 0.58f, 0.40f, 0.30f, 0.20f, yaw});  // top rim
+        double a = Math.toRadians(yaw), ca = Math.cos(a), sa = Math.sin(a);
+        L.add(new float[]{x, 0.26f, z, 0.52f, 0.52f, 0.52f, 0.58f, 0.46f, 0.30f, yaw});   // plank body
+        L.add(new float[]{x, 0.05f, z, 0.58f, 0.09f, 0.58f, 0.34f, 0.24f, 0.15f, yaw});   // bottom rail
+        L.add(new float[]{x, 0.54f, z, 0.56f, 0.06f, 0.56f, 0.36f, 0.26f, 0.17f, yaw});   // top lid
+        float c = 0.24f;                                                                  // corner posts at the body's rotated corners
+        for (int sx = -1; sx <= 1; sx += 2) for (int sz = -1; sz <= 1; sz += 2) {
+            float ox = (float) (c * sx * ca + c * sz * sa), oz = (float) (-c * sx * sa + c * sz * ca);
+            L.add(new float[]{x + ox, 0.28f, z + oz, 0.10f, 0.56f, 0.10f, 0.34f, 0.24f, 0.15f, yaw});
+        }
     }
 
+    // A stone planter: a rimmed pot of dark soil with three leafy lobes and a scatter of flowers (axis-aligned, so offsets are safe).
     private static void addPlanter(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 0.24f, z, 0.56f, 0.44f, 0.50f, 0.50f, 0.47f, 0.43f, 0f});   // stone box
-        L.add(new float[]{x, 0.46f, z, 0.62f, 0.07f, 0.56f, 0.57f, 0.54f, 0.50f, 0f});   // rim
-        L.add(new float[]{x, 0.60f, z, 0.50f, 0.22f, 0.44f, 0.30f, 0.45f, 0.28f, 0f});   // greenery
+        L.add(new float[]{x, 0.24f, z, 0.56f, 0.44f, 0.50f, 0.52f, 0.49f, 0.45f, 0f});           // stone pot
+        L.add(new float[]{x, 0.46f, z, 0.62f, 0.07f, 0.56f, 0.58f, 0.55f, 0.51f, 0f});           // rim
+        L.add(new float[]{x, 0.49f, z, 0.48f, 0.05f, 0.42f, 0.20f, 0.14f, 0.10f, 0f});           // dark soil
+        L.add(new float[]{x, 0.62f, z, 0.34f, 0.26f, 0.30f, 0.27f, 0.43f, 0.25f, 0f});           // foliage — centre mound
+        L.add(new float[]{x - 0.16f, 0.57f, z + 0.04f, 0.24f, 0.20f, 0.24f, 0.31f, 0.47f, 0.29f, 0f});   // leafy lobe (l)
+        L.add(new float[]{x + 0.16f, 0.58f, z - 0.05f, 0.24f, 0.18f, 0.24f, 0.25f, 0.41f, 0.24f, 0f});   // leafy lobe (r)
+        L.add(new float[]{x - 0.12f, 0.71f, z + 0.07f, 0.09f, 0.09f, 0.09f, 0.86f, 0.32f, 0.30f, 0f});   // red bloom
+        L.add(new float[]{x + 0.11f, 0.72f, z - 0.04f, 0.09f, 0.09f, 0.09f, 0.93f, 0.82f, 0.33f, 0f});   // yellow bloom
+        L.add(new float[]{x + 0.02f, 0.73f, z + 0.13f, 0.08f, 0.08f, 0.08f, 0.82f, 0.50f, 0.78f, 0f});   // violet bloom
     }
 
     private static void addWoodpile(List<float[]> L, Random r, float x, float z) {
@@ -4184,7 +4212,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 3.38f, z, 0.36f, 0.12f, 0.36f, 0.19f, 0.19f, 0.21f, 0f});   // cap
     }
 
-    // A park bench: two solid end frames, a slatted seat and a two-rail backrest.
+    // A park bench: two solid end frames, a slatted seat, and a two-rail backrest carried on vertical end posts.
     private static void addBench(List<float[]> L, float x, float z, int dir) {
         boolean ax = (dir == 0 || dir == 1);                    // bench length runs along X for +z/-z fronts
         float ex = ax ? 0.62f : 0f, ez = ax ? 0f : 0.62f;       // end-frame offset along the length
@@ -4194,6 +4222,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 0.46f, z, ax ? 1.45f : 0.48f, 0.09f, ax ? 0.48f : 1.45f, 0.48f, 0.34f, 0.22f, 0f});  // seat
         float bX = 0f, bZ = 0f;                                 // backrest sits behind the seat (toward the wall)
         if (dir == 0) bZ = -0.18f; else if (dir == 1) bZ = 0.18f; else if (dir == 2) bX = -0.18f; else bX = 0.18f;
+        float ep = ax ? 0.58f : 0f, epz = ax ? 0f : 0.58f;      // upright posts at each end carry the backrest off the seat
+        float psx = ax ? 0.09f : 0.10f, psz = ax ? 0.10f : 0.09f;
+        L.add(new float[]{x - ep + bX, 0.70f, z - epz + bZ, psx, 0.50f, psz, 0.40f, 0.28f, 0.18f, 0f});  // back posts
+        L.add(new float[]{x + ep + bX, 0.70f, z + epz + bZ, psx, 0.50f, psz, 0.40f, 0.28f, 0.18f, 0f});
         float rw = ax ? 1.45f : 0.06f, rd = ax ? 0.06f : 1.45f;
         L.add(new float[]{x + bX, 0.68f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});       // back rails
         L.add(new float[]{x + bX, 0.88f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});
