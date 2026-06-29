@@ -3976,7 +3976,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     placed.add(new float[]{sx, sz});
                     float pick = rc.nextFloat();
                     if (pick < 0.26f)      addLamp(L, sx, sz);                       // a lamp every few slots
-                    else if (pick < 0.86f) trees.add(new float[]{sx, sz, 0.8f + rc.nextFloat() * 0.7f});   // street tree (varied)
+                    else if (pick < 0.86f) {                                          // street tree — shrink near houses so the crown ends at the wall
+                        float ts = Math.min(0.8f + rc.nextFloat() * 0.7f, houseClearance(houses, sx, sz) / 1.9f);
+                        if (ts >= 0.5f) trees.add(new float[]{sx, sz, ts}); }
                     // else: leave a gap so it isn't a solid wall of furniture
                 }
             }
@@ -4006,9 +4008,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float bx = cx + (float) Math.cos(ang) * rr, bz = cz + (float) Math.sin(ang) * rr;
                 if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
                 if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
-                if (!clearOfHouses(houses, bx, bz, 0.18f)) continue;
+                float ss = Math.min(0.42f + rc.nextFloat() * 0.38f, houseClearance(houses, bx, bz) / 1.9f);  // crown ends at the wall, not through it
+                if (ss < 0.3f) continue;                                    // too close to a wall — drop it
                 if (blocksDoor(h, bx, bz)) continue;                        // keep the doorway clear
-                trees.add(new float[]{bx, bz, 0.42f + rc.nextFloat() * 0.38f});
+                trees.add(new float[]{bx, bz, ss});
             }
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
@@ -4068,6 +4071,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static boolean blocksAnyDoor(List<float[]> houses, float x, float z) {
         for (float[] h : houses) if (blocksDoor(h, x, z)) return true;
         return false;
+    }
+    /** Gap from (x,z) to the nearest house footprint (>0 = outside). Used to cap a tree's crown so it ends at the wall. */
+    private static float houseClearance(List<float[]> houses, float x, float z) {
+        float m = 1e9f;
+        for (float[] h : houses) {
+            float dx = Math.abs(x - h[0]) - h[2] * 0.5f, dz = Math.abs(z - h[1]) - h[3] * 0.5f;
+            m = Math.min(m, Math.max(dx, dz));
+        }
+        return m;
     }
 
     private static boolean clearOfHouses(List<float[]> houses, float x, float z, float margin) {
