@@ -1943,6 +1943,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float[] b = boxes[i];
             blob(b[0], 0f, b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
         }
+        // buildings + trees cast a soft contact shadow so they sit on the ground (distance-culled for perf)
+        float cullSq = 28f * 28f;
+        if (houseRects != null) for (float[] hh : houseRects) {
+            float dx = hh[0] - px, dz = hh[1] - pz;
+            if (dx * dx + dz * dz < cullSq) blob(hh[0], 0f, 0.8f, hh[1], Math.max(hh[2], hh[3]) * 0.58f);
+        }
+        if (treeList != null) for (float[] t : treeList) {
+            float dx = t[0] - px, dz = t[1] - pz;
+            if (dx * dx + dz * dz < cullSq) blob(t[0], terrainH(t[0], t[1]), 1.3f * t[2], t[1], 1.05f * t[2]);
+        }
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enAlive[i]) blob(enX[i], terrainH(enX[i], enZ[i]), 1.0f, enZ[i], 0.55f);
         }
