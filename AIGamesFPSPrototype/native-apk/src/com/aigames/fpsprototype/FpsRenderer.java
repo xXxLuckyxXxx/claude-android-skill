@@ -3435,7 +3435,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] d = new float[treeList.length * 6000 + 256];
         int o = 0;
         Random r = new Random(303);
-        for (float[] tr : treeList) o = vTree(d, o, tr[0], terrainH(tr[0], tr[1]), tr[1], Math.max(0.4f, tr[2]), true, r);
+        int[] flowerCells = {4, 5, 6, 7, 8, 9, 10};
+        float uStem = cell(3), uCtr = cell(11);
+        for (float[] tr : treeList) {
+            int kind = tr.length > 3 ? (int) tr[3] : 0;        // 0 tree · 1 bush · 2 flower
+            float by = terrainH(tr[0], tr[1]);
+            if (kind == 1)      o = vBush(d, o, tr[0], by, tr[1], r.nextInt(6), r, flowerCells);
+            else if (kind == 2) o = vFlower(d, o, tr[0], by, tr[1], 1 + r.nextInt(4), r, uStem, uCtr, flowerCells);
+            else                o = vTree(d, o, tr[0], by, tr[1], Math.max(0.4f, tr[2]), true, r);
+        }
         placedTreeVerts = o / 8;
         return java.util.Arrays.copyOf(d, o);
     }
@@ -3964,8 +3972,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     // R x1 z1 x2 z2 [width]  -> a street segment (visual only, no collision)
                     roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f)});
                 } else if (t[0].equals("T") && t.length >= 3) {
-                    // T x z [scale]  -> a placed tree
-                    trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f)});
+                    // T x z [scale] [kind: 0 tree · 1 bush · 2 flower]  -> a placed plant
+                    trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f), pfDef(t, 4, 0f)});
                 } else if (t[0].equals("F") && t.length >= 5) {
                     // F x1 z1 x2 z2 [r g b]  -> a fence: one thin box rotated along the segment
                     float x1 = pf(t[1]), z1 = pf(t[2]), x2 = pf(t[3]), z2 = pf(t[4]);
