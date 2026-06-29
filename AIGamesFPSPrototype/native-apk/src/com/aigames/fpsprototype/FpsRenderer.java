@@ -138,10 +138,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
-    private int brickTex, stoneTex, sidingTex, gravelTex;   // per-archetype facade materials + the gravel front path
+    private int brickTex, stoneTex, sidingTex, gravelTex, winBackTex;   // per-archetype facade materials, gravel path + dark window-interior
 
-    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh;
-    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts;
+    private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh, revealMesh;
+    private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts, revealVerts;
+    private float[] revealData;   // dark recessed interior behind each glass pane (built with the window mesh)
     private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
     private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
     private java.util.List<float[]> clutterPts;    // barrel/crate/planter positions, so benches never spawn on top of them
@@ -468,11 +469,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (treeList != null) placedTrees = makeBuffer(makePlacedTrees());   // level-placed trees
 
         roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
-        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData + winGroups)
+        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData + winGroups + revealData)
         trimMesh = makeBuffer(trimData);             // window sills
+        revealMesh = makeBuffer(revealData);         // dark recessed interior behind each pane
         bandMesh = makeBuffer(makeBandMesh());       // per-house foundation / trim / storey bands (sets bandVerts)
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
+        winBackTex = uploadTexture(makeWinBackBitmap());
         wallTex = uploadTexture(makeHouseBitmap());
         brickTex = uploadTexture(makeBrickBitmap());
         stoneTex = uploadTexture(makeStoneBitmap());
@@ -607,6 +610,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (float[] gp : roofGroups) drawWorldRange(roofMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
         } else {
             drawWorld(roofMesh, roofVerts, 0f, 0.69f, 0.31f, 0.16f);
+        }
+        if (revealVerts > 0) {                                 // dark recessed interior behind each pane, drawn first so it shows through the glass
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winBackTex);
+            drawWorld(revealMesh, revealVerts, 0f, 1f, 1f, 1f);
         }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
         GLES20.glEnable(GLES20.GL_BLEND);                       // glass panes: reflective + slightly see-through
@@ -4528,7 +4535,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float[] makeWindowMesh() {
         float[] wd = new float[1200000];   // headroom for dense windows on a large custom village
         float[] td = new float[1600000];
-        int[] off = {0, 0};
+        float[] rv = new float[1200000];   // dark recessed interior behind every pane
+        int[] off = {0, 0, 0};
         Random rng = new Random(202);   // irregular per-house omission so no two facades match
         java.util.List<float[]> winG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
@@ -4537,10 +4545,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float wsc = hh[12], foundH = hh[16];
             if (dens == 0) continue;                       // "none" -> this house has no windows
             int wstart = off[0] / 8;
-            wallWindows(wd, td, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
             int wcount = off[0] / 8 - wstart;
             if (wcount > 0) winG.add(new float[]{wstart, wcount, hh[13], hh[14], hh[15]});  // glass tint
         }
@@ -4548,6 +4556,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         windowVerts = off[0] / 8;
         trimVerts = off[1] / 8;
         trimData = java.util.Arrays.copyOf(td, off[1]);
+        revealVerts = off[2] / 8;
+        revealData = java.util.Arrays.copyOf(rv, off[2]);
         return java.util.Arrays.copyOf(wd, off[0]);
     }
 
@@ -4796,7 +4806,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
-    private static void wallWindows(float[] wd, float[] td, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc, int storeys, float foundH) {
+    private static void wallWindows(float[] wd, float[] td, float[] rv, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc, int storeys, float foundH) {
         // One row of windows per FLOOR, centred in its storey -> the building visibly reads as having Etagen.
         wsc = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f);
         if (storeys < 1) storeys = 1;
@@ -4818,6 +4828,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (doorWall && Math.abs(t) < 1.4f * Math.max(1f, wsc) && wy - winH * 0.5f < 2.45f) continue;   // no pane over/around the doorway
                 if (rng.nextFloat() < omit) continue;                // drop a few so it isn't stamped
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
+                off[2] = windowQuad(rv, off[2], a, b, t, wy, winW * 0.86f, winH * 0.86f, axis, sign, 0.16f);  // dark room just behind the glass (occludes the wall -> looks like an opening)
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
                 if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
                 else           off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
@@ -4899,6 +4910,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         c.drawRect(N * 0.5f - 3f, gt, N * 0.5f + 3f, gb, p);
         c.drawRect(gl, N * 0.5f - 3f, gr, N * 0.5f + 3f, p);
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(5f); c.drawRect(gl, gt, gr, gb, p);
+        return b;
+    }
+
+    /** The dim room seen THROUGH the glass: a dark gradient with a faint warm glow + a furniture silhouette. */
+    private static Bitmap makeWinBackBitmap() {
+        int N = 64;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        for (int y = 0; y < N; y++) {                              // darker near the ceiling, a touch warmer low down
+            float f = y / (float) N;
+            int rr = cl255((int) (0x1C + 0x1E * f)), gg = cl255((int) (0x1E + 0x18 * f)), bbl = cl255((int) (0x28 + 0x12 * f));
+            p.setColor(0xFF000000 | (rr << 16) | (gg << 8) | bbl);
+            c.drawRect(0, y, N, y + 1, p);
+        }
+        p.setColor(0x4DFFC880); c.drawCircle(N * 0.52f, N * 0.60f, N * 0.20f, p);   // faint warm lamp glow inside
+        p.setColor(0xFF14171F); c.drawRect(N * 0.16f, N * 0.74f, N * 0.86f, N, p);   // dark furniture/sill silhouette
         return b;
     }
 
@@ -5181,7 +5209,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    col2+=sp*glass*vec3(1.1)*uSunInt;" +                                       // crisp glass highlight
         "    float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "    col2=mix(col2,uFogColor,fog);" +
-        "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)), mix(1.0,0.58,glass)); return;" +   // frame opaque, glass see-through
+        "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)), mix(1.0,0.42,glass)); return;" +   // frame opaque, glass see-through (shows the dim room behind)
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
