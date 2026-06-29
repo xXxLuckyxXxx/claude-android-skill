@@ -117,6 +117,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float ARENA_LIMIT = 36f;
 
     private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
+    private static final float SHADOW_AZI = (float) Math.toDegrees(Math.atan2(LDX, LDZ));  // sun ground azimuth -> cast-shadow direction
 
     private final InputState input;
     private final int buildNumber;
@@ -1962,13 +1963,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void blob(float ox, float groundY, float oy, float oz, float baseR) {
-        float s = oy / (-LDY);
-        float fx = ox + LDX * s, fz = oz + LDZ * s;
-        float r = baseR * (1f + s * 0.06f);
-        float alpha = 0.5f / (1f + s * 0.22f);
+        float s = oy / (-LDY);                                  // projection distance from base to shadow tip
+        float cx = ox + LDX * s * 0.5f, cz = oz + LDZ * s * 0.5f;   // centre the oval midway between base and tip
+        float halfLen = baseR + 0.28f * oy;                     // stretched along the sun azimuth (longer for taller objects)
+        float halfWid = baseR * 0.9f;                           // a touch narrower across -> reads as a cast shadow, not a pool
+        float alpha = 0.6f / (1f + s * 0.18f);
         Matrix.setIdentityM(model, 0);
-        Matrix.translateM(model, 0, fx, groundY + 0.02f, fz);
-        Matrix.scaleM(model, 0, r, 1f, r);
+        Matrix.translateM(model, 0, cx, groundY + 0.02f, cz);
+        Matrix.rotateM(model, 0, SHADOW_AZI, 0f, 1f, 0f);       // local +Z runs along the sun azimuth
+        Matrix.scaleM(model, 0, halfWid, 1f, halfLen);
         Matrix.multiplyMM(tmpA, 0, view, 0, model, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
         GLES20.glUniformMatrix4fv(uBlobMVP, 1, false, mvp, 0);
@@ -5016,6 +5019,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
         "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange; uniform float uWorldUV;" +
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
+        "vec3 grade(vec3 c){ float l=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(l),c,1.20); return clamp((c-0.5)*1.08+0.5,0.0,1.0); }" +  // richer + a little more contrast
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
         "  if(uMode<0.5){" +
@@ -5035,7 +5039,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         "    vec3 base=tex*uColor;" +
-        "    col=(base*(uAmbient*vec3(0.16,0.18,0.24)+uSunInt*df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
+        "    col=(base*(uAmbient*vec3(0.14,0.16,0.21)+uSunInt*df*vec3(1.30,1.17,0.95)+fl*vec3(0.22,0.29,0.42))" +   // deeper ambient + punchier warm key = more contrast, less washed out
         "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30))*ao;" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
@@ -5052,7 +5056,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
-        "  gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0);" +
+        "  gl_FragColor=vec4(pow(grade(aces(col)),vec3(0.4545)),1.0);" +
         "}";
 
     private static final String VERT_SKY_SRC =
