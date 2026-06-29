@@ -50,6 +50,7 @@
   <div class="seg" id="viewSeg">
     <button data-mode="2d" class="on">2D Draufsicht</button>
     <button data-mode="3d">3D Ansicht</button>
+    <button data-mode="fp">🚶 Begehen</button>
   </div>
   <div class="tools" id="tools">
     <button data-tool="select" class="on">▭ Auswählen</button>
@@ -78,6 +79,10 @@
   <div class="stage">
     <canvas id="cv" width="820" height="820"></canvas>
     <canvas id="cv3" width="820" height="820" hidden></canvas>
+    <div id="fpCross" hidden style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:20px;height:20px;pointer-events:none;z-index:5">
+      <div style="position:absolute;left:9px;top:0;width:2px;height:20px;background:rgba(255,255,255,.75);box-shadow:0 0 2px #000"></div>
+      <div style="position:absolute;left:0;top:9px;width:20px;height:2px;background:rgba(255,255,255,.75);box-shadow:0 0 2px #000"></div>
+    </div>
     <div class="hint" id="hint">—</div>
   </div>
 
@@ -159,7 +164,7 @@
 </div>
 
 <footer>
-  <b>2D</b>: klicken/ziehen zum Platzieren & Verschieben. &nbsp; <b>3D</b>: ziehen = drehen · Mausrad = zoomen · Rechtsklick-ziehen = schieben · Objekt ziehen = verschieben.
+  <b>2D</b>: klicken/ziehen zum Platzieren & Verschieben. &nbsp; <b>3D</b>: ziehen = drehen · Mausrad = zoomen · Rechtsklick-ziehen = schieben · Objekt ziehen = verschieben. &nbsp; <b>🚶 Begehen</b>: WASD/Pfeile laufen · Maus schauen (klick zum Greifen) · Shift rennen · Esc löst die Maus — testet die Stadt aus Spielersicht.
   Heller Kreis = bebaubare Fläche (~33 m). Bäume/Wald & Straßen bleiben automatisch.
   Export ergibt <code>level.lvl</code> — aufs Gerät mit <code>fps.ps1 pushlevel level.lvl</code> (kein Neu-Bauen nötig).
 </footer>
@@ -393,15 +398,18 @@ function init3D(){
   if(typeof THREE==='undefined') return false;
   const renderer=new THREE.WebGLRenderer({canvas:cv3,antialias:true});
   renderer.setSize(CANVAS,CANVAS,false); renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+  renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
   const scene=new THREE.Scene(); scene.background=new THREE.Color(0xbcd6ef); scene.fog=new THREE.Fog(0xbcd6ef,70,170);
   const camera=new THREE.PerspectiveCamera(55,1,0.1,600);
   const sun=new THREE.DirectionalLight(0xfff6e6,1.05); sun.position.set(-40,60,-30); scene.add(sun);
+  sun.castShadow=true; sun.shadow.mapSize.set(2048,2048); sun.shadow.bias=-0.0004;
+  { const sc=sun.shadow.camera; sc.left=-50; sc.right=50; sc.top=50; sc.bottom=-50; sc.near=1; sc.far=260; sc.updateProjectionMatrix(); }
   const hemi=new THREE.HemisphereLight(0xcfe4ff,0x4a4636,0.75); scene.add(hemi);
   scene.add(new THREE.AmbientLight(0xffffff,0.2));
   const ring=new THREE.Mesh(new THREE.CircleGeometry(EDGE+12,64), new THREE.MeshLambertMaterial({color:0x3c5a39}));
-  ring.rotation.x=-Math.PI/2; ring.position.y=-0.05; scene.add(ring);
+  ring.rotation.x=-Math.PI/2; ring.position.y=-0.05; ring.receiveShadow=true; scene.add(ring);
   const disc=new THREE.Mesh(new THREE.CircleGeometry(DISC,64), new THREE.MeshLambertMaterial({color:0x7e9a5e}));
-  disc.rotation.x=-Math.PI/2; scene.add(disc);
+  disc.rotation.x=-Math.PI/2; disc.receiveShadow=true; scene.add(disc);
   // spawn marker
   const sp=new THREE.Mesh(new THREE.CircleGeometry(1.4,24), new THREE.MeshBasicMaterial({color:0x37d67a}));
   sp.rotation.x=-Math.PI/2; sp.position.set(0,0.02,9); scene.add(sp);
@@ -538,8 +546,8 @@ function mesh3D(o){
     return m;
   }
   if(o.type==='tree'){ const g=new THREE.Group(); g.position.set(o.x,0,o.z); const s=o.scale||1;
-    const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.16*s,0.22*s,1.3*s,6),new THREE.MeshLambertMaterial({color:0x6b4a2b})); tr.position.y=0.65*s; g.add(tr);
-    const lf=new THREE.Mesh(new THREE.ConeGeometry(1.1*s,2.6*s,8),new THREE.MeshLambertMaterial({color:0x3f7a39})); lf.position.y=2.5*s; g.add(lf);
+    const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.16*s,0.22*s,1.3*s,6),new THREE.MeshLambertMaterial({color:0x6b4a2b})); tr.position.y=0.65*s; tr.castShadow=true; g.add(tr);
+    const lf=new THREE.Mesh(new THREE.ConeGeometry(1.1*s,2.6*s,8),new THREE.MeshLambertMaterial({color:0x3f7a39})); lf.position.y=2.5*s; lf.castShadow=true; g.add(lf);
     return g;
   }
   if(o.type==='fence'){ const dx=o.x2-o.x1, dz=o.z2-o.z1, len=Math.hypot(dx,dz)||0.3;
@@ -549,18 +557,16 @@ function mesh3D(o){
   if(o.type==='house'){
     const g=new THREE.Group(); g.position.set(o.x,0,o.z);
     const mat=o.material|0;
-    const shadow=new THREE.Mesh(new THREE.CircleGeometry(Math.max(o.w,o.d)*0.62,22),new THREE.MeshBasicMaterial({color:0x101014,transparent:true,opacity:0.22,depthWrite:false}));
-    shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02; shadow.userData.skip=true; g.add(shadow);   // ground contact shadow
     const bodyMat = mat>0 ? new THREE.MeshLambertMaterial({map:matTexture(mat)})   // brick/stone/timber carry their own colour
                           : new THREE.MeshLambertMaterial({color:col(o.c)});       // plaster: per-house tint
-    const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),bodyMat); body.position.y=o.h/2; g.add(body);
+    const body=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),bodyMat); body.position.y=o.h/2; body.castShadow=true; body.receiveShadow=true; g.add(body);
     // flagstone front path from the door out toward the street (context, like the game's auto-path)
     const pmat=new THREE.MeshLambertMaterial({color:0x8d877b});
     const pnx=(o.door===2?1:(o.door===3?-1:0)), pnz=(o.door===0?1:(o.door===1?-1:0));
     for(let k=0;k<4;k++){ const u=0.55+k*0.72, tile=new THREE.Mesh(new THREE.BoxGeometry(pnx!==0?0.52:0.96,0.06,pnz!==0?0.52:0.96),pmat);
       tile.position.set(pnx*(o.w/2)+pnx*u,0.04,pnz*(o.d/2)+pnz*u); tile.userData.skip=true; g.add(tile); }
-    const cap=new THREE.Mesh(new THREE.BoxGeometry(o.w+0.3,0.3,o.d+0.3),new THREE.MeshLambertMaterial({color:col([o.c[0]*0.9,o.c[1]*0.9,o.c[2]*0.95])})); cap.position.y=o.h+0.15; g.add(cap);  // eave band (matches game)
-    g.add(gableRoof(o));
+    const cap=new THREE.Mesh(new THREE.BoxGeometry(o.w+0.3,0.3,o.d+0.3),new THREE.MeshLambertMaterial({color:col([o.c[0]*0.9,o.c[1]*0.9,o.c[2]*0.95])})); cap.position.y=o.h+0.15; cap.castShadow=true; g.add(cap);  // eave band (matches game)
+    const roof=gableRoof(o); roof.castShadow=true; g.add(roof);
     const ddw=clamp(o.doorW||1.9,0.8,Math.min(o.w,o.d)-0.6), ddh=clamp(o.doorH||2.3,1.6,o.h-0.3);
     const dm=new THREE.Mesh(new THREE.BoxGeometry(0.12,ddh,ddw),new THREE.MeshLambertMaterial({color:col(o.doorC||[0.46,0.30,0.17])}));
     const dy=ddh/2;
@@ -608,7 +614,9 @@ function updateCam(){ const c=three.cam; c.phi=clamp(c.phi,0.12,1.45); c.r=clamp
   three.camera.position.set(tx+c.r*Math.sin(c.phi)*Math.cos(c.theta), ty+c.r*Math.cos(c.phi), tz+c.r*Math.sin(c.phi)*Math.sin(c.theta));
   three.camera.lookAt(tx,ty,tz);
 }
-function loop(){ if(mode!=='3d'||!three) return; three.raf=requestAnimationFrame(loop); updateCam(); three.renderer.render(three.scene,three.camera); }
+function loop(){ if((mode!=='3d'&&mode!=='fp')||!three) return; three.raf=requestAnimationFrame(loop);
+  if(mode==='fp') updateFP(); else updateCam();
+  three.renderer.render(three.scene,three.camera); }
 function ndc(e){ const r=cv3.getBoundingClientRect(); return new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1); }
 function groundAt(e){ three.ray.setFromCamera(ndc(e),three.camera); const v=new THREE.Vector3(); return three.ray.ray.intersectPlane(three.ground,v)?v:null; }
 function pick3D(e){ three.ray.setFromCamera(ndc(e),three.camera); const its=three.ray.intersectObjects(three.group.children,true);
@@ -616,7 +624,7 @@ function pick3D(e){ three.ray.setFromCamera(ndc(e),three.camera); const its=thre
 
 let cam3=null, drag3=null;
 cv3.addEventListener('contextmenu',e=>e.preventDefault());
-cv3.addEventListener('pointerdown',e=>{ if(!three) return; cv3.setPointerCapture(e.pointerId);
+cv3.addEventListener('pointerdown',e=>{ if(!three||mode==='fp') return; cv3.setPointerCapture(e.pointerId);
   const pan=(e.button===2||e.shiftKey);
   if(pan){ cam3={mode:'pan',x:e.clientX,y:e.clientY}; return; }
   if(tool==='select'||tool==='delete'){
@@ -626,7 +634,7 @@ cv3.addEventListener('pointerdown',e=>{ if(!three) return; cv3.setPointerCapture
     else { cam3={mode:'orbit',x:e.clientX,y:e.clientY}; select(null); }
   } else { const g=groundAt(e); if(g){ pushUndo(); const o=newObj(tool,snap(g.x),snap(g.z)); objs.push(o); updateObj3D(o); select(o); drag3=(tool==='road'||tool==='fence')?{road:o}:{ox:0,oz:0}; } }
 });
-cv3.addEventListener('pointermove',e=>{ if(!three) return;
+cv3.addEventListener('pointermove',e=>{ if(!three||mode==='fp') return;
   if(cam3){ const dx=e.clientX-cam3.x, dy=e.clientY-cam3.y; cam3.x=e.clientX; cam3.y=e.clientY; const c=three.cam;
     if(cam3.mode==='orbit'){ c.theta-=dx*0.006; c.phi-=dy*0.006; }
     else { const s=c.r*0.0016, f={x:Math.cos(c.theta),z:Math.sin(c.theta)}, r={x:-Math.sin(c.theta),z:Math.cos(c.theta)};
@@ -638,14 +646,55 @@ cv3.addEventListener('pointermove',e=>{ if(!three) return;
   if(tool==='select'||tool==='delete'){ const o=pick3D(e); cv3.style.cursor=o?'grab':'default'; }   // hover affordance
 });
 cv3.addEventListener('pointerup',()=>{ cam3=null; drag3=null; cv3.style.cursor='default'; });
-cv3.addEventListener('wheel',e=>{ if(!three) return; e.preventDefault(); three.cam.r*=(1+Math.sign(e.deltaY)*0.1); },{passive:false});
+cv3.addEventListener('wheel',e=>{ if(!three||mode==='fp') return; e.preventDefault(); three.cam.r*=(1+Math.sign(e.deltaY)*0.1); },{passive:false});
+
+// ---------- first-person walk mode ----------
+const fp={x:0,y:1.7,z:9,yaw:0,pitch:0,keys:{}};
+let _fpLast=0;
+function fpBlocked(x,z){ const R=0.34;
+  for(const o of objs){ if(o.type==='house'||o.type==='box'){ if(Math.abs(x-o.x)<o.w/2+R && Math.abs(z-o.z)<o.d/2+R) return true; } }
+  return false;
+}
+function updateFP(){ const now=performance.now(); let dt=(now-(_fpLast||now))/1000; _fpLast=now; if(dt>0.1) dt=0.1;
+  const sp=(fp.keys['shift']?11:6)*dt;
+  const fx=Math.sin(fp.yaw), fz=-Math.cos(fp.yaw), rx=Math.cos(fp.yaw), rz=Math.sin(fp.yaw);
+  let mx=0,mz=0;
+  if(fp.keys['w']){ mx+=fx; mz+=fz; } if(fp.keys['s']){ mx-=fx; mz-=fz; }
+  if(fp.keys['d']){ mx+=rx; mz+=rz; } if(fp.keys['a']){ mx-=rx; mz-=rz; }
+  const ml=Math.hypot(mx,mz); if(ml>1e-3){ mx/=ml; mz/=ml;
+    const nx=fp.x+mx*sp; if(!fpBlocked(nx,fp.z)) fp.x=nx;
+    const nz=fp.z+mz*sp; if(!fpBlocked(fp.x,nz)) fp.z=nz;
+    const r=Math.hypot(fp.x,fp.z), lim=EDGE+8; if(r>lim){ fp.x*=lim/r; fp.z*=lim/r; }
+  }
+  fp.pitch=clamp(fp.pitch,-1.3,1.3);
+  three.camera.position.set(fp.x,fp.y,fp.z);
+  const cp=Math.cos(fp.pitch);
+  three.camera.lookAt(fp.x+Math.sin(fp.yaw)*cp, fp.y+Math.sin(fp.pitch), fp.z-Math.cos(fp.yaw)*cp);
+}
+function fpKey(e,down){ if(mode!=='fp') return; const k=e.key.toLowerCase();
+  if(k==='w'||k==='a'||k==='s'||k==='d'){ fp.keys[k]=down; e.preventDefault(); }
+  else if(k==='shift') fp.keys['shift']=down;
+  else if(k==='arrowup'){ fp.keys['w']=down; e.preventDefault(); } else if(k==='arrowdown'){ fp.keys['s']=down; e.preventDefault(); }
+  else if(k==='arrowleft'){ fp.keys['a']=down; e.preventDefault(); } else if(k==='arrowright'){ fp.keys['d']=down; e.preventDefault(); }
+}
+window.addEventListener('keydown',e=>fpKey(e,true));
+window.addEventListener('keyup',e=>fpKey(e,false));
+cv3.addEventListener('click',()=>{ if(mode==='fp'&&document.pointerLockElement!==cv3) cv3.requestPointerLock&&cv3.requestPointerLock(); });
+document.addEventListener('mousemove',e=>{ if(mode==='fp'&&document.pointerLockElement===cv3){ fp.yaw+=e.movementX*0.0024; fp.pitch-=e.movementY*0.0024; } });
 
 // ---------- view toggle ----------
 function setMode(m){ mode=m;
   document.querySelectorAll('#viewSeg button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
-  if(m==='3d'){ if(!init3D()){ alert('3D braucht eine Internet-Verbindung (lädt die 3D-Bibliothek). Nutze solange die 2D-Ansicht.'); setMode('2d'); return; }
-    cv.hidden=true; cv3.hidden=false; build3D(); cancelAnimationFrame(three.raf); loop(); }
-  else { cv.hidden=false; cv3.hidden=true; if(three) cancelAnimationFrame(three.raf); draw(); }
+  const cross=document.getElementById('fpCross');
+  if(m==='3d'||m==='fp'){ if(!init3D()){ alert('3D braucht eine Internet-Verbindung (lädt die 3D-Bibliothek). Nutze solange die 2D-Ansicht.'); setMode('2d'); return; }
+    cv.hidden=true; cv3.hidden=false; build3D();
+    three.camera.fov=(m==='fp')?72:55; three.camera.updateProjectionMatrix();
+    if(m==='fp'){ fp.x=0; fp.z=9; fp.y=1.7; fp.yaw=0; fp.pitch=-0.02; fp.keys={}; _fpLast=0; cross.hidden=false;
+      document.getElementById('hint').textContent='WASD/Pfeile = laufen · Maus = schauen (klick zum Greifen) · Shift = rennen · Esc = Maus lösen'; }
+    else { cross.hidden=true; if(document.pointerLockElement===cv3) document.exitPointerLock(); }
+    cancelAnimationFrame(three.raf); loop();
+  }
+  else { cross.hidden=true; if(document.pointerLockElement===cv3) document.exitPointerLock(); cv.hidden=false; cv3.hidden=true; if(three) cancelAnimationFrame(three.raf); draw(); }
 }
 document.querySelectorAll('#viewSeg button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 
