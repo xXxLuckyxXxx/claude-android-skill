@@ -17,8 +17,11 @@
   .seg button.on{ background:var(--acc); color:#04222c; font-weight:700; }
   .wrap{ display:flex; gap:14px; padding:14px; align-items:flex-start; flex-wrap:wrap; }
   .stage{ position:relative; }
-  canvas{ background:#10182a; border-radius:10px; border:1px solid var(--line); touch-action:none; display:block; }
+  canvas{ background:#10182a; border-radius:10px; border:1px solid var(--line); touch-action:none; display:block; box-shadow:0 10px 30px #0007; }
+  canvas[hidden]{ display:none; }            /* the view toggle actually hides the inactive canvas (was overridden by display:block) */
   #cv3{ background:#bcd6ef; }
+  .wrap{ justify-content:center; }
+  .side{ position:sticky; top:14px; max-height:calc(100vh - 28px); overflow-y:auto; }
   .hint{ position:absolute; left:10px; bottom:8px; font-size:12px; color:#dfe; background:rgba(0,0,0,.45); padding:3px 9px; border-radius:6px; pointer-events:none; }
   .side{ width:280px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
   .side h2{ font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--acc); margin:0 0 8px; }
@@ -59,6 +62,8 @@
     <button data-tool="pillar">🏛 Säule</button>
     <button data-tool="road">🛣 Straße</button>
     <button data-tool="tree">🌳 Baum</button>
+    <button data-tool="bush">🌿 Busch</button>
+    <button data-tool="flower">🌼 Blume</button>
     <button data-tool="fence">🚧 Zaun</button>
     <button data-tool="delete">🗑 Löschen</button>
   </div>
@@ -134,8 +139,8 @@
       <div class="muted">Mit dem 🛣-Werkzeug ziehen = neue Straße. Verschieben: löschen & neu ziehen.</div>
     </div>
     <div id="treeProps" hidden>
-      <div class="row"><label>Typ</label><span class="muted">Baum 🌳</span></div>
-      <div class="row"><label>Größe</label><input type="range" id="pTreeS" min="0.5" max="2.5" step="0.1" style="flex:1"></div>
+      <div class="row"><label>Typ</label><span class="muted" id="treeTypeLbl">Baum 🌳</span></div>
+      <div class="row"><label>Größe</label><input type="range" id="pTreeS" min="0.4" max="2.5" step="0.1" style="flex:1"></div>
       <div class="row"><button id="treeDel" class="warn">Löschen</button></div>
     </div>
     <div id="fenceProps" hidden>
@@ -271,7 +276,7 @@ function parse(text){
     }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]],yaw:(n.length>8?n[8]:0)});
     else if(t[0]==='R'&&n.length>=4) out.push({type:'road',x1:n[0],z1:n[1],x2:n[2],z2:n[3],width:(n.length>4?n[4]:3.4)});
-    else if(t[0]==='T'&&n.length>=2) out.push({type:'tree',x:n[0],z:n[1],scale:(n.length>2?n[2]:1)});
+    else if(t[0]==='T'&&n.length>=2) out.push({type:'tree',x:n[0],z:n[1],scale:(n.length>2?n[2]:1),kind:(n.length>3?(n[3]|0):0)});
     else if(t[0]==='F'&&n.length>=4) out.push({type:'fence',x1:n[0],z1:n[1],x2:n[2],z2:n[3],c:(n.length>6?[n[4],n[5],n[6]]:[0.62,0.45,0.30])});
   }
   return out;
@@ -289,7 +294,7 @@ function serialize(){
   s+=`SET ground ${f(world.ground[0])} ${f(world.ground[1])} ${f(world.ground[2])}\n`;
   for(const o of objs) if(o.type==='road') s+=`R ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.width)}\n`;
   for(const o of objs) if(o.type==='box') s+=`B ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.h)} ${f(o.d)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(o.yaw||0)}\n`;
-  for(const o of objs) if(o.type==='tree') s+=`T ${f(o.x)} ${f(o.z)} ${f(o.scale)}\n`;
+  for(const o of objs) if(o.type==='tree') s+=`T ${f(o.x)} ${f(o.z)} ${f(o.scale)} ${o.kind|0}\n`;
   for(const o of objs) if(o.type==='fence') s+=`F ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
   for(const o of objs) if(o.type==='house'){ fillHouse(o); const rc=o.roofC||[0.69,0.31,0.16];
     const trim = o.trimOn ? `${f(o.trimC[0])} ${f(o.trimC[1])} ${f(o.trimC[2])}` : '-1 -1 -1';
@@ -301,7 +306,9 @@ function newObj(kind,wx,wz){
     roofC:[0.69,0.31,0.16], pitch:-1, overhang:-1, win:2, winSize:1, chim:-1});
   if(kind==='crate') return {type:'box',x:wx,z:wz,w:1.5,h:1.5,d:1.5,roof:0,door:0,c:CRATE.slice(),yaw:0};
   if(kind==='road') return {type:'road',x1:wx,z1:wz,x2:wx,z2:wz,width:3.4};
-  if(kind==='tree') return {type:'tree',x:wx,z:wz,scale:1.1};
+  if(kind==='tree') return {type:'tree',x:wx,z:wz,scale:1.1,kind:0};
+  if(kind==='bush') return {type:'tree',x:wx,z:wz,scale:0.7,kind:1};
+  if(kind==='flower') return {type:'tree',x:wx,z:wz,scale:0.6,kind:2};
   if(kind==='fence') return {type:'fence',x1:wx,z1:wz,x2:wx,z2:wz,c:[0.62,0.45,0.30]};
   return {type:'box',x:wx,z:wz,w:1.2,h:3.0,d:1.2,roof:0,door:0,c:PILLAR.slice(),yaw:0};   // pillar
 }
@@ -352,8 +359,11 @@ function draw2DObj(o,on){
     ctx.lineWidth=Math.max(1,o.width*SCALE*0.09); ctx.strokeStyle='#e8c23a'; ctx.setLineDash([7,9]); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); ctx.setLineDash([]);
     ctx.restore(); return;
   }
-  if(o.type==='tree'){ const s=(o.scale||1); ctx.save(); ctx.fillStyle='#3f7a39'; ctx.strokeStyle=on?'#39d4ff':'#0007'; ctx.lineWidth=on?3:1.5;
-    ctx.beginPath(); ctx.arc(w2s(o.x),w2s(o.z),Math.max(4,1.2*s*SCALE),0,7); ctx.fill(); ctx.stroke(); ctx.restore(); return; }
+  if(o.type==='tree'){ const s=(o.scale||1), k=o.kind|0; ctx.save();
+    ctx.fillStyle = k===2?'#e85aa0' : (k===1?'#5aa84f':'#3f7a39');
+    ctx.strokeStyle=on?'#39d4ff':'#0007'; ctx.lineWidth=on?3:1.5;
+    const rad = k===2?Math.max(3,0.5*SCALE) : (k===1?Math.max(4,0.9*s*SCALE):Math.max(4,1.2*s*SCALE));
+    ctx.beginPath(); ctx.arc(w2s(o.x),w2s(o.z),rad,0,7); ctx.fill(); ctx.stroke(); ctx.restore(); return; }
   if(o.type==='fence'){ ctx.save(); ctx.lineCap='round';
     if(on){ ctx.lineWidth=8; ctx.strokeStyle='#39d4ff'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); }
     ctx.lineWidth=4; ctx.strokeStyle=rgb(o.c); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); ctx.restore(); return; }
@@ -545,7 +555,22 @@ function mesh3D(o){
     m.position.set((o.x1+o.x2)/2,0.03,(o.z1+o.z2)/2); m.rotation.y=Math.atan2(dx,dz);
     return m;
   }
-  if(o.type==='tree'){ const g=new THREE.Group(); g.position.set(o.x,0,o.z); const s=o.scale||1;
+  if(o.type==='tree'){ const g=new THREE.Group(); g.position.set(o.x,0,o.z); const s=o.scale||1, k=o.kind|0;
+    if(k===1){ // bush: a few green lobes (wider than tall) with a couple of flower dots
+      const gm=new THREE.MeshLambertMaterial({color:0x4f8a44});
+      const core=new THREE.Mesh(new THREE.SphereGeometry(0.55*s,8,6),gm); core.position.y=0.42*s; core.scale.y=0.8; core.castShadow=true; g.add(core);
+      for(let i=0;i<3;i++){ const a=i*2.1, lb=new THREE.Mesh(new THREE.SphereGeometry(0.34*s,7,5),gm);
+        lb.position.set(Math.cos(a)*0.42*s,0.34*s,Math.sin(a)*0.42*s); lb.castShadow=true; g.add(lb); }
+      const fc=[0xff6f9c,0xffd23f,0xfff2c8]; for(let i=0;i<3;i++){ const a=i*2.4+0.5, fl=new THREE.Mesh(new THREE.SphereGeometry(0.07*s,6,5),new THREE.MeshLambertMaterial({color:fc[i%3]}));
+        fl.position.set(Math.cos(a)*0.3*s,0.6*s,Math.sin(a)*0.3*s); g.add(fl); }
+      return g;
+    }
+    if(k===2){ // flower: green stem + a colourful bloom
+      const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.45*s,5),new THREE.MeshLambertMaterial({color:0x3f7a39})); stem.position.y=0.22*s; g.add(stem);
+      const bloom=new THREE.Mesh(new THREE.SphereGeometry(0.12*s,8,6),new THREE.MeshLambertMaterial({color:0xff5aa0})); bloom.position.y=0.47*s; bloom.scale.y=0.7; bloom.castShadow=true; g.add(bloom);
+      const ctr=new THREE.Mesh(new THREE.SphereGeometry(0.05*s,6,5),new THREE.MeshLambertMaterial({color:0xffd23f})); ctr.position.y=0.49*s; g.add(ctr);
+      return g;
+    }
     const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.16*s,0.22*s,1.3*s,6),new THREE.MeshLambertMaterial({color:0x6b4a2b})); tr.position.y=0.65*s; tr.castShadow=true; g.add(tr);
     const lf=new THREE.Mesh(new THREE.ConeGeometry(1.1*s,2.6*s,8),new THREE.MeshLambertMaterial({color:0x3f7a39})); lf.position.y=2.5*s; lf.castShadow=true; g.add(lf);
     return g;
@@ -595,9 +620,29 @@ function selectHL(o){ const hl=three&&three.hl; if(!hl) return;
   if(!o||o.type==='road'||o.type==='fence'||o.type==='tree'){ hl.visible=false; return; }   // these use the 2D cyan highlight, no 3D box
   const top=(o.type==='house'?o.h+1.7:o.h);
   hl.scale.set(o.w+0.3, top+0.3, o.d+0.3); hl.position.set(o.x, top/2, o.z); hl.visible=true; }
+// ambient grass / flowers / bushes scattered on the lawns (context, like the game's makeVegetation) — not editable
+function addAmbientVeg(){
+  let seed=12345; const rnd=()=>{ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; };
+  const solids=objs.filter(o=>o.type==='house'||o.type==='box');
+  const nearSolid=(x,z,m)=>solids.some(h=>Math.abs(x-h.x)<h.w/2+m&&Math.abs(z-h.z)<h.d/2+m);
+  const veg=new THREE.Group(); veg.userData.skip=true;
+  const grassMat=new THREE.MeshLambertMaterial({color:0x4a7a3a}), gGeo=new THREE.ConeGeometry(0.06,0.34,4);
+  for(let i=0;i<160;i++){ const a=rnd()*6.2832, rr=rnd()*32, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+    if(nearSolid(x,z,0.4)) continue; const m=new THREE.Mesh(gGeo,grassMat); m.position.set(x,0.17,z); m.rotation.y=rnd()*6.28; veg.add(m); }
+  const fcol=[0xff6f9c,0xffd23f,0x8a6cff,0xff7a4d,0xffffff], stemMat=new THREE.MeshLambertMaterial({color:0x3f7a39}), stemGeo=new THREE.CylinderGeometry(0.012,0.012,0.28,4), blGeo=new THREE.SphereGeometry(0.08,6,5);
+  for(let i=0;i<48;i++){ const a=rnd()*6.2832, rr=rnd()*30, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+    if(nearSolid(x,z,0.5)) continue;
+    const st=new THREE.Mesh(stemGeo,stemMat); st.position.set(x,0.14,z); veg.add(st);
+    const bl=new THREE.Mesh(blGeo,new THREE.MeshLambertMaterial({color:fcol[(rnd()*fcol.length)|0]})); bl.position.set(x,0.30,z); bl.scale.y=0.7; veg.add(bl); }
+  const bushMat=new THREE.MeshLambertMaterial({color:0x4f8a44}), bGeo=new THREE.SphereGeometry(0.5,8,6);
+  for(let i=0;i<22;i++){ const a=rnd()*6.2832, rr=4+rnd()*29, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+    if(nearSolid(x,z,0.7)) continue; const m=new THREE.Mesh(bGeo,bushMat); m.position.set(x,0.34,z); m.scale.set(1,0.7,1); m.castShadow=true; veg.add(m); }
+  three.group.add(veg);
+}
 function build3D(){           // full rebuild — only for structural changes (load/import/undo/clear)
   if(!three) return; applyWorld(); clearGroup(three.group);
   for(const o of objs){ const m=mesh3D(o); m.userData.obj=o; o.__m3=m; three.group.add(m); }
+  addAmbientVeg();
   if(three.decoRoad) three.decoRoad.visible=!objs.some(o=>o.type==='road');   // custom roads replace the demo grid
   selectHL(sel);
 }
@@ -709,7 +754,7 @@ function refreshPanel(){
   updateStats();
   if(!sel) return;
   if(isR){ pRoadW.value=sel.width; return; }
-  if(isT){ pTreeS.value=sel.scale; return; }
+  if(isT){ pTreeS.value=sel.scale; document.getElementById('treeTypeLbl').textContent=(sel.kind===1?'Busch 🌿':(sel.kind===2?'Blume 🌼':'Baum 🌳')); return; }
   if(isF){ pFenceC.value=hex(sel.c); return; }
   const isH=sel.type==='house';
   document.querySelectorAll('.hOnly').forEach(e=>e.style.display=isH?'flex':'none');
@@ -736,7 +781,7 @@ function refreshPanel(){
 }
 function syncPanelXZ(){ if(sel){ pX.value=sel.x; pZ.value=sel.z; } }
 function updateStats(){ const c=t=>objs.filter(o=>o.type===t).length;
-  document.getElementById('stats').innerHTML=`Häuser <b>${c('house')}</b> · Props <b>${c('box')}</b> · Straßen <b>${c('road')}</b> · Bäume <b>${c('tree')}</b> · Zäune <b>${c('fence')}</b> &nbsp;·&nbsp; Undo ${undoStack.length}`; }
+  document.getElementById('stats').innerHTML=`Häuser <b>${c('house')}</b> · Props <b>${c('box')}</b> · Straßen <b>${c('road')}</b> · Pflanzen <b>${c('tree')}</b> · Zäune <b>${c('fence')}</b> &nbsp;·&nbsp; Undo ${undoStack.length}`; }
 
 const bind=(id,key)=>{ const el=document.getElementById(id);
   el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
