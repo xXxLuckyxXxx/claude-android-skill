@@ -129,7 +129,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float us = 1.4f;          // global UI scale (text + buttons), grows with screen height
 
     private int prog3, aPos, aNormal, aUV, uMVP, uModel, uColor, uMode, uLightDir, uCamPos, uFogColor, uTime, uTex;
-    private int uSunInt, uAmbient, uFogRange;
+    private int uSunInt, uAmbient, uFogRange, uWorldUV;
     private int progSky, aPSky, uSkyFwd, uSkyRight, uSkyUp, uSkySun, uSkyHalfFov, uSkyTime, uSkyHorizon, uSkyZenith;
     private int progVig, aPVig;
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
@@ -137,6 +137,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
+    private int brickTex, stoneTex, sidingTex;   // per-archetype facade materials (Stage 1 graphics upgrade)
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts;
@@ -380,6 +381,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uSunInt = GLES20.glGetUniformLocation(prog3, "uSunInt");
         uAmbient = GLES20.glGetUniformLocation(prog3, "uAmbient");
         uFogRange = GLES20.glGetUniformLocation(prog3, "uFogRange");
+        uWorldUV = GLES20.glGetUniformLocation(prog3, "uWorldUV");
 
         progSky = buildProgram(VERT_SKY_SRC, FRAG_SKY_SRC);
         aPSky = GLES20.glGetAttribLocation(progSky, "aP");
@@ -455,6 +457,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
         wallTex = uploadTexture(makeHouseBitmap());
+        brickTex = uploadTexture(makeBrickBitmap());
+        stoneTex = uploadTexture(makeStoneBitmap());
+        sidingTex = uploadTexture(makeSidingBitmap());
         woodTex = uploadTexture(makeWoodBitmap());
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
 
@@ -533,6 +538,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uAmbient, ambient);
         GLES20.glUniform2f(uFogRange, fogStart, fogEnd);
         GLES20.glUniform1f(uTime, timeAcc);
+        GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, terrainTex);
@@ -555,17 +561,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawShadows();
 
         GLES20.glUseProgram(prog3);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stucco facades
+        GLES20.glUniform1f(uWorldUV, 1f);                      // walls: world-scale facade tiling + ground-contact AO
+        int lastMat = -1;
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
             if (b.length > 10 && b[10] != 0f) continue;       // collision-only proxy (interior furniture) — drawn via interiorMesh
+            int mat = (b.length > 11) ? (int) b[11] : 0;      // 0 plaster (palette-tinted) · 1 brick · 2 stone · 3 timber
+            if (mat != lastMat) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, mat == 1 ? brickTex : mat == 2 ? stoneTex : mat == 3 ? sidingTex : wallTex);
+                lastMat = mat;
+            }
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, b[0], b[1], b[2]);
             if (b.length > 9 && b[9] != 0f) Matrix.rotateM(model, 0, b[9], 0f, 1f, 0f);   // props/fences carry a yaw
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
             float boost = (i == hitBox && hitTimer > 0f) ? 1.6f : 1f;
-            drawWorld(cube, 36, 0f, b[6] * boost, b[7] * boost, b[8] * boost);
+            float cr = mat == 0 ? b[6] : 1f, cg = mat == 0 ? b[7] : 1f, cb = mat == 0 ? b[8] : 1f;   // brick/stone/timber carry their own colour
+            drawWorld(cube, 36, 0f, cr * boost, cg * boost, cb * boost);
         }
+        GLES20.glUniform1f(uWorldUV, 0f);                      // restore mesh UVs for roofs/windows/bands/interiors
 
         Matrix.setIdentityM(model, 0);                         // pitched roofs + windows (baked, world-space)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);    // neutral-grey shingle; per-house colour via uColor
@@ -3923,7 +3937,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
                 int doorStyle = arch == 0 ? 1 : (arch == 1 ? 0 : (arch == 2 ? 2 : 3));   // plank / panel / glazed / shop
                 addBuilding(L, doors, cx, cz, w, d, h, doorSide, 1, p[0], p[1], p[2], chimney ? 1 : 0,
-                            doorW, doorH, dc[0], dc[1], dc[2], doorStyle);
+                            doorW, doorH, dc[0], dc[1], dc[2], doorStyle, arch);   // arch -> facade material: 0 plaster·1 brick·2 stone·3 timber
                 houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                         GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys});
                 if (rc.nextFloat() < 0.45f) {                      // a barrel / crate / planter tucked against a wall
@@ -4137,19 +4151,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b, int chimney,
                                     float doorW, float doorH, float dr, float dg, float db) {
-        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney, doorW, doorH, dr, dg, db, 0);
+        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney, doorW, doorH, dr, dg, db, 0, 0);
     }
 
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b, int chimney,
-                                    float doorW, float doorH, float dr, float dg, float db, int doorStyle) {
+                                    float doorW, float doorH, float dr, float dg, float db, int doorStyle, int material) {
         float t = 0.3f;
         doorW = clamp(doorW, 0.8f, Math.min(w, d) - 0.6f);     // keep the gap inside the wall
         doorH = clamp(doorH, 1.6f, h - 0.3f);                  // keep the lintel under the eave
-        addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b);   // +z
-        addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b);   // -z
-        addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b);  // +x
-        addWall(L, cx - w * 0.5f, cz, t, d, h, doorSide == 3, doorW, doorH, false, r, g, b);  // -x
+        addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b, material);   // +z
+        addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b, material);   // -z
+        addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b, material);  // +x
+        addWall(L, cx - w * 0.5f, cz, t, d, h, doorSide == 3, doorW, doorH, false, r, g, b, material);  // -x
         L.add(new float[]{cx, h + 0.15f, cz, w + t, 0.3f, d + t, r * 0.9f, g * 0.9f, b * 0.95f}); // roof
         float dcx, dcz; int axis;                          // openable door leaf in the gap
         if (doorSide == 0)      { dcx = cx; dcz = cz + d * 0.5f; axis = 0; }
@@ -4187,27 +4201,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
-            L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f});
+            L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f, 0f, 0f, 1f}); // brick chimney
         }
     }
 
     private static void addWall(List<float[]> L, float cx, float cz, float sx, float sz, float h,
                                 boolean door, float doorW, float doorH, boolean spanX,
-                                float r, float g, float b) {
+                                float r, float g, float b, int material) {
+        float m = material;                            // facade-material tag travels in slot 11 (yaw=0, render-skip=0 first)
         if (!door) {
-            L.add(new float[]{cx, h * 0.5f, cz, sx, h, sz, r, g, b});
+            L.add(new float[]{cx, h * 0.5f, cz, sx, h, sz, r, g, b, 0f, 0f, m});
             return;
         }
         if (spanX) {                                   // wall runs along X; gap in the middle
             float segW = (sx - doorW) * 0.5f;
-            L.add(new float[]{cx - (doorW * 0.5f + segW * 0.5f), h * 0.5f, cz, segW, h, sz, r, g, b});
-            L.add(new float[]{cx + (doorW * 0.5f + segW * 0.5f), h * 0.5f, cz, segW, h, sz, r, g, b});
-            L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, doorW, h - doorH, sz, r, g, b}); // lintel
+            L.add(new float[]{cx - (doorW * 0.5f + segW * 0.5f), h * 0.5f, cz, segW, h, sz, r, g, b, 0f, 0f, m});
+            L.add(new float[]{cx + (doorW * 0.5f + segW * 0.5f), h * 0.5f, cz, segW, h, sz, r, g, b, 0f, 0f, m});
+            L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, doorW, h - doorH, sz, r, g, b, 0f, 0f, m}); // lintel
         } else {                                       // wall runs along Z
             float segD = (sz - doorW) * 0.5f;
-            L.add(new float[]{cx, h * 0.5f, cz - (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b});
-            L.add(new float[]{cx, h * 0.5f, cz + (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b});
-            L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, sx, h - doorH, doorW, r, g, b}); // lintel
+            L.add(new float[]{cx, h * 0.5f, cz - (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b, 0f, 0f, m});
+            L.add(new float[]{cx, h * 0.5f, cz + (doorW * 0.5f + segD * 0.5f), sx, h, segD, r, g, b, 0f, 0f, m});
+            L.add(new float[]{cx, doorH + (h - doorH) * 0.5f, cz, sx, h - doorH, doorW, r, g, b, 0f, 0f, m}); // lintel
         }
     }
 
@@ -4629,6 +4644,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return b;
     }
 
+    private static int cl255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
     /** Light stucco/plaster facade so houses read as houses (tinted by the per-house colour). */
     private static Bitmap makeHouseBitmap() {
         int N = 256;
@@ -4637,14 +4654,89 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         c.drawColor(0xFFEDE7DA);                                    // warm light plaster
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(55);
+        for (int k = 0; k < 30; k++) {                              // soft low-frequency mottle so big walls aren't dead flat
+            int v = rnd.nextInt(18);
+            p.setColor((0x12 << 24) | ((0xD8 - v) << 16) | ((0xD2 - v) << 8) | (0xC6 - v));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(46), p);
+        }
         for (int k = 0; k < 2600; k++) {                            // fine stucco speckle
             int v = rnd.nextInt(28);
             p.setColor((0x2A << 24) | ((0xD6 - v) << 16) | ((0xD0 - v) << 8) | (0xC2 - v));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
-        p.setColor(0x14000000);                                     // faint horizontal coat lines
+        p.setColor(0x10000000);                                     // faint horizontal coat lines
         for (int row = 1; row < 6; row++) { float y = row * N / 6f; c.drawRect(0, y, N, y + 1.2f, p); }
+        p.setColor(0x0E000000);                                     // a few faint vertical weather streaks
+        for (int k = 0; k < 16; k++) { float x = rnd.nextInt(N); c.drawRect(x, 0, x + 1.4f, N, p); }
+        return b;
+    }
+
+    /** Red-brown running-bond brick (carries its own colour; drawn with white tint). */
+    private static Bitmap makeBrickBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFFB9AE9C);                                    // mortar
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(91);
+        int rows = 12; float rh = (float) N / rows, gap = 2.2f, bw = N / 4f;
+        for (int row = 0; row < rows; row++) {
+            float y0 = row * rh + gap, y1 = (row + 1) * rh - gap, off = (row % 2) * (bw * 0.5f);
+            for (int col = -1; col <= 4; col++) {
+                float x0 = col * bw + off + gap, x1 = (col + 1) * bw + off - gap;
+                int v = rnd.nextInt(34);                            // per-brick tone variation
+                p.setColor(0xFF000000 | (cl255(0x9a - v + rnd.nextInt(18)) << 16) | (cl255(0x55 - v / 2) << 8) | cl255(0x42 - v / 2));
+                c.drawRect(x0, y0, x1, y1, p);
+            }
+        }
+        p.setColor(0x22000000);                                     // weathering speckle
+        for (int k = 0; k < 700; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N); c.drawRect(x, y, x + 2, y + 2, p); }
+        return b;
+    }
+
+    /** Ashlar grey stone / rendered-concrete blocks (carries its own colour). */
+    private static Bitmap makeStoneBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFF6E6E70);                                    // dark mortar
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(43);
+        int rows = 5; float rh = (float) N / rows, gap = 3.0f, bw = N / 3f;
+        for (int row = 0; row < rows; row++) {
+            float y0 = row * rh + gap, y1 = (row + 1) * rh - gap, off = (row % 2) * (bw * 0.5f);
+            for (int col = -1; col <= 3; col++) {
+                float x0 = col * bw + off + gap, x1 = (col + 1) * bw + off - gap;
+                int s = 0x9c - rnd.nextInt(26) + rnd.nextInt(14);   // slightly warm grey
+                p.setColor(0xFF000000 | (cl255(s) << 16) | (cl255(s - 2) << 8) | cl255(s - 6));
+                c.drawRect(x0, y0, x1, y1, p);
+            }
+        }
+        p.setColor(0x18FFFFFF);                                     // aggregate highlight speckle
+        for (int k = 0; k < 900; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N); c.drawRect(x, y, x + 1.5f, y + 1.5f, p); }
+        return b;
+    }
+
+    /** Warm horizontal timber siding for shops (carries its own colour). */
+    private static Bitmap makeSidingBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        c.drawColor(0xFF9B6A3C);                                    // warm timber base
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Random rnd = new Random(64);
+        int planks = 9; float ph = (float) N / planks;
+        for (int row = 0; row < planks; row++) {
+            float y0 = row * ph, y1 = (row + 1) * ph;
+            int v = rnd.nextInt(26);                                // per-plank tone
+            p.setColor(0xFF000000 | (cl255(0x9b - v + rnd.nextInt(16)) << 16) | (cl255(0x6a - v / 2) << 8) | cl255(0x3c - v / 3));
+            c.drawRect(0, y0, N, y1, p);
+            p.setColor(0x55000000); c.drawRect(0, y1 - 2f, N, y1, p);       // shadow line between boards
+            p.setColor(0x22FFFFFF); c.drawRect(0, y1, N, y1 + 1.5f, p);     // lit top edge of next board
+        }
+        p.setColor(0x1C000000);                                     // vertical grain streaks
+        for (int k = 0; k < 220; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N), len = 8 + rnd.nextInt(26); c.drawRect(x, y, x + 1.2f, y + len, p); }
         return b;
     }
 
@@ -4763,20 +4855,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
-        "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange;" +
+        "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange; uniform float uWorldUV;" +
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
         "  if(uMode<0.5){" +
-        "    vec3 tex=texture2D(uTex,vUV).rgb;" +
+        "    vec2 uv=vUV; float ao=1.0;" +
+        "    if(uWorldUV>0.5){" +                                        // facades: tile by world position (not the stretched 0..1 cube UV)
+        "      vec3 an=abs(N);" +
+        "      if(an.y>an.x&&an.y>an.z) uv=vWorld.xz;" +                 // top/bottom
+        "      else if(an.x>an.z)       uv=vWorld.zy;" +                 // +/-X wall
+        "      else                     uv=vWorld.xy;" +                 // +/-Z wall
+        "      uv*=0.5;" +                                               // ~2 m per texture tile
+        "      ao=mix(0.55,1.0,smoothstep(0.0,0.6,vWorld.y));" +         // ground-contact darkening so houses sit in the world
+        "    }" +
+        "    vec3 tex=texture2D(uTex,uv).rgb;" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         "    float df=max(dot(N,L),0.0);" +
         "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         "    vec3 base=tex*uColor;" +
-        "    col=base*(uAmbient*vec3(0.16,0.18,0.24)+uSunInt*df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
-        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30);" +
+        "    col=(base*(uAmbient*vec3(0.16,0.18,0.24)+uSunInt*df*vec3(1.15,1.05,0.9)+fl*vec3(0.25,0.32,0.45))" +
+        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30))*ao;" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
