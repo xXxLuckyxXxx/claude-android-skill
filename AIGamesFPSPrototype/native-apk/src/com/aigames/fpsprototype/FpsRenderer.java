@@ -3960,6 +3960,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  kerbs with room), benches on the sidewalk in front of houses, and a market square on the open lots. */
     private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
         java.util.List<float[]> placed = new java.util.ArrayList<float[]>();   // prop positions, for spacing
+        java.util.List<float[]> lampPts = new java.util.ArrayList<float[]>();   // lamp posts, so front-garden plants never wrap them
         java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
         // 1. lamps + street trees along the sidewalk strip of every street (kerbside, off the carriageway)
         for (float r : STREETS) {
@@ -3976,7 +3977,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     if (near) continue;
                     placed.add(new float[]{sx, sz});
                     float pick = rc.nextFloat();
-                    if (pick < 0.26f)      addLamp(L, sx, sz);                       // a lamp every few slots
+                    if (pick < 0.26f)      { addLamp(L, sx, sz); lampPts.add(new float[]{sx, sz}); }   // a lamp every few slots
                     else if (pick < 0.86f) {                                          // street tree — shrink near houses so the crown ends at the wall
                         float ts = Math.min(0.8f + rc.nextFloat() * 0.7f, houseClearance(houses, sx, sz) / 1.9f);
                         if (ts >= 0.5f && !blocksAnyDoorCrown(houses, sx, sz, 1.45f * ts)) trees.add(new float[]{sx, sz, ts}); }
@@ -4008,6 +4009,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     float ss = Math.min(0.22f + rc.nextFloat() * 0.07f, houseClearance(houses, bx, bz) / 1.9f);
                     if (ss < 0.18f) continue;
                     if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                        // crown must never reach a doorway
+                    if (!clearOfPts(lampPts, bx, bz, 0.3f + 1.45f * ss)) continue;                       // never wrap a lamp post
                     trees.add(new float[]{bx, bz, ss});
                 }
             }
@@ -4023,6 +4025,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float ss = Math.min(0.42f + rc.nextFloat() * 0.38f, houseClearance(houses, bx, bz) / 1.9f);
                 if (ss < 0.3f) continue;
                 if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                            // crown (not just centre) must clear every doorway
+                if (!clearOfPts(lampPts, bx, bz, 0.3f + 1.45f * ss)) continue;                           // never wrap a lamp post
                 trees.add(new float[]{bx, bz, ss});
             }
         }
@@ -4097,6 +4100,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static boolean blocksAnyDoorCrown(List<float[]> houses, float x, float z, float cr) {
         for (float[] h : houses) if (blocksDoorCrown(h, x, z, cr)) return true;
         return false;
+    }
+    /** True if (x,z) is at least `margin` (Chebyshev) from every already-placed point (lamps / street trees). */
+    private static boolean clearOfPts(java.util.List<float[]> pts, float x, float z, float margin) {
+        for (float[] p : pts) if (Math.abs(p[0] - x) < margin && Math.abs(p[1] - z) < margin) return false;
+        return true;
     }
     /** Gap from (x,z) to the nearest house footprint (>0 = outside). Used to cap a tree's crown so it ends at the wall. */
     private static float houseClearance(List<float[]> houses, float x, float z) {
@@ -4387,23 +4395,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
             float foundH = hh[16];
+            int ds = (int) hh[5]; float doorW = hh.length > 24 ? hh[24] : 1.9f;   // gap the bands at the doorway
             float tr = hh[20], tg = hh[21], tb = hh[22];
             int storeys = Math.round(hh[23]);
             if (storeys < 1) storeys = 1;
             if (storeys > 8) storeys = 8;
             if (foundH > 0.01f) {                              // stone plinth poking proud of the walls
                 int s = o / 8;
-                o = bandRing(d, o, cx, foundH * 0.5f, cz, w, dd, foundH * 0.5f, 0.07f);
+                o = bandRing(d, o, cx, foundH * 0.5f, cz, w, dd, foundH * 0.5f, 0.07f, ds, doorW);
                 bandG.add(new float[]{s, o / 8 - s, hh[17], hh[18], hh[19]});
             }
             if (tr >= 0f) {                                    // painted eave trim band just under the roof
                 int s = o / 8;
-                o = bandRing(d, o, cx, Math.max(0.2f, h - 0.14f), cz, w, dd, 0.11f, 0.05f);
+                o = bandRing(d, o, cx, Math.max(0.2f, h - 0.14f), cz, w, dd, 0.11f, 0.05f, ds, doorW);
                 bandG.add(new float[]{s, o / 8 - s, tr, tg, tb});
             }
             if (storeys >= 2) {                                // horizontal storey divider lines
                 int s = o / 8;
-                for (int k = 1; k < storeys; k++) o = bandRing(d, o, cx, h * k / (float) storeys, cz, w, dd, 0.06f, 0.04f);
+                for (int k = 1; k < storeys; k++) o = bandRing(d, o, cx, h * k / (float) storeys, cz, w, dd, 0.06f, 0.04f, ds, doorW);
                 float br = tr >= 0f ? tr : 0.86f, bg = tr >= 0f ? tg : 0.83f, bb = tr >= 0f ? tb : 0.77f;
                 bandG.add(new float[]{s, o / 8 - s, br, bg, bb});
             }
@@ -4414,12 +4423,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     /** Four thin boxes wrapping the 0.30 m walls of a w x dd house at height cy, sticking `proud` past each face. */
-    private static int bandRing(float[] d, int o, float cx, float cy, float cz, float w, float dd, float halfH, float proud) {
+    private static int bandRing(float[] d, int o, float cx, float cy, float cz, float w, float dd, float halfH, float proud, int ds, float doorW) {
         float hw = w * 0.5f, hd = dd * 0.5f, perp = 0.15f + proud;
-        o = box6(d, o, cx, cy, cz + hd, hw + proud, halfH, perp);    // +z face
-        o = box6(d, o, cx, cy, cz - hd, hw + proud, halfH, perp);    // -z face
-        o = box6(d, o, cx + hw, cy, cz, perp, halfH, hd + proud);    // +x face
-        o = box6(d, o, cx - hw, cy, cz, perp, halfH, hd + proud);    // -x face
+        boolean cut = (cy - halfH) < 2.45f;                          // band low enough to cross the doorway -> gap it there
+        float g = doorW * 0.5f + 0.12f;                              // gap half-width
+        o = (ds == 0 && cut) ? bandFaceGap(d, o, cx, cy, cz + hd, hw + proud, halfH, perp, g, 0)
+                             : box6(d, o, cx, cy, cz + hd, hw + proud, halfH, perp);    // +z face
+        o = (ds == 1 && cut) ? bandFaceGap(d, o, cx, cy, cz - hd, hw + proud, halfH, perp, g, 0)
+                             : box6(d, o, cx, cy, cz - hd, hw + proud, halfH, perp);    // -z face
+        o = (ds == 2 && cut) ? bandFaceGap(d, o, cx + hw, cy, cz, perp, halfH, hd + proud, g, 1)
+                             : box6(d, o, cx + hw, cy, cz, perp, halfH, hd + proud);    // +x face
+        o = (ds == 3 && cut) ? bandFaceGap(d, o, cx - hw, cy, cz, perp, halfH, hd + proud, g, 1)
+                             : box6(d, o, cx - hw, cy, cz, perp, halfH, hd + proud);    // -x face
+        return o;
+    }
+    /** A band wall-face split by a centred doorway gap of half-width g. wallAxis 0 = wall runs along X, 1 = along Z. */
+    private static int bandFaceGap(float[] d, int o, float cx, float cy, float cz, float hx, float hy, float hz, float g, int wallAxis) {
+        if (wallAxis == 0) {                                          // long axis = X -> two segments left/right of the gap
+            if (hx > g + 0.05f) { float sh = (hx - g) * 0.5f;
+                o = box6(d, o, cx - (g + sh), cy, cz, sh, hy, hz);
+                o = box6(d, o, cx + (g + sh), cy, cz, sh, hy, hz); }
+        } else {                                                     // long axis = Z
+            if (hz > g + 0.05f) { float sh = (hz - g) * 0.5f;
+                o = box6(d, o, cx, cy, cz - (g + sh), hx, hy, sh);
+                o = box6(d, o, cx, cy, cz + (g + sh), hx, hy, sh); }
+        }
         return o;
     }
 
@@ -4622,7 +4650,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (wy - winH * 0.5f < foundH + 0.12f) wy = foundH + 0.12f + winH * 0.5f;   // clear the plinth
             for (int ci = 0; ci < cols; ci++) {
                 float t = -span * 0.5f + colGap * (ci + 0.5f);       // offset along the wall
-                if (doorWall && fi == 0 && Math.abs(t) < 1.4f * Math.max(1f, wsc)) continue;   // ground-floor doorway
+                if (doorWall && Math.abs(t) < 1.4f * Math.max(1f, wsc) && wy - winH * 0.5f < 2.45f) continue;   // no pane over/around the doorway
                 if (rng.nextFloat() < omit) continue;                // drop a few so it isn't stamped
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
