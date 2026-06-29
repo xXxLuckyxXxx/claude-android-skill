@@ -609,11 +609,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(roofMesh, roofVerts, 0f, 0.69f, 0.31f, 0.16f);
         }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
+        GLES20.glEnable(GLES20.GL_BLEND);                       // glass panes: reflective + slightly see-through
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glDepthMask(false);                             // don't let glass occlude what's drawn after it
         if (winGroups != null) {                               // per-house glass tint
-            for (float[] gp : winGroups) drawWorldRange(windowMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            for (float[] gp : winGroups) drawWorldRange(windowMesh, (int) gp[0], (int) gp[1], 5f, gp[2], gp[3], gp[4]);
         } else {
-            drawWorld(windowMesh, windowVerts, 0f, 1f, 1f, 1f);
+            drawWorld(windowMesh, windowVerts, 5f, 1f, 1f, 1f);
         }
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);   // light stone window sills
         drawWorld(trimMesh, trimVerts, 0f, 0.95f, 0.93f, 0.86f);
         if (bandGroups != null) {                              // per-house foundation / trim / storey bands
@@ -4885,16 +4890,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         c.drawColor(0xFFF2F0EA);                                    // bright frame (tints lightly with the glass colour)
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         float m = N * 0.17f, gl = m, gr = N - m, gt = m, gb = N - m, gw = gr - gl;
-        // a window with a ROOM behind it, not flat glass: light glass top, darker interior lower down
-        p.setColor(0xFFC6CED6); c.drawRect(gl, gt, gr, gb, p);      // neutral glass (per-house uColor sets the hue)
-        p.setColor(0x55FFFFFF); c.drawRect(gl, gt, gr, N * 0.42f, p);   // sky sheen on the upper panes
-        p.setColor(0x4D1A2230); c.drawRect(gl, N * 0.5f, gr, gb, p);    // dim interior depth (lower half)
-        p.setColor(0x884A3326); c.drawRect(gl, N * 0.78f, gr, gb, p);   // furniture/sill silhouette at the bottom
-        p.setColor(0x66FFD9A0); c.drawRect(gl + gw * 0.30f, N * 0.6f, gr - gw * 0.30f, N * 0.74f, p);  // warm lamp glow inside
-        p.setColor(0xCCEDE6D6);                                     // light curtains down the two sides
-        c.drawRect(gl, gt, gl + gw * 0.20f, gb, p);
-        c.drawRect(gr - gw * 0.20f, gt, gr, gb, p);
-        p.setColor(0xFFF2F0EA);                                     // frame border + cross mullion (window bars)
+        // light, clean glass — the shader adds the reflection/see-through, so the texture stays bright (no painted-on dark room)
+        p.setColor(0xFFD2DAE2); c.drawRect(gl, gt, gr, gb, p);      // light neutral glass (per-house uColor sets the hue)
+        p.setColor(0x66FFFFFF); c.drawRect(gl, gt, gr, N * 0.5f, p);    // sky sheen across the upper panes
+        p.setColor(0x22203040); c.drawRect(gl, N * 0.5f, gr, gb, p);    // faint depth on the lower panes (kept light)
+        p.setColor(0x33FFE2B0); c.drawRect(gl + gw * 0.30f, N * 0.62f, gr - gw * 0.30f, N * 0.74f, p);  // faint warm interior hint
+        p.setColor(0xFFF2F0EA);                                     // frame border + cross mullion (window bars stay solid)
         c.drawRect(N * 0.5f - 3f, gt, N * 0.5f + 3f, gb, p);
         c.drawRect(gl, N * 0.5f - 3f, gr, N * 0.5f + 3f, p);
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(5f); c.drawRect(gl, gt, gr, gb, p);
@@ -5166,8 +5167,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    col=uColor*(vec3(0.18,0.20,0.26)+df*vec3(1.1))+sp*vec3(0.8)+rim*vec3(0.15);" +
         "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
-        "  } else {" +
+        "  } else if(uMode<4.5){" +
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
+        "  } else {" +                                          // mode 5: real glass — reflects the sky, slightly see-through, frame stays solid
+        "    vec3 tex=texture2D(uTex,vUV).rgb; vec3 N2=normalize(vNormal);" +
+        "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
+        "    float gx=step(0.20,vUV.x)*step(vUV.x,0.80)*step(0.20,vUV.y)*step(vUV.y,0.80);" +
+        "    float glass=gx*(1.0-step(0.47,vUV.x)*step(vUV.x,0.53))*(1.0-step(0.47,vUV.y)*step(vUV.y,0.53));" +   // panes only, not frame/glazing bars
+        "    float fres=pow(1.0-max(dot(N2,V),0.0),3.0);" +
+        "    vec3 H=normalize(L+V); float sp=pow(max(dot(N2,H),0.0),80.0); float df=max(dot(N2,L),0.0);" +
+        "    vec3 col2=tex*uColor*(0.45+0.55*df);" +
+        "    col2=mix(col2, vec3(0.80,0.88,1.0)*uSunInt, glass*(0.16+0.55*fres));" +   // panes mirror the sky (fresnel)
+        "    col2+=sp*glass*vec3(1.1)*uSunInt;" +                                       // crisp glass highlight
+        "    float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
+        "    col2=mix(col2,uFogColor,fog);" +
+        "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)), mix(1.0,0.58,glass)); return;" +   // frame opaque, glass see-through
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         "  col=mix(col,uFogColor,fog);" +
