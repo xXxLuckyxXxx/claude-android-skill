@@ -143,7 +143,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh, revealMesh;
     private int sphereVerts, circleVerts, terrainVerts, vegVerts, roofVerts, windowVerts, trimVerts, roadVerts, placedTreeVerts, bandVerts, interiorVerts, revealVerts;
     private float[] revealData;   // dark recessed interior behind each glass pane (built with the window mesh)
-    private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width} from the level; null = default grid
+    private float[][] roadSegs;                    // custom streets {x1,z1,x2,z2,width,r,g,b} from the level; null = default grid
+    private float[][] roadGroups;                  // per-street colour groups {firstVert, vertCount, r,g,b}
     private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
     private java.util.List<float[]> clutterPts;    // barrel/crate/planter positions, so benches never spawn on top of them
     private boolean hasCustomRoads;
@@ -570,7 +571,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         if (hasCustomRoads) {                                  // level-defined streets replace the default grid
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roadTex);
-            drawWorld(roadMesh, roadVerts, 0f, 1f, 1f, 1f);
+            if (roadGroups != null) for (float[] gp : roadGroups) drawWorldRange(roadMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            else drawWorld(roadMesh, roadVerts, 0f, 1f, 1f, 1f);
         } else {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
             drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
@@ -3811,6 +3813,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float[] makeRoadMesh() {
         float[] d = new float[roadSegs.length * 6 * 8];
         int o = 0;
+        java.util.List<float[]> grp = new java.util.ArrayList<float[]>();
         for (float[] s : roadSegs) {
             float x1 = s[0], z1 = s[1], x2 = s[2], z2 = s[3], width = Math.max(0.6f, s[4]);
             float dx = x2 - x1, dz = z2 - z1, len = (float) Math.sqrt(dx * dx + dz * dz);
@@ -3819,13 +3822,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float ax = x1 + px * hw, az = z1 + pz * hw, bx = x1 - px * hw, bz = z1 - pz * hw;
             float cx = x2 - px * hw, cz = z2 - pz * hw, ex = x2 + px * hw, ez = z2 + pz * hw;
             float v = len / width;                          // tile dashes along the length
+            int start = o / 8;
             o = put(d, o, ax, y, az, 0, 1, 0, 0f, 0f);
             o = put(d, o, bx, y, bz, 0, 1, 0, 1f, 0f);
             o = put(d, o, cx, y, cz, 0, 1, 0, 1f, v);
             o = put(d, o, ax, y, az, 0, 1, 0, 0f, 0f);
             o = put(d, o, cx, y, cz, 0, 1, 0, 1f, v);
             o = put(d, o, ex, y, ez, 0, 1, 0, 0f, v);
+            float cr = s.length > 7 ? s[5] : 1f, cg = s.length > 7 ? s[6] : 1f, cb = s.length > 7 ? s[7] : 1f;
+            grp.add(new float[]{start, o / 8 - start, cr, cg, cb});   // tint this street's asphalt
         }
+        roadGroups = grp.isEmpty() ? null : grp.toArray(new float[0][]);
         roadVerts = o / 8;
         return java.util.Arrays.copyOf(d, o);
     }
@@ -3969,8 +3976,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
                     props.add(new float[]{pf(t[1]), h * 0.5f, pf(t[2]), w, h, d, pf(t[6]), pf(t[7]), pf(t[8]), pfDef(t, 9, 0f)});
                 } else if (t[0].equals("R") && t.length >= 5) {
-                    // R x1 z1 x2 z2 [width]  -> a street segment (visual only, no collision)
-                    roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f)});
+                    // R x1 z1 x2 z2 [width] [r g b]  -> a street segment (visual only, no collision; rgb tints the asphalt)
+                    roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f),
+                                             pfDef(t, 6, 1f), pfDef(t, 7, 1f), pfDef(t, 8, 1f)});
                 } else if (t[0].equals("T") && t.length >= 3) {
                     // T x z [scale] [kind: 0 tree · 1 bush · 2 flower]  -> a placed plant
                     trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f), pfDef(t, 4, 0f)});
