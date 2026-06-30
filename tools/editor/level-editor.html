@@ -175,7 +175,7 @@
 </div>
 
 <footer>
-  <b>2D</b>: klicken/ziehen zum Platzieren & Verschieben. &nbsp; <b>3D</b>: ziehen = drehen · Mausrad = zoomen · Rechtsklick-ziehen = schieben · Objekt ziehen = verschieben. &nbsp; <b>🚶 Begehen</b>: WASD/Pfeile laufen · Maus schauen (klick zum Greifen) · Shift rennen · Esc löst die Maus — testet die Stadt aus Spielersicht.
+  <b>2D</b>: klicken/ziehen zum Platzieren & Verschieben. &nbsp; <b>3D</b>: ziehen = drehen · Mausrad = zoomen (über einem Objekt = Objekt drehen, Haus 90°) · Rechtsklick-ziehen = schieben · Objekt ziehen = verschieben. &nbsp; <b>🚶 Begehen</b>: WASD/Pfeile laufen · Maus schauen (klick zum Greifen) · Shift rennen · Esc löst die Maus — testet die Stadt aus Spielersicht.
   <br><b>Tastatur</b> (Objekt gewählt): Pfeile = bewegen (Shift = fein) · <code>[</code> <code>]</code> = drehen · <code>R</code> = 90° · <code>Strg+C/V</code> = kopieren · <code>Entf</code> = löschen · <code>Strg+Z</code> = zurück. Häuser drehen in 90°-Schritten · in <b>Begehen</b> kannst du durch die Tür ins Haus laufen.
   Heller Kreis = bebaubare Fläche (~33 m). Bäume/Wald & Straßen bleiben automatisch.
   Export ergibt <code>level.lvl</code> — aufs Gerät mit <code>fps.ps1 pushlevel level.lvl</code> (kein Neu-Bauen nötig).
@@ -429,6 +429,12 @@ function rotateSel(deg){ if(!sel) return;
 function drawHandles(o){ ctx.fillStyle='#fff'; ctx.strokeStyle='#39d4ff'; ctx.lineWidth=2;
   for(const p of [[o.x1,o.z1],[o.x2,o.z2]]){ ctx.beginPath(); ctx.arc(w2s(p[0]),w2s(p[1]),6,0,7); ctx.fill(); ctx.stroke(); }
 }
+let _wheelUndoT=0;
+function wheelRotate(o,deltaY){ if(!o) return;        // mouse-wheel rotates the object under the cursor
+  if(sel!==o) select(o);
+  const now=Date.now(); if(now-_wheelUndoT>500) pushUndo(); _wheelUndoT=now;   // one undo per scroll burst
+  rotateSel(deltaY<0?15:-15); live();                 // houses snap 90°, props/plants/roads step 15°
+}
 
 let drag2=null;
 cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); const [wx,wz]=evWorld(e);
@@ -443,6 +449,8 @@ cv.addEventListener('pointermove',e=>{ const [wx,wz]=evWorld(e);
     else { sel.x=snap(wx-drag2.ox); sel.z=snap(wz-drag2.oz); syncPanelXZ(); draw(); } }
 });
 cv.addEventListener('pointerup',()=>{ drag2=null; });
+cv.addEventListener('wheel',e=>{ if(tool!=='select') return; const [wx,wz]=evWorld(e); const o=hit2D(wx,wz);
+  if(o){ e.preventDefault(); wheelRotate(o,e.deltaY); } },{passive:false});
 
 // ---------- 3D view (three.js) ----------
 let three=null;
@@ -751,7 +759,11 @@ cv3.addEventListener('pointermove',e=>{ if(!three||mode==='fp') return;
   if(tool==='select'||tool==='delete'){ const o=pick3D(e); cv3.style.cursor=o?'grab':'default'; }   // hover affordance
 });
 cv3.addEventListener('pointerup',()=>{ cam3=null; drag3=null; cv3.style.cursor='default'; });
-cv3.addEventListener('wheel',e=>{ if(!three||mode==='fp') return; e.preventDefault(); three.cam.r*=(1+Math.sign(e.deltaY)*0.1); },{passive:false});
+cv3.addEventListener('wheel',e=>{ if(!three||mode==='fp') return; e.preventDefault();
+  const o=(tool==='select')?pick3D(e):null;
+  if(o) wheelRotate(o,e.deltaY);                       // scroll on an object -> rotate it
+  else three.cam.r*=(1+Math.sign(e.deltaY)*0.1);       // scroll on empty space -> zoom
+},{passive:false});
 
 // ---------- first-person walk mode ----------
 const fp={x:0,y:1.7,z:9,yaw:0,pitch:0,keys:{}};
