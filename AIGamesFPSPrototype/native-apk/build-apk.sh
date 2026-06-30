@@ -68,7 +68,7 @@ java -cp "$DX_JAR" com.android.dx.command.Main --dex \
 APK_BASE="$OUT/base.apk"
 echo "→ aapt2 link"
 if ! aapt2 link -I "$ANDROID_JAR" --manifest "$HERE/AndroidManifest.xml" \
-        --min-sdk-version 24 --target-sdk-version 34 \
+        --min-sdk-version 21 --target-sdk-version 34 \
         --version-code "$CODE" --version-name "$NAME" \
         -o "$APK_BASE" 2> "$OUT/aapt2.log"; then
     echo "  aapt2 link failed, falling back to aapt v1:"; sed 's/^/    /' "$OUT/aapt2.log"
@@ -97,7 +97,7 @@ apksigner sign \
     --ks "$KS" --ks-pass "pass:$STOREPASS" --key-pass "pass:$KEYPASS" \
     --ks-key-alias "$ALIAS" \
     --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-    --min-sdk-version 24 \
+    --min-sdk-version 21 \
     --out "$FINAL" "$OUT/aligned.apk"
 
 echo ""; echo "=== VERIFY ==="
