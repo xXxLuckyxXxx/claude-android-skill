@@ -157,6 +157,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float[][] bandGroups;                  // foundation / trim / storey-band colour groups: {firstVert, vertCount, r,g,b}
     private float[][] interiorGroups;              // baked house-interior material groups: {firstVert, vertCount, r,g,b}
     private java.util.List<float[]> interiorPieces;// furniture/floor/ceiling specs {x,y,z,w,h,d,colorIdx}, built once
+    private java.util.List<float[]> customFurniture;// level-placed FU pieces {kind,x,z,yaw,scale} (editor furniture tool)
     private static final float[][] INT_COLS = {    // interior material palette (indexed by colorIdx)
         {0.46f, 0.33f, 0.21f},   // 0 wood floor
         {0.86f, 0.84f, 0.80f},   // 1 ceiling
@@ -373,6 +374,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // A custom level (placed via the web editor + adb push) overrides the procedural village.
         if (!buildWorldFromFile(ctx, bl, dl, hl)) buildWorldInto(bl, dl, hl);
         furnishAll(bl, hl);                                 // walk-in interiors: furniture colliders + visual specs
+        if (customFurniture != null)                        // level-authored furniture (editor furniture tool)
+            for (float[] fu : customFurniture) addFurniture(bl, (int) fu[0], fu[1], fu[2], fu[3], fu[4]);
         this.boxes = bl.toArray(new float[0][]);
         this.doorData = dl.toArray(new float[0][]);
         this.houseRects = hl;
@@ -3979,6 +3982,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             java.util.List<float[]> hs = new java.util.ArrayList<float[]>();
             java.util.List<float[]> roadList = new java.util.ArrayList<float[]>();
             java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
+            java.util.List<float[]> furns = new java.util.ArrayList<float[]>();
             br = new java.io.BufferedReader(new java.io.FileReader(f));
             String line;
             while ((line = br.readLine()) != null) {
@@ -4005,7 +4009,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                        pfDef(t,31,-1f), pfDef(t,32,-1f), pfDef(t,33,-1f),   // [30-32] trim band colour (-1 = none)
                                        pfDef(t,34,1f),                                      // [33] storeys (1 = no dividers)
                                        pfDef(t,35,0f),                                      // [34] facade material 0 plaster·1 brick·2 stone·3 timber
-                                       pfDef(t,36,0f)});                                    // [35] house yaw in degrees (0 = axis-aligned)
+                                       pfDef(t,36,0f),                                      // [35] house yaw in degrees (0 = axis-aligned)
+                                       pfDef(t,37,1f)});                                    // [36] auto-furnish (1 = built-in furniture, 0 = place your own FU pieces)
                 } else if (t[0].equals("B") && t.length >= 9) {
                     // cx cz w h d r g b [yawDeg]  -> ground box centred at y = h/2 (yaw = visual rotation)
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
@@ -4014,6 +4019,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     // R x1 z1 x2 z2 [width] [r g b]  -> a street segment (visual only, no collision; rgb tints the asphalt)
                     roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f),
                                              pfDef(t, 6, 1f), pfDef(t, 7, 1f), pfDef(t, 8, 1f)});
+                } else if (t[0].equals("FU") && t.length >= 4) {
+                    // FU kind x z [yawDeg] [scale]  -> a placed furniture piece (visual + collision; see FURN recipes)
+                    furns.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pfDef(t, 4, 0f), pfDef(t, 5, 1f)});
                 } else if (t[0].equals("T") && t.length >= 3) {
                     // T x z [scale] [kind: 0 tree · 1 bush · 2 flower]  -> a placed plant
                     trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f), pfDef(t, 4, 0f)});
@@ -4031,7 +4039,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             this.roadSegs = roadList.isEmpty() ? null : roadList.toArray(new float[0][]);
             this.hasCustomRoads = this.roadSegs != null;
             this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
-            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty()) return false;
+            this.customFurniture = furns.isEmpty() ? null : furns;
+            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty() && furns.isEmpty()) return false;
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {
@@ -4045,7 +4054,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
                             hh[21], hh[22], hh[23], hh[24], hh[25], dStyle, mat, hh[35]); // doorW doorH doorR doorG doorB | doorStyle material | yaw
                 houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
-                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21], hh[35]});  // [24] door width, [25] yaw
+                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21], hh[35], hh[36]});  // [24] doorW, [25] yaw, [26] autoFurnish
             }
             return true;
         } catch (Exception e) {
@@ -4752,7 +4761,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Furnish every house once: store visual pieces for the baked mesh, add solid colliders to L. */
     private void furnishAll(List<float[]> L, List<float[]> houses) {
         interiorPieces = new java.util.ArrayList<float[]>();
-        for (float[] h : houses) furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5], h.length > 25 ? h[25] : 0f);
+        for (float[] h : houses) {
+            if (h.length > 26 && h[26] == 0f) continue;        // auto-furnish off -> the level supplies its own FU pieces
+            furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5], h.length > 25 ? h[25] : 0f);
+        }
     }
 
     /** A cosy ground-floor room: wood floor, ceiling, rug, hanging lamp, a bed, a wardrobe and a table + chairs,
@@ -4893,6 +4905,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         interiorPieces.add(new float[]{wx, y, wz, w, h, d, colorIdx, fYaw});
         if (solid) L.add(new float[]{wx, y, wz, w, h, d, 0.5f, 0.5f, 0.5f, fYaw, 1f});   // collision proxy (idx 9 = yaw, idx 10 = no-render)
+    }
+
+    // Furniture recipes shared with the editor (kind -> pieces of {dx,dy,dz, w,h,d, colorIdx, solid}).
+    // dx,dz are local offsets, dy the piece-centre height; all multiplied by the placed scale. KEEP IN SYNC with FURN in level-editor.html.
+    static final float[][][] FURN = {
+        // 0 Bett (frame + Decke + Kissen)
+        {{0,0.22f,0, 1.5f,0.30f,0.95f, 2,1}, {0,0.42f,0, 1.42f,0.14f,0.87f, 4,0}, {0,0.46f,-0.30f, 0.42f,0.12f,0.28f, 5,0}},
+        // 1 Schrank
+        {{0,0.85f,0, 0.62f,1.66f,0.45f, 3,1}, {0,1.10f,0.18f, 0.46f,1.20f,0.04f, 2,0}},
+        // 2 Tisch (+ 4 Beine)
+        {{0,0.70f,0, 0.90f,0.07f,0.65f, 2,1}, {-0.36f,0.35f,-0.26f, 0.07f,0.66f,0.07f, 3,0}, {0.36f,0.35f,-0.26f, 0.07f,0.66f,0.07f, 3,0}, {-0.36f,0.35f,0.26f, 0.07f,0.66f,0.07f, 3,0}, {0.36f,0.35f,0.26f, 0.07f,0.66f,0.07f, 3,0}},
+        // 3 Stuhl
+        {{0,0.24f,0, 0.40f,0.46f,0.40f, 2,1}, {0,0.55f,-0.17f, 0.40f,0.50f,0.06f, 2,0}},
+        // 4 Sofa (Sitz + Lehne + 2 Armlehnen)
+        {{0,0.24f,0, 1.50f,0.32f,0.62f, 8,1}, {0,0.50f,-0.25f, 1.50f,0.40f,0.16f, 8,0}, {-0.72f,0.34f,0, 0.12f,0.48f,0.62f, 8,0}, {0.72f,0.34f,0, 0.12f,0.48f,0.62f, 8,0}},
+        // 5 Regal (+ 3 Buchreihen)
+        {{0,0.90f,0, 0.60f,1.80f,0.32f, 3,1}, {0,1.18f,0, 0.50f,0.16f,0.26f, 9,0}, {0,0.78f,0, 0.50f,0.16f,0.26f, 9,0}, {0,1.45f,0, 0.50f,0.16f,0.26f, 9,0}},
+        // 6 Pflanze (Topf + Laub)
+        {{0,0.18f,0, 0.30f,0.34f,0.30f, 2,0}, {0,0.55f,0, 0.46f,0.50f,0.46f, 10,0}},
+        // 7 Teppich
+        {{0,0.025f,0, 1.60f,0.03f,1.10f, 4,0}},
+        // 8 Lampe (Fuß + Stange + Schirm)
+        {{0,0.06f,0, 0.30f,0.10f,0.30f, 2,0}, {0,0.78f,0, 0.07f,1.40f,0.07f, 6,0}, {0,1.55f,0, 0.42f,0.34f,0.42f, 7,0}},
+    };
+
+    /** Place one level-authored furniture piece (visual + collider), spun about its own centre by yaw and scaled. */
+    private void addFurniture(List<float[]> L, int kind, float cx, float cz, float yaw, float s) {
+        if (kind < 0 || kind >= FURN.length) return;
+        if (s <= 0f) s = 1f;
+        fCx = cx; fCz = cz; fYaw = yaw;
+        for (float[] p : FURN[kind])
+            addPiece(L, cx + p[0] * s, p[1] * s, cz + p[2] * s, p[3] * s, p[4] * s, p[5] * s, (int) p[6], p[7] != 0f);
     }
 
     /** Bake every interior piece into one mesh, grouped by material colour for cheap batched draws (~8 calls total). */
