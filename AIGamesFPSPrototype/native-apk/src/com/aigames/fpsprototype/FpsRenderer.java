@@ -338,6 +338,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[][] doorData;
     private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
     private int nearDoor = -1;
+    private final float[] obb2 = new float[2];         // scratch for oriented-box collision (rotated houses)
 
     // World look — defaults match the built-in sunny day; a level's SET lines override these.
     private final float[] skyHorizon = {0.76f, 0.85f, 0.95f}, skyZenith = {0.16f, 0.41f, 0.74f};
@@ -1269,13 +1270,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float ang = doorOpen[i] * 85f * (dd.length > 12 ? dd[12] : 1f);   // signed so every leaf swings OUTWARD into the cleared front
             int axis = (int) dd[6];
             float tH = dd[3], vH = dd[4], pH = dd[5];        // half tangent / vertical / depth of the leaf
+            float dyaw = dd.length > 13 ? dd[13] : 0f;       // house yaw (0 for the procedural town)
             Matrix.setIdentityM(doorBase, 0);               // hinge: origin ends at the leaf centre
+            Matrix.translateM(doorBase, 0, dd[0], dd[1], dd[2]);   // leaf centre (already spun into world)
+            if (dyaw != 0f) Matrix.rotateM(doorBase, 0, dyaw, 0f, 1f, 0f);   // into the house's local frame
             if (axis == 0) {                                // wall spans X, hinge on the +X edge
-                Matrix.translateM(doorBase, 0, dd[0] + tH, dd[1], dd[2]);
+                Matrix.translateM(doorBase, 0, tH, 0f, 0f);
                 Matrix.rotateM(doorBase, 0, ang, 0f, 1f, 0f);
                 Matrix.translateM(doorBase, 0, -tH, 0f, 0f);
             } else {                                        // wall spans Z, hinge on the +Z edge
-                Matrix.translateM(doorBase, 0, dd[0], dd[1], dd[2] + tH);
+                Matrix.translateM(doorBase, 0, 0f, 0f, tH);
                 Matrix.rotateM(doorBase, 0, ang, 0f, 1f, 0f);
                 Matrix.translateM(doorBase, 0, 0f, 0f, -tH);
             }
@@ -1622,6 +1626,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float[] b = boxes[i];
             if (b[1] + b[4] * 0.5f <= footY + 0.05f) continue;   // standing on/above it: walkable
             if (b[1] - b[4] * 0.5f >= footY + 1.8f) continue;    // overhead (door lintel / roof): pass under
+            float yawB = b.length > 9 ? b[9] : 0f;
+            if (yawB != 0f) {                                    // rotated house part -> oriented-box resolve (AABB path when yaw=0)
+                obb2[0] = x; obb2[1] = z;
+                obbPush(obb2, b[0], b[2], b[3] * 0.5f + r, b[5] * 0.5f + r, yawB);
+                x = obb2[0]; z = obb2[1];
+                continue;
+            }
             float minx = b[0] - b[3] * 0.5f - r, maxx = b[0] + b[3] * 0.5f + r;
             float minz = b[2] - b[5] * 0.5f - r, maxz = b[2] + b[5] * 0.5f + r;
             if (x > minx && x < maxx && z > minz && z < maxz) {
@@ -1638,6 +1649,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float[] dd = doorData[i];
             float hx = dd[6] == 0f ? dd[3] : dd[5];
             float hz = dd[6] == 0f ? dd[5] : dd[3];
+            float yawD = dd.length > 13 ? dd[13] : 0f;
+            if (yawD != 0f) {                                    // door of a rotated house -> oriented resolve
+                obb2[0] = x; obb2[1] = z;
+                obbPush(obb2, dd[0], dd[2], hx + r, hz + r, yawD);
+                x = obb2[0]; z = obb2[1];
+                continue;
+            }
             float minx = dd[0] - hx - r, maxx = dd[0] + hx + r, minz = dd[2] - hz - r, maxz = dd[2] + hz + r;
             if (x > minx && x < maxx && z > minz && z < maxz) {
                 float pL = x - minx, pR = maxx - x, pD = z - minz, pU = maxz - z;
@@ -1653,6 +1671,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             z = clamp(z, -ARENA_LIMIT, ARENA_LIMIT);
         }
         io[0] = x; io[1] = z;
+    }
+
+    /** Resolve a point (io2[0]=x, io2[1]=z) out of an oriented box centred at (bx,bz), half-extents (hx,hz)
+     *  along the box's own axes, rotated yawDeg about Y. yawDeg=0 is identical to the plain AABB push. */
+    private static void obbPush(float[] io2, float bx, float bz, float hx, float hz, float yawDeg) {
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float dx = io2[0] - bx, dz = io2[1] - bz;
+        float lx = dx * ca - dz * sa, lz = dx * sa + dz * ca;    // world -> box-local (Ry(-yaw))
+        if (lx > -hx && lx < hx && lz > -hz && lz < hz) {
+            float pL = lx + hx, pR = hx - lx, pD = lz + hz, pU = hz - lz;
+            float m = Math.min(Math.min(pL, pR), Math.min(pD, pU));
+            if (m == pL) lx = -hx; else if (m == pR) lx = hx; else if (m == pD) lz = -hz; else lz = hz;
+            io2[0] = bx + lx * ca + lz * sa;                     // box-local -> world (Ry(yaw))
+            io2[1] = bz - lx * sa + lz * ca;
+        }
     }
 
     private void tickTimers(float dt) {
@@ -3970,7 +4004,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                        pfDef(t,28,0.42f), pfDef(t,29,0.40f), pfDef(t,30,0.40f), // [27-29] foundation colour
                                        pfDef(t,31,-1f), pfDef(t,32,-1f), pfDef(t,33,-1f),   // [30-32] trim band colour (-1 = none)
                                        pfDef(t,34,1f),                                      // [33] storeys (1 = no dividers)
-                                       pfDef(t,35,0f)});                                    // [34] facade material 0 plaster·1 brick·2 stone·3 timber
+                                       pfDef(t,35,0f),                                      // [34] facade material 0 plaster·1 brick·2 stone·3 timber
+                                       pfDef(t,36,0f)});                                    // [35] house yaw in degrees (0 = axis-aligned)
                 } else if (t[0].equals("B") && t.length >= 9) {
                     // cx cz w h d r g b [yawDeg]  -> ground box centred at y = h/2 (yaw = visual rotation)
                     float w = pf(t[3]), h = pf(t[4]), d = pf(t[5]);
@@ -4008,9 +4043,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 int mat = (int) hh[34];                                  // facade material from the level (0 = plaster)
                 int dStyle = mat == 0 ? 1 : (mat == 1 ? 0 : (mat == 2 ? 2 : 3));   // door style follows the material, like the procedural town
                 addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
-                            hh[21], hh[22], hh[23], hh[24], hh[25], dStyle, mat);      // doorW doorH doorR doorG doorB | doorStyle material
+                            hh[21], hh[22], hh[23], hh[24], hh[25], dStyle, mat, hh[35]); // doorW doorH doorR doorG doorB | doorStyle material | yaw
                 houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
-                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21]});  // [24] door width
+                            gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21], hh[35]});  // [24] door width, [25] yaw
             }
             return true;
         } catch (Exception e) {
@@ -4426,6 +4461,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b, int chimney,
                                     float doorW, float doorH, float dr, float dg, float db, int doorStyle, int material) {
+        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney, doorW, doorH, dr, dg, db, doorStyle, material, 0f);
+    }
+
+    /** Deepest overload: yaw (degrees) spins the whole house about (cx,cz). yaw=0 is the unrotated axis-aligned build. */
+    private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
+                                    int doorSide, int roofStyle, float r, float g, float b, int chimney,
+                                    float doorW, float doorH, float dr, float dg, float db, int doorStyle, int material, float yaw) {
+        int boxStart = L.size(), doorStart = doors.size();
         float t = 0.3f;
         doorW = clamp(doorW, 0.8f, Math.min(w, d) - 0.6f);     // keep the gap inside the wall
         doorH = clamp(doorH, 1.6f, h - 0.3f);                  // keep the lintel under the eave
@@ -4471,6 +4514,54 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
             L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f, 0f, 0f, 1f}); // brick chimney
         }
+        if (yaw != 0f) {                                   // spin every box + the door of THIS house about (cx,cz)
+            for (int i = boxStart; i < L.size(); i++) rotateBoxAbout(L, i, cx, cz, yaw);
+            for (int i = doorStart; i < doors.size(); i++) rotateDoorAbout(doors, i, cx, cz, yaw);
+        }
+    }
+
+    /** Rotate box L[idx] about (px,pz) by yawDeg and tag it with that yaw so it renders + collides oriented.
+     *  Boxes shorter than the {…,yaw,renderSkip,material} layout are padded (pad = 0 = visible, plaster). */
+    private static void rotateBoxAbout(List<float[]> L, int idx, float px, float pz, float yawDeg) {
+        float[] b = L.get(idx);
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float x = b[0] - px, z = b[2] - pz;
+        if (b.length < 12) { float[] nb = new float[12]; System.arraycopy(b, 0, nb, 0, b.length); b = nb; L.set(idx, nb); }
+        b[0] = px + x * ca + z * sa;                       // Ry(yaw): new centre
+        b[2] = pz - x * sa + z * ca;
+        b[9] = yawDeg;                                      // visual + collision orientation
+    }
+
+    /** Rotate the door leaf record about (px,pz) and stash the house yaw in slot 13 (drawn + collided oriented). */
+    private static void rotateDoorAbout(List<float[]> doors, int idx, float px, float pz, float yawDeg) {
+        float[] dd = doors.get(idx);
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float x = dd[0] - px, z = dd[2] - pz;
+        float[] nd = new float[14];
+        System.arraycopy(dd, 0, nd, 0, Math.min(dd.length, 13));
+        nd[0] = px + x * ca + z * sa;
+        nd[2] = pz - x * sa + z * ca;
+        nd[13] = yawDeg;
+        doors.set(idx, nd);
+    }
+
+    /** Rotate a span of baked vertices (pos+normal, stride 8) about (px,pz) by yawDeg — used to spin a house's
+     *  roof / windows / bands / interior with its walls. No-op when yawDeg=0 so unrotated houses are untouched. */
+    private static void rotateVertSpanY(float[] d, int firstVert, int vertCount, float px, float pz, float yawDeg) {
+        if (yawDeg == 0f) return;
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        for (int v = 0; v < vertCount; v++) {
+            int o = (firstVert + v) * 8;
+            float x = d[o] - px, z = d[o + 2] - pz;
+            d[o]     = px + x * ca + z * sa;
+            d[o + 2] = pz - x * sa + z * ca;
+            float nx = d[o + 3], nz = d[o + 5];
+            d[o + 3] = nx * ca + nz * sa;
+            d[o + 5] = -nx * sa + nz * ca;
+        }
     }
 
     private static void addWall(List<float[]> L, float cx, float cz, float sx, float sz, float h,
@@ -4504,6 +4595,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (float[] hh : houseRects) {
             int start = o / 8;
             o = roofPrism(d, o, hh[0], hh[1], hh[2], hh[3], hh[4], hh[9], hh[10]);     // cx cz w d h pitch overhang
+            rotateVertSpanY(d, start, o / 8 - start, hh[0], hh[1], hh.length > 25 ? hh[25] : 0f);   // spin with the house
             roofGroups[gi++] = new float[]{start, o / 8 - start, hh[6], hh[7], hh[8]}; // firstVert, count, roof rgb
         }
         roofVerts = o / 8;
@@ -4563,11 +4655,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int ds = (int) hh[5], dens = (int) hh[11], storeys = Math.round(hh[23]);
             float wsc = hh[12], foundH = hh[16];
             if (dens == 0) continue;                       // "none" -> this house has no windows
-            int wstart = off[0] / 8;
+            int wstart = off[0] / 8, tstart = off[1] / 8, rstart = off[2] / 8;
             wallWindows(wd, td, rv, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
             wallWindows(wd, td, rv, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
             wallWindows(wd, td, rv, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
             wallWindows(wd, td, rv, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
+            float yaw = hh.length > 25 ? hh[25] : 0f;      // spin panes + sills + reveals with the house
+            if (yaw != 0f) {
+                rotateVertSpanY(wd, wstart, off[0] / 8 - wstart, cx, cz, yaw);
+                rotateVertSpanY(td, tstart, off[1] / 8 - tstart, cx, cz, yaw);
+                rotateVertSpanY(rv, rstart, off[2] / 8 - rstart, cx, cz, yaw);
+            }
             int wcount = off[0] / 8 - wstart;
             if (wcount > 0) winG.add(new float[]{wstart, wcount, hh[13], hh[14], hh[15]});  // glass tint
         }
@@ -4588,6 +4686,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         java.util.List<float[]> bandG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
+            int houseStart = o / 8;
             float foundH = hh[16];
             int ds = (int) hh[5]; float doorW = hh.length > 24 ? hh[24] : 1.9f;   // gap the bands at the doorway
             float tr = hh[20], tg = hh[21], tb = hh[22];
@@ -4610,6 +4709,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float br = tr >= 0f ? tr : 0.86f, bg = tr >= 0f ? tg : 0.83f, bb = tr >= 0f ? tb : 0.77f;
                 bandG.add(new float[]{s, o / 8 - s, br, bg, bb});
             }
+            rotateVertSpanY(d, houseStart, o / 8 - houseStart, cx, cz, hh.length > 25 ? hh[25] : 0f);   // spin all bands with the house
         }
         bandGroups = bandG.isEmpty() ? null : bandG.toArray(new float[0][]);
         bandVerts = o / 8;
@@ -4647,15 +4747,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // --- walk-in interiors: a furnished ground-floor room per house, baked into one mesh + collision proxies ---
 
+    private float fCx, fCz, fYaw;   // house currently being furnished, so addPiece can spin each piece with it
+
     /** Furnish every house once: store visual pieces for the baked mesh, add solid colliders to L. */
     private void furnishAll(List<float[]> L, List<float[]> houses) {
         interiorPieces = new java.util.ArrayList<float[]>();
-        for (float[] h : houses) furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5]);
+        for (float[] h : houses) furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5], h.length > 25 ? h[25] : 0f);
     }
 
     /** A cosy ground-floor room: wood floor, ceiling, rug, hanging lamp, a bed, a wardrobe and a table + chairs,
-     *  laid out away from the doorway. Solid pieces also get a non-rendered collision box in L. */
-    private void furnishHouse(List<float[]> L, float cx, float cz, float w, float dd, float h, int ds) {
+     *  laid out away from the doorway. Solid pieces also get a non-rendered collision box in L.
+     *  Layout is computed axis-aligned; addPiece spins each piece + collider about (cx,cz) by yaw. */
+    private void furnishHouse(List<float[]> L, float cx, float cz, float w, float dd, float h, int ds, float yaw) {
+        fCx = cx; fCz = cz; fYaw = yaw;
         float inx = w * 0.5f - 0.28f, inz = dd * 0.5f - 0.28f;       // interior half-extents (for furniture)
         if (inx < 0.7f || inz < 0.7f) return;                        // too small to furnish
         float ceilH = Math.min(2.55f, h - 0.22f);
@@ -4779,8 +4883,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void addPiece(List<float[]> L, float x, float y, float z, float w, float h, float d, int colorIdx, boolean solid) {
-        interiorPieces.add(new float[]{x, y, z, w, h, d, colorIdx});
-        if (solid) L.add(new float[]{x, y, z, w, h, d, 0.5f, 0.5f, 0.5f, 0f, 1f});   // collision-only proxy (idx 10 = no-render)
+        float wx = x, wz = z;                              // spin the piece centre about the house centre (yaw=0 -> unchanged)
+        if (fYaw != 0f) {
+            double a = Math.toRadians(fYaw);
+            float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+            float rx = x - fCx, rz = z - fCz;
+            wx = fCx + rx * ca + rz * sa;
+            wz = fCz - rx * sa + rz * ca;
+        }
+        interiorPieces.add(new float[]{wx, y, wz, w, h, d, colorIdx, fYaw});
+        if (solid) L.add(new float[]{wx, y, wz, w, h, d, 0.5f, 0.5f, 0.5f, fYaw, 1f});   // collision proxy (idx 9 = yaw, idx 10 = no-render)
     }
 
     /** Bake every interior piece into one mesh, grouped by material colour for cheap batched draws (~8 calls total). */
@@ -4793,7 +4905,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int start = o / 8;
             for (float[] p : interiorPieces) {
                 if ((int) p[6] != ci) continue;
+                int ps = o / 8;
                 o = box6(d, o, p[0], p[1], p[2], p[3] * 0.5f, p[4] * 0.5f, p[5] * 0.5f);
+                if (p.length > 7 && p[7] != 0f) rotateVertSpanY(d, ps, o / 8 - ps, p[0], p[2], p[7]);   // orient with the house
             }
             int cnt = o / 8 - start;
             if (cnt > 0) groups.add(new float[]{start, cnt, INT_COLS[ci][0], INT_COLS[ci][1], INT_COLS[ci][2]});
