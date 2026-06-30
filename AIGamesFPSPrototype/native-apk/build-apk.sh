@@ -95,7 +95,10 @@ FINAL="$PROJ/Builds/Android/AIGamesFPS_native_v${NAME}_code${CODE}.apk"
 echo "→ apksigner sign"
 apksigner sign \
     --ks "$KS" --ks-pass "pass:$STOREPASS" --key-pass "pass:$KEYPASS" \
-    --ks-key-alias "$ALIAS" --out "$FINAL" "$OUT/aligned.apk"
+    --ks-key-alias "$ALIAS" \
+    --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+    --min-sdk-version 24 \
+    --out "$FINAL" "$OUT/aligned.apk"
 
 echo ""; echo "=== VERIFY ==="
 apksigner verify --print-certs "$FINAL" | head -6
