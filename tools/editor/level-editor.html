@@ -128,7 +128,7 @@
       <div class="row hOnly"><label>Stockwerke</label><input type="range" id="pStoreys" min="1" max="6" step="1" style="flex:1"><span id="pStoreysV" style="width:auto;color:var(--mut)"></span></div>
       <div class="row" style="align-items:flex-start"><label>Farbe</label><div class="sw" id="sw"></div></div>
       <div class="row"><label>&nbsp;</label><input type="color" id="pCol" style="width:78px;padding:2px"></div>
-      <div class="row bOnly"><label>Drehung</label><input type="range" id="pYaw" min="0" max="360" step="5" style="flex:1"></div>
+      <div class="row rotRow"><label>Drehung</label><input type="range" id="pYaw" min="0" max="360" step="5" style="flex:1"><span id="pYawV" style="width:auto;color:var(--mut)"></span></div>
       <div class="row"><button id="rotBtn" title="90° drehen (Taste R)">↻ 90°</button><button id="dupBtn">Duplizieren</button><button id="delBtn" class="warn">Löschen</button></div>
       <div id="warnBox" class="warn" style="margin-top:6px"></div>
     </div>
@@ -281,7 +281,8 @@ function parse(text){
         foundC:(n.length>29)?[n[27],n[28],n[29]]:[0.42,0.40,0.40],
         trimOn:(n.length>32&&n[30]>=0), trimC:(n.length>32&&n[30]>=0)?[n[30],n[31],n[32]]:[0.95,0.93,0.86],
         storeys:(n.length>33?(n[33]|0):1),
-        material:(n.length>34?(n[34]|0):0)}));   // v5 facade material
+        material:(n.length>34?(n[34]|0):0),
+        yaw:(n.length>35?n[35]:0)}));   // v5 facade material · v6 free yaw (degrees)
     }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]],yaw:(n.length>8?n[8]:0)});
     else if(t[0]==='R'&&n.length>=4) out.push({type:'road',x1:n[0],z1:n[1],x2:n[2],z2:n[3],width:(n.length>4?n[4]:3.4),c:(n.length>7?[n[5],n[6],n[7]]:[1,1,1])});
@@ -291,7 +292,7 @@ function parse(text){
   return out;
 }
 function serialize(){
-  let s='# AIGames level v5 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys material(0Putz 1Ziegel 2Stein 3Holz)\n';
+  let s='# AIGames level v6 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys material(0Putz 1Ziegel 2Stein 3Holz) yaw\n';
   const f=v=>(Math.round(v*1000)/1000).toString();
   const sv=sunVec();
   s+=`SET skyHorizon ${f(world.skyH[0])} ${f(world.skyH[1])} ${f(world.skyH[2])}\n`;
@@ -307,7 +308,7 @@ function serialize(){
   for(const o of objs) if(o.type==='fence') s+=`F ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
   for(const o of objs) if(o.type==='house'){ fillHouse(o); const rc=o.roofC||[0.69,0.31,0.16];
     const trim = o.trimOn ? `${f(o.trimC[0])} ${f(o.trimC[1])} ${f(o.trimC[2])}` : '-1 -1 -1';
-    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0} ${o.material|0}\n`; }
+    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0} ${o.material|0} ${f(o.yaw||0)}\n`; }
   return s;
 }
 function newObj(kind,wx,wz){
@@ -379,7 +380,7 @@ function draw2DObj(o,on){
     ctx.lineWidth=4; ctx.strokeStyle=rgb(o.c); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); if(on) drawHandles(o); ctx.restore(); return; }
   const x=w2s(o.x),y=w2s(o.z),w=o.w*SCALE,d=o.d*SCALE;
   ctx.save(); ctx.translate(x,y);
-  if(o.type==='box'&&o.yaw) ctx.rotate(o.yaw*Math.PI/180);
+  if((o.type==='box'||o.type==='house')&&o.yaw) ctx.rotate(o.yaw*Math.PI/180);
   ctx.fillStyle=rgb(o.c); ctx.strokeStyle=o.type==='box'?'#000a':'#0009'; ctx.lineWidth=o.type==='box'?1.5:2;
   ctx.fillRect(-w/2,-d/2,w,d); ctx.strokeRect(-w/2,-d/2,w,d);
   if(o.type==='box'){ ctx.strokeStyle='#0006'; ctx.beginPath(); ctx.moveTo(-w/2,-d/2); ctx.lineTo(w/2,d/2); ctx.stroke(); }
@@ -415,15 +416,11 @@ function nudgeSel(dx,dz){ if(!sel) return;
   else { sel.x+=dx; sel.z+=dz; }
 }
 function rotateSel(deg){ if(!sel) return;
-  if(sel.type==='box'||sel.type==='tree'){ sel.yaw=(((sel.yaw||0)+deg)%360+360)%360; }
+  if(sel.type==='box'||sel.type==='tree'||sel.type==='house'){ sel.yaw=(((sel.yaw||0)+deg)%360+360)%360; }  // free angle, any degree
   else if(sel.type==='road'||sel.type==='fence'){
     const cx=(sel.x1+sel.x2)/2, cz=(sel.z1+sel.z2)/2, a=deg*Math.PI/180, c=Math.cos(a), s=Math.sin(a);
     const rot=(x,z)=>[cx+(x-cx)*c-(z-cz)*s, cz+(x-cx)*s+(z-cz)*c];
     [sel.x1,sel.z1]=rot(sel.x1,sel.z1); [sel.x2,sel.z2]=rot(sel.x2,sel.z2);
-  }
-  else if(sel.type==='house'){   // engine houses stay axis-aligned -> 90deg steps: swap footprint + turn the door
-    [sel.w,sel.d]=[sel.d,sel.w];
-    sel.door=(deg>0?{0:2,2:1,1:3,3:0}:{0:3,3:1,1:2,2:0})[sel.door|0];
   }
 }
 function drawHandles(o){ ctx.fillStyle='#fff'; ctx.strokeStyle='#39d4ff'; ctx.lineWidth=2;
@@ -433,7 +430,7 @@ let _wheelUndoT=0;
 function wheelRotate(o,deltaY){ if(!o) return;        // mouse-wheel rotates the object under the cursor
   if(sel!==o) select(o);
   const now=Date.now(); if(now-_wheelUndoT>500) pushUndo(); _wheelUndoT=now;   // one undo per scroll burst
-  rotateSel(deltaY<0?15:-15); live();                 // houses snap 90°, props/plants/roads step 15°
+  rotateSel(deltaY<0?15:-15); live();                 // free 15° steps for houses, props, plants, roads, fences
 }
 
 let drag2=null;
@@ -647,7 +644,7 @@ function mesh3D(o){
     m.position.set((o.x1+o.x2)/2,0.6,(o.z1+o.z2)/2); m.rotation.y=Math.atan2(dx,dz); return m;
   }
   if(o.type==='house'){
-    const g=new THREE.Group(); g.position.set(o.x,0,o.z);
+    const g=new THREE.Group(); g.position.set(o.x,0,o.z); g.rotation.y=(o.yaw||0)*Math.PI/180;   // free-angle spin about the house centre
     const mat=o.material|0;
     const bodyMat = mat>0 ? new THREE.MeshLambertMaterial({map:matTexture(mat)})   // brick/stone/timber carry their own colour
                           : new THREE.MeshLambertMaterial({color:col(o.c)});       // plaster: per-house tint
@@ -686,7 +683,8 @@ function applyWorld(){
 function selectHL(o){ const hl=three&&three.hl; if(!hl) return;
   if(!o||o.type==='road'||o.type==='fence'||o.type==='tree'){ hl.visible=false; return; }   // these use the 2D cyan highlight, no 3D box
   const top=(o.type==='house'?o.h+1.7:o.h);
-  hl.scale.set(o.w+0.3, top+0.3, o.d+0.3); hl.position.set(o.x, top/2, o.z); hl.visible=true; }
+  hl.scale.set(o.w+0.3, top+0.3, o.d+0.3); hl.position.set(o.x, top/2, o.z);
+  hl.rotation.y=(o.type==='house'||o.type==='box')?(o.yaw||0)*Math.PI/180:0; hl.visible=true; }
 // ambient grass / flowers / bushes scattered on the lawns (context, like the game's makeVegetation) — not editable
 function addAmbientVeg(){
   let seed=12345; const rnd=()=>{ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; };
@@ -772,13 +770,15 @@ function fpBlocked(x,z){ const R=0.34;
   for(const o of objs){
     if(o.type==='box'){ if(Math.abs(x-o.x)<o.w/2+R && Math.abs(z-o.z)<o.d/2+R) return true; continue; }
     if(o.type==='house'){
+      let dx=x-o.x, dz=z-o.z;                                             // into the house's local (unrotated) frame
+      if(o.yaw){ const a=o.yaw*Math.PI/180, c=Math.cos(a), s=Math.sin(a); const ox=dx,oz=dz; dx=ox*c-oz*s; dz=ox*s+oz*c; }
       const hw=o.w/2, hd=o.d/2;
-      if(Math.abs(x-o.x)>hw+R || Math.abs(z-o.z)>hd+R) continue;          // outside the footprint
-      if(Math.abs(x-o.x)<hw-R && Math.abs(z-o.z)<hd-R) continue;          // inside the room -> walkable (only walls block)
+      if(Math.abs(dx)>hw+R || Math.abs(dz)>hd+R) continue;                // outside the footprint
+      if(Math.abs(dx)<hw-R && Math.abs(dz)<hd-R) continue;                // inside the room -> walkable (only walls block)
       const nx=(o.door===2?1:(o.door===3?-1:0)), nz=(o.door===0?1:(o.door===1?-1:0));
-      const fx=o.x+nx*hw, fz=o.z+nz*hd;                                   // door-face centre
-      const lat = nx!==0 ? Math.abs(z-fz) : Math.abs(x-fx);              // distance along the door wall
-      const near= nx!==0 ? Math.abs(x-fx)<R+0.35 : Math.abs(z-fz)<R+0.35; // close to the door-wall plane
+      const fdx=nx*hw, fdz=nz*hd;                                         // door-face centre (local)
+      const lat = nx!==0 ? Math.abs(dz-fdz) : Math.abs(dx-fdx);          // distance along the door wall
+      const near= nx!==0 ? Math.abs(dx-fdx)<R+0.35 : Math.abs(dz-fdz)<R+0.35; // close to the door-wall plane
       if(lat<(o.doorW||1.9)/2+0.05 && near) continue;                     // walk through the doorway
       return true;                                                        // otherwise a wall blocks
     }
@@ -844,9 +844,10 @@ function refreshPanel(){
   const isH=sel.type==='house';
   document.querySelectorAll('.hOnly').forEach(e=>e.style.display=isH?'flex':'none');
   document.querySelectorAll('.bOnly').forEach(e=>e.style.display=(sel.type==='box')?'flex':'none');
+  document.querySelectorAll('.rotRow').forEach(e=>e.style.display=(sel.type==='box'||sel.type==='house')?'flex':'none');
   document.getElementById('pType').textContent=isH?'Haus':'Prop (Kiste/Säule)';
   pX.value=sel.x; pZ.value=sel.z; pW.value=sel.w; pD.value=sel.d; pH.value=sel.h; pRoof.value=sel.roof; pCol.value=hex(sel.c);
-  if(sel.type==='box') pYaw.value=sel.yaw||0;
+  if(sel.type==='box'||sel.type==='house'){ pYaw.value=Math.round(sel.yaw||0); const yv=document.getElementById('pYawV'); if(yv) yv.textContent=(Math.round(sel.yaw||0))+'°'; }
   if(isH){ fillHouse(sel);
     pRoofCol.value=hex(sel.roofC); pWin.value=sel.win; pWinSize.value=sel.winSize; pChim.value=sel.chim;
     pPitchAuto.checked=sel.pitch<0; pPitch.value=sel.pitch<0?1.2:sel.pitch; pPitch.disabled=pPitchAuto.checked;
@@ -909,7 +910,7 @@ function bindSeg(id,key){ const el=document.getElementById(id); el.addEventListe
   el.oninput=()=>{ if(sel&&(sel.type==='road'||sel.type==='fence')){ sel[key]=parseFloat(el.value)||0; live(); } }; }
 ['pRoadAx:x1','pRoadAz:z1','pRoadBx:x2','pRoadBz:z2','pFenceAx:x1','pFenceAz:z1','pFenceBx:x2','pFenceBz:z2'].forEach(s=>{const[i,k]=s.split(':');bindSeg(i,k);});
 pYaw.addEventListener('focus',()=>{ if(sel) pushUndo(); });
-pYaw.oninput=()=>{ if(sel&&sel.type==='box'){ sel.yaw=+pYaw.value; live(); } };
+pYaw.oninput=()=>{ if(sel&&(sel.type==='box'||sel.type==='house')){ sel.yaw=+pYaw.value; const yv=document.getElementById('pYawV'); if(yv) yv.textContent=(+pYaw.value)+'°'; live(); } };
 pTreeS.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pTreeS.oninput=()=>{ if(sel&&sel.type==='tree'){ sel.scale=parseFloat(pTreeS.value); live(); } };
 pTreeYaw.addEventListener('focus',()=>{ if(sel) pushUndo(); });
