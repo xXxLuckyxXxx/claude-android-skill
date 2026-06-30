@@ -65,6 +65,8 @@
     <button data-tool="bush">🌿 Busch</button>
     <button data-tool="flower">🌼 Blume</button>
     <button data-tool="fence">🚧 Zaun</button>
+    <button data-tool="furniture">🛋 Möbel</button>
+    <select id="furnKindSel" title="Möbelart zum Platzieren" style="background:#161c2b;color:#cdd6e6;border:1px solid #2a3550;border-radius:7px;padding:4px 6px;font:inherit"></select>
     <button data-tool="delete">🗑 Löschen</button>
   </div>
   <div class="sp"></div>
@@ -126,6 +128,7 @@
       <div class="row hOnly"><label>Sockelfarbe</label><input type="color" id="pFoundCol" style="width:78px;padding:2px"></div>
       <div class="row hOnly"><label>Zierband</label><input type="color" id="pTrimCol" style="width:78px;padding:2px"><label style="width:auto;color:var(--mut)"><input type="checkbox" id="pTrimOn"> an</label></div>
       <div class="row hOnly"><label>Stockwerke</label><input type="range" id="pStoreys" min="1" max="6" step="1" style="flex:1"><span id="pStoreysV" style="width:auto;color:var(--mut)"></span></div>
+      <div class="row hOnly"><label>Auto-Möbel</label><label style="width:auto;color:var(--mut)"><input type="checkbox" id="pAutoFurn" checked> eingebaute Möbel (aus → eigene Möbel setzen)</label></div>
       <div class="row" style="align-items:flex-start"><label>Farbe</label><div class="sw" id="sw"></div></div>
       <div class="row"><label>&nbsp;</label><input type="color" id="pCol" style="width:78px;padding:2px"></div>
       <div class="row rotRow"><label>Drehung</label><input type="range" id="pYaw" min="0" max="360" step="5" style="flex:1"><span id="pYawV" style="width:auto;color:var(--mut)"></span></div>
@@ -154,6 +157,16 @@
       <div class="row"><label>B (x,z)</label><input type="number" id="pFenceBx" step="0.5" style="width:64px"><input type="number" id="pFenceBz" step="0.5" style="width:64px"></div>
       <div class="row"><button id="fenceDel" class="warn">Löschen</button></div>
       <div class="muted">Ziehen: weiße Griffe = Endpunkte, Mitte = ganzer Zaun. Pfeiltasten bewegen · [ ] drehen.</div>
+    </div>
+    <div id="furnitureProps" hidden>
+      <div class="row"><label>Typ</label><span class="muted" id="furnTypeLbl">Möbel</span></div>
+      <div class="row"><label>Art</label><select id="pFurnKind"></select></div>
+      <div class="row"><label>X (Ost)</label><input type="number" id="pFurnX" step="0.5"></div>
+      <div class="row"><label>Z (Süd)</label><input type="number" id="pFurnZ" step="0.5"></div>
+      <div class="row"><label>Größe</label><input type="range" id="pFurnS" min="0.4" max="2.2" step="0.05" style="flex:1"><span id="pFurnSV" style="width:auto;color:var(--mut)"></span></div>
+      <div class="row"><label>Drehung</label><input type="range" id="pFurnYaw" min="0" max="360" step="5" style="flex:1"><span id="pFurnYawV" style="width:auto;color:var(--mut)"></span></div>
+      <div class="row"><button id="furnRot" title="90° drehen (Taste R)">↻ 90°</button><button id="furnDup">Duplizieren</button><button id="furnDel" class="warn">Löschen</button></div>
+      <div class="muted">Tipp: Bei einem Haus „Auto-Möbel" ausschalten, dann eigene Möbel hineinstellen. Mausrad/R dreht · Pfeiltasten bewegen.</div>
     </div>
     <hr style="border-color:var(--line);margin:14px 0">
     <div class="muted" id="stats"></div>
@@ -253,6 +266,24 @@ let world=JSON.parse(JSON.stringify(WORLD0));
 function sunVec(){ const az=world.sunAz*Math.PI/180, el=world.sunEl*Math.PI/180, ch=Math.cos(el); return [ch*Math.cos(az),Math.sin(el),ch*Math.sin(az)]; }
 
 // ---------- shared data ----------
+// Furniture pieces {dx,dy,dz, w,h,d, colorIdx, solid} — KEEP IN SYNC with FURN[][][] in FpsRenderer.java
+const FURN=[
+  [[0,0.22,0, 1.5,0.30,0.95, 2,1],[0,0.42,0, 1.42,0.14,0.87, 4,0],[0,0.46,-0.30, 0.42,0.12,0.28, 5,0]],          // 0 Bett
+  [[0,0.85,0, 0.62,1.66,0.45, 3,1],[0,1.10,0.18, 0.46,1.20,0.04, 2,0]],                                            // 1 Schrank
+  [[0,0.70,0, 0.90,0.07,0.65, 2,1],[-0.36,0.35,-0.26, 0.07,0.66,0.07, 3,0],[0.36,0.35,-0.26, 0.07,0.66,0.07, 3,0],[-0.36,0.35,0.26, 0.07,0.66,0.07, 3,0],[0.36,0.35,0.26, 0.07,0.66,0.07, 3,0]], // 2 Tisch
+  [[0,0.24,0, 0.40,0.46,0.40, 2,1],[0,0.55,-0.17, 0.40,0.50,0.06, 2,0]],                                           // 3 Stuhl
+  [[0,0.24,0, 1.50,0.32,0.62, 8,1],[0,0.50,-0.25, 1.50,0.40,0.16, 8,0],[-0.72,0.34,0, 0.12,0.48,0.62, 8,0],[0.72,0.34,0, 0.12,0.48,0.62, 8,0]], // 4 Sofa
+  [[0,0.90,0, 0.60,1.80,0.32, 3,1],[0,1.18,0, 0.50,0.16,0.26, 9,0],[0,0.78,0, 0.50,0.16,0.26, 9,0],[0,1.45,0, 0.50,0.16,0.26, 9,0]], // 5 Regal
+  [[0,0.18,0, 0.30,0.34,0.30, 2,0],[0,0.55,0, 0.46,0.50,0.46, 10,0]],                                              // 6 Pflanze
+  [[0,0.025,0, 1.60,0.03,1.10, 4,0]],                                                                              // 7 Teppich
+  [[0,0.06,0, 0.30,0.10,0.30, 2,0],[0,0.78,0, 0.07,1.40,0.07, 6,0],[0,1.55,0, 0.42,0.34,0.42, 7,0]],               // 8 Lampe
+];
+const FURN_NAMES=['Bett 🛏','Schrank 🚪','Tisch 🍽','Stuhl 🪑','Sofa 🛋','Regal 📚','Pflanze 🪴','Teppich ▭','Lampe 💡'];
+// interior material palette (indexed by colorIdx) — matches INT_COLS in FpsRenderer.java
+const IC=[[0.46,0.33,0.21],[0.86,0.84,0.80],[0.54,0.39,0.24],[0.34,0.24,0.16],[0.50,0.30,0.30],[0.85,0.83,0.78],[0.33,0.33,0.36],[0.97,0.87,0.60],[0.36,0.43,0.52],[0.62,0.43,0.35],[0.27,0.45,0.28],[0.80,0.80,0.84]];
+let furnKind=0;
+// footprint (full w,d) of a furniture kind at scale 1, from the union of its piece extents
+function furnFootprint(kind){ let mx=0,mz=0; for(const p of (FURN[kind]||[])){ mx=Math.max(mx,Math.abs(p[0])+p[3]/2); mz=Math.max(mz,Math.abs(p[2])+p[5]/2); } return [mx*2,mz*2]; }
 function parse(text){
   const out=[]; world=JSON.parse(JSON.stringify(WORLD0));
   for(const raw of text.split(/\r?\n/)){
@@ -282,17 +313,19 @@ function parse(text){
         trimOn:(n.length>32&&n[30]>=0), trimC:(n.length>32&&n[30]>=0)?[n[30],n[31],n[32]]:[0.95,0.93,0.86],
         storeys:(n.length>33?(n[33]|0):1),
         material:(n.length>34?(n[34]|0):0),
-        yaw:(n.length>35?n[35]:0)}));   // v5 facade material · v6 free yaw (degrees)
+        yaw:(n.length>35?n[35]:0),
+        autoFurnish:(n.length>36?n[36]!==0:true)}));   // v5 material · v6 yaw · v6 auto-furnish
     }
     else if(t[0]==='B'&&n.length>=8) out.push({type:'box',x:n[0],z:n[1],w:n[2],h:n[3],d:n[4],roof:0,door:0,c:[n[5],n[6],n[7]],yaw:(n.length>8?n[8]:0)});
     else if(t[0]==='R'&&n.length>=4) out.push({type:'road',x1:n[0],z1:n[1],x2:n[2],z2:n[3],width:(n.length>4?n[4]:3.4),c:(n.length>7?[n[5],n[6],n[7]]:[1,1,1])});
+    else if(t[0]==='FU'&&n.length>=3) out.push({type:'furniture',kind:n[0]|0,x:n[1],z:n[2],yaw:(n.length>3?n[3]:0),scale:(n.length>4?n[4]:1)});
     else if(t[0]==='T'&&n.length>=2) out.push({type:'tree',x:n[0],z:n[1],scale:(n.length>2?n[2]:1),kind:(n.length>3?(n[3]|0):0),yaw:(n.length>4?n[4]:0)});
     else if(t[0]==='F'&&n.length>=4) out.push({type:'fence',x1:n[0],z1:n[1],x2:n[2],z2:n[3],c:(n.length>6?[n[4],n[5],n[6]]:[0.62,0.45,0.30])});
   }
   return out;
 }
 function serialize(){
-  let s='# AIGames level v6 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys material(0Putz 1Ziegel 2Stein 3Holz) yaw\n';
+  let s='# AIGames level v6 - edited in level-editor.html\n# SET world look | B props | R roads | T trees | F fences | FU furniture (kind x z yaw scale)\n# H houses: x z w d h roof door r g b | rr rg rb pitch overhang windows winSize chimney | glassRGB doorW doorH doorRGB foundH foundRGB trimRGB(-1=off) storeys material(0Putz 1Ziegel 2Stein 3Holz) yaw autoFurnish(1/0)\n';
   const f=v=>(Math.round(v*1000)/1000).toString();
   const sv=sunVec();
   s+=`SET skyHorizon ${f(world.skyH[0])} ${f(world.skyH[1])} ${f(world.skyH[2])}\n`;
@@ -305,10 +338,11 @@ function serialize(){
   for(const o of objs) if(o.type==='road'){ const rc=o.c||[1,1,1]; s+=`R ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.width)} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])}\n`; }
   for(const o of objs) if(o.type==='box') s+=`B ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.h)} ${f(o.d)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(o.yaw||0)}\n`;
   for(const o of objs) if(o.type==='tree') s+=`T ${f(o.x)} ${f(o.z)} ${f(o.scale)} ${o.kind|0} ${o.yaw|0}\n`;
+  for(const o of objs) if(o.type==='furniture') s+=`FU ${o.kind|0} ${f(o.x)} ${f(o.z)} ${f(o.yaw||0)} ${f(o.scale||1)}\n`;
   for(const o of objs) if(o.type==='fence') s+=`F ${f(o.x1)} ${f(o.z1)} ${f(o.x2)} ${f(o.z2)} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])}\n`;
   for(const o of objs) if(o.type==='house'){ fillHouse(o); const rc=o.roofC||[0.69,0.31,0.16];
     const trim = o.trimOn ? `${f(o.trimC[0])} ${f(o.trimC[1])} ${f(o.trimC[2])}` : '-1 -1 -1';
-    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0} ${o.material|0} ${f(o.yaw||0)}\n`; }
+    s+=`H ${f(o.x)} ${f(o.z)} ${f(o.w)} ${f(o.d)} ${f(o.h)} ${o.roof} ${o.door} ${f(o.c[0])} ${f(o.c[1])} ${f(o.c[2])} ${f(rc[0])} ${f(rc[1])} ${f(rc[2])} ${f(o.pitch)} ${f(o.overhang)} ${o.win|0} ${f(o.winSize)} ${o.chim|0} ${f(o.glass[0])} ${f(o.glass[1])} ${f(o.glass[2])} ${f(o.doorW)} ${f(o.doorH)} ${f(o.doorC[0])} ${f(o.doorC[1])} ${f(o.doorC[2])} ${f(o.foundH)} ${f(o.foundC[0])} ${f(o.foundC[1])} ${f(o.foundC[2])} ${trim} ${o.storeys|0} ${o.material|0} ${f(o.yaw||0)} ${o.autoFurnish===false?0:1}\n`; }
   return s;
 }
 function newObj(kind,wx,wz){
@@ -320,6 +354,7 @@ function newObj(kind,wx,wz){
   if(kind==='bush') return {type:'tree',x:wx,z:wz,scale:0.7,kind:1,yaw:0};
   if(kind==='flower') return {type:'tree',x:wx,z:wz,scale:0.6,kind:2,yaw:0};
   if(kind==='fence') return {type:'fence',x1:wx,z1:wz,x2:wx,z2:wz,c:[0.62,0.45,0.30]};
+  if(kind==='furniture') return {type:'furniture',kind:furnKind,x:wx,z:wz,yaw:0,scale:1};
   return {type:'box',x:wx,z:wz,w:1.2,h:3.0,d:1.2,roof:0,door:0,c:PILLAR.slice(),yaw:0};   // pillar
 }
 function segDist(px,pz,x1,z1,x2,z2){ const dx=x2-x1,dz=z2-z1,l2=dx*dx+dz*dz; if(l2<1e-6) return Math.hypot(px-x1,pz-z1);
@@ -335,6 +370,7 @@ function fillHouse(o){ if(o.type!=='house')return o;
   if(o.trimOn==null)o.trimOn=false; if(!o.trimC) o.trimC=[0.95,0.93,0.86];   // eave trim band
   if(o.storeys==null)o.storeys=1;                              // storey divider lines
   if(o.material==null)o.material=0;                            // facade material 0 Putz·1 Ziegel·2 Stein·3 Holz
+  if(o.autoFurnish==null)o.autoFurnish=true;                   // built-in furniture (off -> place your own)
   return o; }
 const snap=v=>document.getElementById('snap').checked?Math.round(v*2)/2:Math.round(v*1000)/1000;
 
@@ -378,6 +414,13 @@ function draw2DObj(o,on){
   if(o.type==='fence'){ ctx.save(); ctx.lineCap='round';
     if(on){ ctx.lineWidth=8; ctx.strokeStyle='#39d4ff'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); }
     ctx.lineWidth=4; ctx.strokeStyle=rgb(o.c); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); if(on) drawHandles(o); ctx.restore(); return; }
+  if(o.type==='furniture'){ const k=o.kind|0, fp=furnFootprint(k), s=o.scale||1, fw=fp[0]*s*SCALE, fd=fp[1]*s*SCALE;
+    const pc=(FURN[k]&&FURN[k][0])?IC[FURN[k][0][6]]:[0.5,0.4,0.3];
+    ctx.save(); ctx.translate(w2s(o.x),w2s(o.z)); if(o.yaw) ctx.rotate(o.yaw*Math.PI/180);
+    ctx.fillStyle=rgb(pc); ctx.strokeStyle=on?'#39d4ff':'#0008'; ctx.lineWidth=on?2.5:1.2;
+    ctx.fillRect(-fw/2,-fd/2,fw,fd); ctx.strokeRect(-fw/2,-fd/2,fw,fd);
+    ctx.fillStyle='#0006'; ctx.fillRect(-fw/2,-fd/2,Math.min(fw,5),fd);   // a front edge tick so rotation reads
+    ctx.restore(); return; }
   const x=w2s(o.x),y=w2s(o.z),w=o.w*SCALE,d=o.d*SCALE;
   ctx.save(); ctx.translate(x,y);
   if((o.type==='box'||o.type==='house')&&o.yaw) ctx.rotate(o.yaw*Math.PI/180);
@@ -397,6 +440,9 @@ function hit2D(wx,wz){ for(let i=objs.length-1;i>=0;i--){ const o=objs[i];
   if(o.type==='road'){ if(segDist(wx,wz,o.x1,o.z1,o.x2,o.z2)<=o.width/2+0.4) return o; continue; }
   if(o.type==='fence'){ if(segDist(wx,wz,o.x1,o.z1,o.x2,o.z2)<=0.6) return o; continue; }
   if(o.type==='tree'){ if(Math.hypot(wx-o.x,wz-o.z)<=1.3*(o.scale||1)) return o; continue; }
+  if(o.type==='furniture'){ const fp=furnFootprint(o.kind|0), s=o.scale||1; let dx=wx-o.x, dz=wz-o.z;
+    if(o.yaw){ const a=o.yaw*Math.PI/180, c=Math.cos(a), si=Math.sin(a); const ox=dx,oz=dz; dx=ox*c-oz*si; dz=ox*si+oz*c; }   // into the piece's frame
+    if(Math.abs(dx)<=fp[0]*s/2+0.15&&Math.abs(dz)<=fp[1]*s/2+0.15) return o; continue; }
   if(Math.abs(wx-o.x)<=o.w/2&&Math.abs(wz-o.z)<=o.d/2) return o; } return null; }
 function evWorld(e){ const r=cv.getBoundingClientRect(); return [s2w((e.clientX-r.left)*(CANVAS/r.width)), s2w((e.clientY-r.top)*(CANVAS/r.height))]; }
 
@@ -416,7 +462,7 @@ function nudgeSel(dx,dz){ if(!sel) return;
   else { sel.x+=dx; sel.z+=dz; }
 }
 function rotateSel(deg){ if(!sel) return;
-  if(sel.type==='box'||sel.type==='tree'||sel.type==='house'){ sel.yaw=(((sel.yaw||0)+deg)%360+360)%360; }  // free angle, any degree
+  if(sel.type==='box'||sel.type==='tree'||sel.type==='house'||sel.type==='furniture'){ sel.yaw=(((sel.yaw||0)+deg)%360+360)%360; }  // free angle, any degree
   else if(sel.type==='road'||sel.type==='fence'){
     const cx=(sel.x1+sel.x2)/2, cz=(sel.z1+sel.z2)/2, a=deg*Math.PI/180, c=Math.cos(a), s=Math.sin(a);
     const rot=(x,z)=>[cx+(x-cx)*c-(z-cz)*s, cz+(x-cx)*s+(z-cz)*c];
@@ -619,6 +665,11 @@ function mesh3D(o){
     m.position.set((o.x1+o.x2)/2,0.03,(o.z1+o.z2)/2); m.rotation.y=Math.atan2(dx,dz);
     return m;
   }
+  if(o.type==='furniture'){ const g=new THREE.Group(); g.position.set(o.x,0,o.z); g.rotation.y=(o.yaw||0)*Math.PI/180;
+    const s=o.scale||1, rec=FURN[o.kind|0]||[];
+    for(const p of rec){ const m=new THREE.Mesh(new THREE.BoxGeometry(p[3]*s,p[4]*s,p[5]*s),new THREE.MeshLambertMaterial({color:col(IC[p[6]]||[0.5,0.4,0.3])}));
+      m.position.set(p[0]*s,p[1]*s,p[2]*s); m.castShadow=true; m.receiveShadow=true; g.add(m); }
+    return g; }
   if(o.type==='tree'){ const g=new THREE.Group(); g.position.set(o.x,0,o.z); g.rotation.y=(o.yaw||0)*Math.PI/180; const s=o.scale||1, k=o.kind|0;
     if(k===1){ // bush: a few green lobes (wider than tall) with a couple of flower dots
       const gm=new THREE.MeshLambertMaterial({color:0x4f8a44});
@@ -664,7 +715,7 @@ function mesh3D(o){
     else if(o.door===2){ dm.position.set(o.w/2-0.02,dy,0); }
     else { dm.position.set(-o.w/2+0.02,dy,0); }
     g.add(dm);
-    houseBands3D(o,g); houseWindows3D(o,g); chimney3D(o,g); houseInterior3D(o,g);
+    houseBands3D(o,g); houseWindows3D(o,g); chimney3D(o,g); if(o.autoFurnish!==false) houseInterior3D(o,g);
     return g;
   }
   const m=new THREE.Mesh(new THREE.BoxGeometry(o.w,o.h,o.d),new THREE.MeshLambertMaterial({color:col(o.c)})); m.position.set(o.x,o.h/2,o.z); if(o.yaw) m.rotation.y=o.yaw*Math.PI/180; return m;
@@ -830,17 +881,22 @@ document.querySelectorAll('#viewSeg button').forEach(b=>b.onclick=()=>setMode(b.
 
 // ---------- side panel ----------
 function refreshPanel(){
-  const ty=sel&&sel.type, isR=ty==='road', isT=ty==='tree', isF=ty==='fence', isProp=sel&&!isR&&!isT&&!isF;
+  const ty=sel&&sel.type, isR=ty==='road', isT=ty==='tree', isF=ty==='fence', isFU=ty==='furniture', isProp=sel&&!isR&&!isT&&!isF&&!isFU;
   document.getElementById('empty').hidden=!!sel;
   document.getElementById('props').hidden=!isProp;
   document.getElementById('roadProps').hidden=!isR;
   document.getElementById('treeProps').hidden=!isT;
   document.getElementById('fenceProps').hidden=!isF;
+  document.getElementById('furnitureProps').hidden=!isFU;
   updateStats();
   if(!sel) return;
   if(isR){ pRoadW.value=sel.width; pRoadCol.value=hex(roadTint(sel)); pRoadAx.value=sel.x1; pRoadAz.value=sel.z1; pRoadBx.value=sel.x2; pRoadBz.value=sel.z2; return; }
   if(isT){ pTreeS.value=sel.scale; pTreeYaw.value=sel.yaw||0; document.getElementById('treeTypeLbl').textContent=(sel.kind===1?'Busch 🌿':(sel.kind===2?'Blume 🌼':'Baum 🌳')); return; }
   if(isF){ pFenceC.value=hex(sel.c); pFenceAx.value=sel.x1; pFenceAz.value=sel.z1; pFenceBx.value=sel.x2; pFenceBz.value=sel.z2; return; }
+  if(isFU){ const k=sel.kind|0; document.getElementById('pFurnKind').value=k; document.getElementById('furnTypeLbl').textContent=FURN_NAMES[k]||'Möbel';
+    document.getElementById('pFurnX').value=sel.x; document.getElementById('pFurnZ').value=sel.z;
+    document.getElementById('pFurnS').value=sel.scale||1; document.getElementById('pFurnSV').textContent=(sel.scale||1).toFixed(2);
+    document.getElementById('pFurnYaw').value=Math.round(sel.yaw||0); document.getElementById('pFurnYawV').textContent=Math.round(sel.yaw||0)+'°'; return; }
   const isH=sel.type==='house';
   document.querySelectorAll('.hOnly').forEach(e=>e.style.display=isH?'flex':'none');
   document.querySelectorAll('.bOnly').forEach(e=>e.style.display=(sel.type==='box')?'flex':'none');
@@ -857,6 +913,7 @@ function refreshPanel(){
     pTrimOn.checked=sel.trimOn; pTrimCol.value=hex(sel.trimC); pTrimCol.disabled=!sel.trimOn;
     pStoreys.value=sel.storeys; document.getElementById('pStoreysV').textContent=sel.storeys;
     pMat.value=sel.material||0;
+    document.getElementById('pAutoFurn').checked=sel.autoFurnish!==false;
   }
   document.querySelectorAll('#sw div').forEach((d,i)=>d.classList.toggle('on',i<PALETTE.length&&hex(PALETTE[i])===hex(sel.c)));
   document.querySelectorAll('.door4 button').forEach(b=>b.style.outline=(+b.dataset.door===sel.door)?'2px solid #39d4ff':'none');
@@ -870,7 +927,7 @@ function syncPanelXZ(){ if(!sel) return;
     if(el('Ax')){ el('Ax').value=sel.x1; el('Az').value=sel.z1; el('Bx').value=sel.x2; el('Bz').value=sel.z2; } }
   else { pX.value=sel.x; pZ.value=sel.z; } }
 function updateStats(){ const c=t=>objs.filter(o=>o.type===t).length;
-  document.getElementById('stats').innerHTML=`Häuser <b>${c('house')}</b> · Props <b>${c('box')}</b> · Straßen <b>${c('road')}</b> · Pflanzen <b>${c('tree')}</b> · Zäune <b>${c('fence')}</b> &nbsp;·&nbsp; Undo ${undoStack.length}`; }
+  document.getElementById('stats').innerHTML=`Häuser <b>${c('house')}</b> · Props <b>${c('box')}</b> · Straßen <b>${c('road')}</b> · Pflanzen <b>${c('tree')}</b> · Zäune <b>${c('fence')}</b> · Möbel <b>${c('furniture')}</b> &nbsp;·&nbsp; Undo ${undoStack.length}`; }
 
 const bind=(id,key)=>{ const el=document.getElementById(id);
   el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
@@ -922,6 +979,24 @@ pFenceC.oninput=()=>{ if(sel&&sel.type==='fence'){ sel.c=hex2c(pFenceC.value); l
 document.getElementById('roadDel').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.getElementById('treeDel').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.getElementById('fenceDel').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
+// --- furniture controls ---
+(function(){
+  const fkSel=document.getElementById('furnKindSel'), pfKind=document.getElementById('pFurnKind');
+  FURN_NAMES.forEach((nm,i)=>{ fkSel.add(new Option(nm,i)); pfKind.add(new Option(nm,i)); });
+  fkSel.value=furnKind;
+  fkSel.onchange=()=>{ furnKind=+fkSel.value; tool='furniture'; document.querySelectorAll('#tools button').forEach(x=>x.classList.toggle('on',x.dataset.tool==='furniture')); };
+  pfKind.onchange=()=>{ if(sel&&sel.type==='furniture'){ pushUndo(); sel.kind=+pfKind.value; document.getElementById('furnTypeLbl').textContent=FURN_NAMES[sel.kind]||'Möbel'; live(); } };
+  const bindNum=(id,key)=>{ const el=document.getElementById(id); el.addEventListener('focus',()=>{ if(sel) pushUndo(); }); el.oninput=()=>{ if(sel&&sel.type==='furniture'){ sel[key]=parseFloat(el.value)||0; live(); } }; };
+  bindNum('pFurnX','x'); bindNum('pFurnZ','z');
+  const pfS=document.getElementById('pFurnS'); pfS.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+  pfS.oninput=()=>{ if(sel&&sel.type==='furniture'){ sel.scale=parseFloat(pfS.value); document.getElementById('pFurnSV').textContent=sel.scale.toFixed(2); live(); } };
+  const pfY=document.getElementById('pFurnYaw'); pfY.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+  pfY.oninput=()=>{ if(sel&&sel.type==='furniture'){ sel.yaw=+pfY.value; document.getElementById('pFurnYawV').textContent=(+pfY.value)+'°'; live(); } };
+  document.getElementById('furnDel').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
+  document.getElementById('furnRot').onclick=()=>{ if(sel){ pushUndo(); rotateSel(90); live(); } };
+  document.getElementById('furnDup').onclick=()=>{ if(sel){ pushUndo(); const o=JSON.parse(JSON.stringify(noMesh(sel))); o.x+=1.5; o.z+=1.5; objs.push(o); if(mode==='3d'&&three) updateObj3D(o); select(o);} };
+  document.getElementById('pAutoFurn').onchange=()=>{ if(sel&&sel.type==='house'){ pushUndo(); sel.autoFurnish=document.getElementById('pAutoFurn').checked; live(); } };
+})();
 document.querySelectorAll('.door4 button').forEach(b=>b.onclick=()=>{ if(sel){ pushUndo(); sel.door=+b.dataset.door; live(); } });
 document.getElementById('delBtn').onclick=()=>{ if(sel){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null);} };
 document.getElementById('rotBtn').onclick=()=>{ if(sel){ pushUndo(); rotateSel(90); live(); } };
