@@ -135,8 +135,10 @@
     <div id="roadProps" hidden>
       <div class="row"><label>Typ</label><span class="muted">Straße</span></div>
       <div class="row"><label>Breite</label><input type="range" id="pRoadW" min="1.5" max="8" step="0.2" style="flex:1"></div>
+      <div class="row"><label>A (x,z)</label><input type="number" id="pRoadAx" step="0.5" style="width:64px"><input type="number" id="pRoadAz" step="0.5" style="width:64px"></div>
+      <div class="row"><label>B (x,z)</label><input type="number" id="pRoadBx" step="0.5" style="width:64px"><input type="number" id="pRoadBz" step="0.5" style="width:64px"></div>
       <div class="row"><button id="roadDel" class="warn">Löschen</button></div>
-      <div class="muted">Mit dem 🛣-Werkzeug ziehen = neue Straße. Verschieben: löschen & neu ziehen.</div>
+      <div class="muted">Ziehen: weiße Griffe = Endpunkte, Mitte = ganze Straße. Pfeiltasten bewegen · [ ] drehen.</div>
     </div>
     <div id="treeProps" hidden>
       <div class="row"><label>Typ</label><span class="muted" id="treeTypeLbl">Baum 🌳</span></div>
@@ -146,8 +148,10 @@
     <div id="fenceProps" hidden>
       <div class="row"><label>Typ</label><span class="muted">Zaun 🚧</span></div>
       <div class="row"><label>Farbe</label><input type="color" id="pFenceC" style="width:78px;padding:2px"></div>
+      <div class="row"><label>A (x,z)</label><input type="number" id="pFenceAx" step="0.5" style="width:64px"><input type="number" id="pFenceAz" step="0.5" style="width:64px"></div>
+      <div class="row"><label>B (x,z)</label><input type="number" id="pFenceBx" step="0.5" style="width:64px"><input type="number" id="pFenceBz" step="0.5" style="width:64px"></div>
       <div class="row"><button id="fenceDel" class="warn">Löschen</button></div>
-      <div class="muted">Mit dem 🚧-Werkzeug ziehen = neuer Zaun.</div>
+      <div class="muted">Ziehen: weiße Griffe = Endpunkte, Mitte = ganzer Zaun. Pfeiltasten bewegen · [ ] drehen.</div>
     </div>
     <hr style="border-color:var(--line);margin:14px 0">
     <div class="muted" id="stats"></div>
@@ -170,6 +174,7 @@
 
 <footer>
   <b>2D</b>: klicken/ziehen zum Platzieren & Verschieben. &nbsp; <b>3D</b>: ziehen = drehen · Mausrad = zoomen · Rechtsklick-ziehen = schieben · Objekt ziehen = verschieben. &nbsp; <b>🚶 Begehen</b>: WASD/Pfeile laufen · Maus schauen (klick zum Greifen) · Shift rennen · Esc löst die Maus — testet die Stadt aus Spielersicht.
+  <br><b>Tastatur</b> (Objekt gewählt): Pfeile = bewegen (Shift = fein) · <code>[</code> <code>]</code> = drehen · <code>R</code> = 90° · <code>Strg+C/V</code> = kopieren · <code>Entf</code> = löschen · <code>Strg+Z</code> = zurück. Straßen/Zäune: weiße Griffe ziehen oder Werte eintippen.
   Heller Kreis = bebaubare Fläche (~33 m). Bäume/Wald & Straßen bleiben automatisch.
   Export ergibt <code>level.lvl</code> — aufs Gerät mit <code>fps.ps1 pushlevel level.lvl</code> (kein Neu-Bauen nötig).
 </footer>
@@ -234,7 +239,7 @@ const hex=c=>'#'+c.map(v=>('0'+Math.round(Math.max(0,Math.min(1,v))*255).toStrin
 const hex2c=h=>[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];
 const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
 
-let objs=[], sel=null, tool='select', mode='2d', undoStack=[];
+let objs=[], sel=null, tool='select', mode='2d', undoStack=[], clip=null;
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 const cv3=document.getElementById('cv3');
 
@@ -357,6 +362,7 @@ function draw2DObj(o,on){
     if(on){ ctx.lineWidth=o.width*SCALE+7; ctx.strokeStyle='#39d4ff'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); }
     ctx.lineWidth=o.width*SCALE; ctx.strokeStyle='#3a3d40'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke();
     ctx.lineWidth=Math.max(1,o.width*SCALE*0.09); ctx.strokeStyle='#e8c23a'; ctx.setLineDash([7,9]); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); ctx.setLineDash([]);
+    if(on) drawHandles(o);
     ctx.restore(); return;
   }
   if(o.type==='tree'){ const s=(o.scale||1), k=o.kind|0; ctx.save();
@@ -366,7 +372,7 @@ function draw2DObj(o,on){
     ctx.beginPath(); ctx.arc(w2s(o.x),w2s(o.z),rad,0,7); ctx.fill(); ctx.stroke(); ctx.restore(); return; }
   if(o.type==='fence'){ ctx.save(); ctx.lineCap='round';
     if(on){ ctx.lineWidth=8; ctx.strokeStyle='#39d4ff'; ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); }
-    ctx.lineWidth=4; ctx.strokeStyle=rgb(o.c); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); ctx.restore(); return; }
+    ctx.lineWidth=4; ctx.strokeStyle=rgb(o.c); ctx.beginPath(); ctx.moveTo(w2s(o.x1),w2s(o.z1)); ctx.lineTo(w2s(o.x2),w2s(o.z2)); ctx.stroke(); if(on) drawHandles(o); ctx.restore(); return; }
   const x=w2s(o.x),y=w2s(o.z),w=o.w*SCALE,d=o.d*SCALE;
   ctx.save(); ctx.translate(x,y);
   if(o.type==='box'&&o.yaw) ctx.rotate(o.yaw*Math.PI/180);
@@ -389,15 +395,45 @@ function hit2D(wx,wz){ for(let i=objs.length-1;i>=0;i--){ const o=objs[i];
   if(Math.abs(wx-o.x)<=o.w/2&&Math.abs(wz-o.z)<=o.d/2) return o; } return null; }
 function evWorld(e){ const r=cv.getBoundingClientRect(); return [s2w((e.clientX-r.left)*(CANVAS/r.width)), s2w((e.clientY-r.top)*(CANVAS/r.height))]; }
 
+// --- transform helpers (shared by mouse + keyboard, 2D + 3D) ---
+function segGrab(o,wx,wz){ const dA=Math.hypot(wx-o.x1,wz-o.z1), dB=Math.hypot(wx-o.x2,wz-o.z2);
+  if(dA<0.9&&dA<=dB) return {seg:o,end:0};                         // grab endpoint A
+  if(dB<0.9) return {seg:o,end:1};                                 // grab endpoint B
+  return {seg:o,end:2,ax:wx-o.x1,az:wz-o.z1,bx:wx-o.x2,bz:wz-o.z2};// grab the whole segment
+}
+function segMove(g,wx,wz){ const o=g.seg;
+  if(g.end===0){ o.x1=snap(wx); o.z1=snap(wz); }
+  else if(g.end===1){ o.x2=snap(wx); o.z2=snap(wz); }
+  else { o.x1=snap(wx-g.ax); o.z1=snap(wz-g.az); o.x2=snap(wx-g.bx); o.z2=snap(wz-g.bz); }
+}
+function nudgeSel(dx,dz){ if(!sel) return;
+  if(sel.type==='road'||sel.type==='fence'){ sel.x1+=dx; sel.z1+=dz; sel.x2+=dx; sel.z2+=dz; }
+  else { sel.x+=dx; sel.z+=dz; }
+}
+function rotateSel(deg){ if(!sel) return;
+  if(sel.type==='box'){ sel.yaw=(((sel.yaw||0)+deg)%360+360)%360; }
+  else if(sel.type==='road'||sel.type==='fence'){
+    const cx=(sel.x1+sel.x2)/2, cz=(sel.z1+sel.z2)/2, a=deg*Math.PI/180, c=Math.cos(a), s=Math.sin(a);
+    const rot=(x,z)=>[cx+(x-cx)*c-(z-cz)*s, cz+(x-cx)*s+(z-cz)*c];
+    [sel.x1,sel.z1]=rot(sel.x1,sel.z1); [sel.x2,sel.z2]=rot(sel.x2,sel.z2);
+  }
+  // houses are axis-aligned in the engine; trees/plants are radially symmetric -> rotation is a no-op for them
+}
+function drawHandles(o){ ctx.fillStyle='#fff'; ctx.strokeStyle='#39d4ff'; ctx.lineWidth=2;
+  for(const p of [[o.x1,o.z1],[o.x2,o.z2]]){ ctx.beginPath(); ctx.arc(w2s(p[0]),w2s(p[1]),6,0,7); ctx.fill(); ctx.stroke(); }
+}
+
 let drag2=null;
 cv.addEventListener('pointerdown',e=>{ cv.setPointerCapture(e.pointerId); const [wx,wz]=evWorld(e);
-  if(tool==='select'){ const o=hit2D(wx,wz); if(o){ pushUndo(); select(o); drag2=(o.type==='road'||o.type==='fence')?null:{ox:wx-o.x,oz:wz-o.z}; } else select(null); }
+  if(tool==='select'){ const o=hit2D(wx,wz); if(o){ pushUndo(); select(o); drag2=(o.type==='road'||o.type==='fence')?segGrab(o,wx,wz):{ox:wx-o.x,oz:wz-o.z}; } else select(null); }
   else if(tool==='delete'){ const o=hit2D(wx,wz); if(o){ pushUndo(); removeObj3D(o); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} }
   else { pushUndo(); const o=newObj(tool,snap(wx),snap(wz)); objs.push(o); select(o); drag2=(tool==='road'||tool==='fence')?{road:o}:{ox:0,oz:0}; }
 });
 cv.addEventListener('pointermove',e=>{ const [wx,wz]=evWorld(e);
   document.getElementById('hint').textContent=`x ${wx.toFixed(1)}   z ${wz.toFixed(1)}`+(sel?`   ·   ${sel.type==='house'?'Haus':(sel.type==='road'?'Straße':'Prop')}`:'');
-  if(drag2&&sel){ if(drag2.road){ sel.x2=snap(wx); sel.z2=snap(wz); draw(); } else { sel.x=snap(wx-drag2.ox); sel.z=snap(wz-drag2.oz); syncPanelXZ(); draw(); } }
+  if(drag2&&sel){ if(drag2.road){ sel.x2=snap(wx); sel.z2=snap(wz); draw(); }
+    else if(drag2.seg){ segMove(drag2,wx,wz); syncPanelXZ(); draw(); }
+    else { sel.x=snap(wx-drag2.ox); sel.z=snap(wz-drag2.oz); syncPanelXZ(); draw(); } }
 });
 cv.addEventListener('pointerup',()=>{ drag2=null; });
 
@@ -675,7 +711,7 @@ cv3.addEventListener('pointerdown',e=>{ if(!three||mode==='fp') return; cv3.setP
   if(tool==='select'||tool==='delete'){
     const o=pick3D(e);
     if(tool==='delete'){ if(o){ pushUndo(); removeObj3D(o); objs.splice(objs.indexOf(o),1); select(o===sel?null:sel);} return; }
-    if(o){ pushUndo(); select(o); cv3.style.cursor='grabbing'; const g=groundAt(e); drag3=(o.type==='road'||o.type==='fence')?null:(g?{ox:g.x-o.x,oz:g.z-o.z}:{ox:0,oz:0}); }   // instant grab, no rebuild
+    if(o){ pushUndo(); select(o); cv3.style.cursor='grabbing'; const g=groundAt(e); drag3=(o.type==='road'||o.type==='fence')?(g?segGrab(o,g.x,g.z):null):(g?{ox:g.x-o.x,oz:g.z-o.z}:{ox:0,oz:0}); }   // instant grab, no rebuild
     else { cam3={mode:'orbit',x:e.clientX,y:e.clientY}; select(null); }
   } else { const g=groundAt(e); if(g){ pushUndo(); const o=newObj(tool,snap(g.x),snap(g.z)); objs.push(o); updateObj3D(o); select(o); drag3=(tool==='road'||tool==='fence')?{road:o}:{ox:0,oz:0}; } }
 });
@@ -687,6 +723,7 @@ cv3.addEventListener('pointermove',e=>{ if(!three||mode==='fp') return;
     return;
   }
   if(drag3&&sel){ const g=groundAt(e); if(g){ if(drag3.road){ sel.x2=snap(g.x); sel.z2=snap(g.z); updateObj3D(sel); }
+    else if(drag3.seg){ segMove(drag3,g.x,g.z); updateObj3D(sel); syncPanelXZ(); }
     else { sel.x=snap(g.x-drag3.ox); sel.z=snap(g.z-drag3.oz); if(sel.__m3) sel.__m3.position.set(sel.x,sel.type==='box'?sel.h/2:0,sel.z); selectHL(sel); syncPanelXZ(); } } return; }
   if(tool==='select'||tool==='delete'){ const o=pick3D(e); cv3.style.cursor=o?'grab':'default'; }   // hover affordance
 });
@@ -753,9 +790,9 @@ function refreshPanel(){
   document.getElementById('fenceProps').hidden=!isF;
   updateStats();
   if(!sel) return;
-  if(isR){ pRoadW.value=sel.width; return; }
+  if(isR){ pRoadW.value=sel.width; pRoadAx.value=sel.x1; pRoadAz.value=sel.z1; pRoadBx.value=sel.x2; pRoadBz.value=sel.z2; return; }
   if(isT){ pTreeS.value=sel.scale; document.getElementById('treeTypeLbl').textContent=(sel.kind===1?'Busch 🌿':(sel.kind===2?'Blume 🌼':'Baum 🌳')); return; }
-  if(isF){ pFenceC.value=hex(sel.c); return; }
+  if(isF){ pFenceC.value=hex(sel.c); pFenceAx.value=sel.x1; pFenceAz.value=sel.z1; pFenceBx.value=sel.x2; pFenceBz.value=sel.z2; return; }
   const isH=sel.type==='house';
   document.querySelectorAll('.hOnly').forEach(e=>e.style.display=isH?'flex':'none');
   document.querySelectorAll('.bOnly').forEach(e=>e.style.display=(sel.type==='box')?'flex':'none');
@@ -779,7 +816,10 @@ function refreshPanel(){
   else if(Math.abs(sel.x)<sel.w/2+1&&sel.z>5&&sel.z<13) w='⚠ überlappt evtl. den Spawn.';
   document.getElementById('warnBox').textContent=w;
 }
-function syncPanelXZ(){ if(sel){ pX.value=sel.x; pZ.value=sel.z; } }
+function syncPanelXZ(){ if(!sel) return;
+  if(sel.type==='road'||sel.type==='fence'){ const p=sel.type==='road'?'pRoad':'pFence', el=id=>document.getElementById(p+id);
+    if(el('Ax')){ el('Ax').value=sel.x1; el('Az').value=sel.z1; el('Bx').value=sel.x2; el('Bz').value=sel.z2; } }
+  else { pX.value=sel.x; pZ.value=sel.z; } }
 function updateStats(){ const c=t=>objs.filter(o=>o.type===t).length;
   document.getElementById('stats').innerHTML=`Häuser <b>${c('house')}</b> · Props <b>${c('box')}</b> · Straßen <b>${c('road')}</b> · Pflanzen <b>${c('tree')}</b> · Zäune <b>${c('fence')}</b> &nbsp;·&nbsp; Undo ${undoStack.length}`; }
 
@@ -817,6 +857,9 @@ pStoreys.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pStoreys.oninput=()=>{ if(sel&&sel.type==='house'){ sel.storeys=+pStoreys.value; document.getElementById('pStoreysV').textContent=sel.storeys; live(); } };
 pRoadW.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pRoadW.oninput=()=>{ if(sel&&sel.type==='road'){ sel.width=parseFloat(pRoadW.value); live(); } };
+function bindSeg(id,key){ const el=document.getElementById(id); el.addEventListener('focus',()=>{ if(sel) pushUndo(); });
+  el.oninput=()=>{ if(sel&&(sel.type==='road'||sel.type==='fence')){ sel[key]=parseFloat(el.value)||0; live(); } }; }
+['pRoadAx:x1','pRoadAz:z1','pRoadBx:x2','pRoadBz:z2','pFenceAx:x1','pFenceAz:z1','pFenceBx:x2','pFenceBz:z2'].forEach(s=>{const[i,k]=s.split(':');bindSeg(i,k);});
 pYaw.addEventListener('focus',()=>{ if(sel) pushUndo(); });
 pYaw.oninput=()=>{ if(sel&&sel.type==='box'){ sel.yaw=+pYaw.value; live(); } };
 pTreeS.addEventListener('focus',()=>{ if(sel) pushUndo(); });
@@ -842,8 +885,23 @@ document.getElementById('copyBtn').onclick=async()=>{ try{ await navigator.clipb
 document.getElementById('importBtn').onclick=()=>document.getElementById('file').click();
 document.getElementById('file').onchange=e=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ pushUndo(); objs=parse(rd.result); sel=null; refresh(); syncWelt(); }; rd.readAsText(f); };
 window.addEventListener('keydown',e=>{
+  const typing=document.activeElement&&(document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='SELECT');
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); return; }
-  if((e.key==='Delete'||e.key==='Backspace')&&sel&&document.activeElement.tagName!=='INPUT'){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null); }
+  if(!typing&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='c'&&sel){ clip=JSON.stringify(noMesh(sel)); return; }   // copy
+  if(!typing&&(e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='v'&&clip){ e.preventDefault(); pushUndo(); const o=JSON.parse(clip);  // paste (offset)
+    if(o.x!=null){ o.x+=2; o.z+=2; } if(o.x1!=null){ o.x1+=2; o.z1+=2; o.x2+=2; o.z2+=2; }
+    objs.push(o); if(mode!=='2d'&&three) updateObj3D(o); select(o); return; }
+  if(mode==='fp'||typing) return;            // arrows belong to walk mode / text fields there
+  if(sel){                                    // move + rotate the selection from the keyboard
+    const st=e.shiftKey?0.1:(document.getElementById('snap').checked?0.5:1); let h=true;
+    if(e.key==='ArrowUp') nudgeSel(0,-st); else if(e.key==='ArrowDown') nudgeSel(0,st);
+    else if(e.key==='ArrowLeft') nudgeSel(-st,0); else if(e.key==='ArrowRight') nudgeSel(st,0);
+    else if(e.key==='['||e.key===',') rotateSel(-15); else if(e.key===']'||e.key==='.') rotateSel(15);
+    else if(e.key.toLowerCase()==='r') rotateSel(e.shiftKey?-90:90);
+    else h=false;
+    if(h){ e.preventDefault(); if(!e.repeat) pushUndo(); live(); return; }
+  }
+  if((e.key==='Delete'||e.key==='Backspace')&&sel&&!typing){ pushUndo(); removeObj3D(sel); objs.splice(objs.indexOf(sel),1); select(null); }
 });
 
 // ---------- welt (world look) panel ----------
