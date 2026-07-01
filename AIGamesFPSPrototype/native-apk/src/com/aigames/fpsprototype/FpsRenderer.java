@@ -2281,7 +2281,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "Loeschen", 20f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
         } else {
-            drawTextCenteredShadow("Objekt antippen  -  links 1 Finger bewegt  -  rechts 2 Finger drehen/zoomen/neigen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
+            drawTextCenteredShadow("Objekt antippen  -  1 Finger links bewegt  -  2 Finger drehen/zoomen/neigen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
         }
 
         if (tapped) {

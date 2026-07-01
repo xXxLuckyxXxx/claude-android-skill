@@ -39,10 +39,12 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private long edDownTime;
     private boolean edMoved;
     private static final float EDIT_TAP_SLOP = 26f;   // px travel under which a press counts as a tap
-    // Zone assignment (decided once, at touch-down, like the gameplay move/look split): left half = pan,
-    // right half = camera (needs two fingers there for angle+zoom).
-    private int edPanId = -1;
-    private int edCamId1 = -1, edCamId2 = -1;
+    // Two pointer slots, filled in touch-down order (NOT by screen-half). Any two active fingers drive the
+    // camera (pinch/twist/tilt) wherever they are -- one-left-one-right zooms just like two-on-the-right;
+    // a lone finger pans/drags only if it went down in the left half. Routing lives in
+    // InputState.routeEditGesture; here we just track which pointer owns each slot and its down-half.
+    private int edSlot0 = -1, edSlot1 = -1;
+    private boolean edSlot0Left, edSlot1Left;   // whether that slot's finger went DOWN in the left half
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
@@ -97,9 +99,9 @@ public class FpsGLSurfaceView extends GLSurfaceView {
         return true;
     }
 
-    /** Editor mode: assign each new pointer to a zone (mirrors the gameplay move/look split -- left half =
-     *  pan, right half = camera), publish the two zone channels every event, and turn a clean short press
-     *  into a tap regardless of zone. */
+    /** Editor mode: track up to two pointers in touch-down order, then let InputState.routeEditGesture
+     *  decide each event whether they drive the camera (any two fingers) or a lone-left pan/drag. A clean
+     *  short press anywhere becomes a tap (select / UI). */
     private void handleEditTouch(MotionEvent e) {
         int action = e.getActionMasked();
         switch (action) {
@@ -107,12 +109,12 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 edTapId = e.getPointerId(0);
                 edDownX = e.getX(0); edDownY = e.getY(0);
                 edDownTime = e.getEventTime(); edMoved = false;
-                assignEditZone(e.getPointerId(0), e.getX(0));
+                acquireEditSlot(e.getPointerId(0), e.getX(0));
                 break;
             case MotionEvent.ACTION_POINTER_DOWN: {
                 edMoved = true;   // a second finger arrived -> whatever the first finger was doing, it's not a tap
                 int idx = e.getActionIndex();
-                assignEditZone(e.getPointerId(idx), e.getX(idx));
+                acquireEditSlot(e.getPointerId(idx), e.getX(idx));
                 break;
             }
             case MotionEvent.ACTION_MOVE:
@@ -126,54 +128,48 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 break;
             case MotionEvent.ACTION_POINTER_UP:
                 edMoved = true;   // finger count dropping mid-gesture -> not a tap
-                releaseEditZone(e.getPointerId(e.getActionIndex()));
+                releaseEditSlot(e.getPointerId(e.getActionIndex()));
                 break;
             case MotionEvent.ACTION_UP:
                 if (edTapId != -1 && !edMoved && (e.getEventTime() - edDownTime) < 260) {
                     input.requestMenuTap(edDownX, edDownY);   // a clean tap: routed to UI / select, any zone
                 }
                 edTapId = -1;
-                edPanId = -1; edCamId1 = -1; edCamId2 = -1;   // the whole gesture just ended
+                edSlot0 = -1; edSlot1 = -1;   // the whole gesture just ended
                 break;
             case MotionEvent.ACTION_CANCEL:
                 edTapId = -1; edMoved = true;
-                edPanId = -1; edCamId1 = -1; edCamId2 = -1;
+                edSlot0 = -1; edSlot1 = -1;
                 break;
         }
-        // publish the current position of whichever pointer(s) own each zone this event
-        boolean panActive = false; float panX = 0, panY = 0;
-        if (edPanId != -1) {
-            int idx = e.findPointerIndex(edPanId);
-            if (idx >= 0) { panActive = true; panX = e.getX(idx); panY = e.getY(idx); } else edPanId = -1;
+        // Resolve each slot's live position (dropping any pointer that has lifted), then route.
+        boolean a0 = false; float x0 = 0, y0 = 0;
+        if (edSlot0 != -1) {
+            int idx = e.findPointerIndex(edSlot0);
+            if (idx >= 0) { a0 = true; x0 = e.getX(idx); y0 = e.getY(idx); } else edSlot0 = -1;
         }
-        int camCount = 0; float camAx = 0, camAy = 0, camBx = 0, camBy = 0;
-        if (edCamId1 != -1) {
-            int idx = e.findPointerIndex(edCamId1);
-            if (idx >= 0) { camAx = e.getX(idx); camAy = e.getY(idx); camCount++; } else edCamId1 = -1;
+        boolean a1 = false; float x1 = 0, y1 = 0;
+        if (edSlot1 != -1) {
+            int idx = e.findPointerIndex(edSlot1);
+            if (idx >= 0) { a1 = true; x1 = e.getX(idx); y1 = e.getY(idx); } else edSlot1 = -1;
         }
-        if (edCamId2 != -1) {
-            int idx = e.findPointerIndex(edCamId2);
-            if (idx >= 0) { camBx = e.getX(idx); camBy = e.getY(idx); camCount++; } else edCamId2 = -1;
-        }
-        input.setEditPan(panActive, panX, panY);
-        input.setEditCam(camCount, camAx, camAy, camBx, camBy);
+        InputState.routeEditGesture(a0, x0, y0, edSlot0Left, a1, x1, y1, edSlot1Left, edPanOut, edCamOut);
+        input.setEditPan(edPanOut[0] != 0f, edPanOut[1], edPanOut[2]);
+        input.setEditCam((int) edCamOut[0], edCamOut[1], edCamOut[2], edCamOut[3], edCamOut[4]);
     }
 
-    /** A newly-touched-down pointer joins the pan zone (left half, max 1) or the camera zone (right half,
-     *  max 2), decided once by its starting X -- it keeps that role for its whole gesture even if it later
-     *  drifts across the midline. */
-    private void assignEditZone(int pid, float x) {
-        if (x < getWidth() * 0.5f) {
-            if (edPanId == -1) edPanId = pid;
-        } else {
-            if (edCamId1 == -1) edCamId1 = pid;
-            else if (edCamId2 == -1) edCamId2 = pid;
-        }
+    private final float[] edPanOut = new float[3], edCamOut = new float[5];
+
+    /** A newly-touched-down pointer takes the first free slot (slot0 then slot1), recording whether it
+     *  went down in the left half. Beyond two fingers, extra pointers are ignored. */
+    private void acquireEditSlot(int pid, float x) {
+        boolean left = x < getWidth() * 0.5f;
+        if (edSlot0 == -1) { edSlot0 = pid; edSlot0Left = left; }
+        else if (edSlot1 == -1) { edSlot1 = pid; edSlot1Left = left; }
     }
-    private void releaseEditZone(int pid) {
-        if (pid == edPanId) edPanId = -1;
-        else if (pid == edCamId1) edCamId1 = -1;
-        else if (pid == edCamId2) edCamId2 = -1;
+    private void releaseEditSlot(int pid) {
+        if (pid == edSlot0) edSlot0 = -1;
+        else if (pid == edSlot1) edSlot1 = -1;
     }
 
     private void releasePointer(int pid) {
