@@ -39,12 +39,12 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private long edDownTime;
     private boolean edMoved;
     private static final float EDIT_TAP_SLOP = 26f;   // px travel under which a press counts as a tap
-    // Two pointer slots, filled in touch-down order (NOT by screen-half). Any two active fingers drive the
-    // camera (pinch/twist/tilt) wherever they are -- one-left-one-right zooms just like two-on-the-right;
-    // a lone finger pans/drags only if it went down in the left half. Routing lives in
-    // InputState.routeEditGesture; here we just track which pointer owns each slot and its down-half.
-    private int edSlot0 = -1, edSlot1 = -1;
-    private boolean edSlot0Left, edSlot1Left;   // whether that slot's finger went DOWN in the left half
+    // Real-mobile-FPS layout: the LEFT lower area is a floating movement stick (translates the camera);
+    // the RIGHT side is up to two pointers (1 = drag selected object, 2 = zoom/rotate/tilt). A finger's
+    // role is fixed at touch-down by where it lands.
+    private int edStickId = -1;               // pointer owning the left move stick
+    private float edStickOx, edStickOy;       // floating stick origin = that finger's down point
+    private int edRight0 = -1, edRight1 = -1; // right-hand pointers, in touch-down order
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
@@ -99,9 +99,9 @@ public class FpsGLSurfaceView extends GLSurfaceView {
         return true;
     }
 
-    /** Editor mode: track up to two pointers in touch-down order, then let InputState.routeEditGesture
-     *  decide each event whether they drive the camera (any two fingers) or a lone-left pan/drag. A clean
-     *  short press anywhere becomes a tap (select / UI). */
+    /** Editor mode: the lower-left area is a floating move stick; the right side is up to two pointers
+     *  (1 = drag selected object, 2 = zoom/rotate/tilt via InputState.routeEditRight). A clean short press
+     *  anywhere still becomes a tap (select / place / UI). */
     private void handleEditTouch(MotionEvent e) {
         int action = e.getActionMasked();
         switch (action) {
@@ -109,12 +109,12 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 edTapId = e.getPointerId(0);
                 edDownX = e.getX(0); edDownY = e.getY(0);
                 edDownTime = e.getEventTime(); edMoved = false;
-                acquireEditSlot(e.getPointerId(0), e.getX(0));
+                acquireEditPointer(e.getPointerId(0), e.getX(0), e.getY(0));
                 break;
             case MotionEvent.ACTION_POINTER_DOWN: {
                 edMoved = true;   // a second finger arrived -> whatever the first finger was doing, it's not a tap
                 int idx = e.getActionIndex();
-                acquireEditSlot(e.getPointerId(idx), e.getX(idx));
+                acquireEditPointer(e.getPointerId(idx), e.getX(idx), e.getY(idx));
                 break;
             }
             case MotionEvent.ACTION_MOVE:
@@ -122,54 +122,78 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                     int idx = e.findPointerIndex(edTapId);
                     if (idx >= 0) {
                         float dx = e.getX(idx) - edDownX, dy = e.getY(idx) - edDownY;
-                        if (dx * dx + dy * dy > EDIT_TAP_SLOP * EDIT_TAP_SLOP) edMoved = true;
+                        // The stick finger uses a tighter slop, so even a small stick nudge cancels the tap
+                        // (otherwise a quick <260ms nudge would also fire a spurious select/place).
+                        float slop = (edTapId == edStickId) ? 14f : EDIT_TAP_SLOP;
+                        if (dx * dx + dy * dy > slop * slop) edMoved = true;
                     }
                 }
                 break;
             case MotionEvent.ACTION_POINTER_UP:
                 edMoved = true;   // finger count dropping mid-gesture -> not a tap
-                releaseEditSlot(e.getPointerId(e.getActionIndex()));
+                releaseEditPointer(e.getPointerId(e.getActionIndex()));
                 break;
             case MotionEvent.ACTION_UP:
                 if (edTapId != -1 && !edMoved && (e.getEventTime() - edDownTime) < 260) {
-                    input.requestMenuTap(edDownX, edDownY);   // a clean tap: routed to UI / select, any zone
+                    input.requestMenuTap(edDownX, edDownY);   // a clean tap: routed to UI / select / place
                 }
                 edTapId = -1;
-                edSlot0 = -1; edSlot1 = -1;   // the whole gesture just ended
+                edStickId = -1; edRight0 = -1; edRight1 = -1;   // the whole gesture just ended
                 break;
             case MotionEvent.ACTION_CANCEL:
                 edTapId = -1; edMoved = true;
-                edSlot0 = -1; edSlot1 = -1;
+                edStickId = -1; edRight0 = -1; edRight1 = -1;
                 break;
         }
-        // Resolve each slot's live position (dropping any pointer that has lifted), then route.
+
+        // --- publish the left move stick (floating origin -> normalized deflection) ---
+        if (edStickId != -1) {
+            int idx = e.findPointerIndex(edStickId);
+            if (idx >= 0) {
+                InputState.stickVector(e.getX(idx), e.getY(idx), edStickOx, edStickOy, editStickRadius(), edStickOut);
+                input.setEditStick(true, edStickOut[0], edStickOut[1], edStickOx, edStickOy);
+            } else { edStickId = -1; input.setEditStick(false, 0, 0, 0, 0); }
+        } else {
+            input.setEditStick(false, 0, 0, 0, 0);
+        }
+
+        // --- publish the right-hand pointers (object drag / camera) ---
         boolean a0 = false; float x0 = 0, y0 = 0;
-        if (edSlot0 != -1) {
-            int idx = e.findPointerIndex(edSlot0);
-            if (idx >= 0) { a0 = true; x0 = e.getX(idx); y0 = e.getY(idx); } else edSlot0 = -1;
+        if (edRight0 != -1) {
+            int idx = e.findPointerIndex(edRight0);
+            if (idx >= 0) { a0 = true; x0 = e.getX(idx); y0 = e.getY(idx); } else edRight0 = -1;
         }
         boolean a1 = false; float x1 = 0, y1 = 0;
-        if (edSlot1 != -1) {
-            int idx = e.findPointerIndex(edSlot1);
-            if (idx >= 0) { a1 = true; x1 = e.getX(idx); y1 = e.getY(idx); } else edSlot1 = -1;
+        if (edRight1 != -1) {
+            int idx = e.findPointerIndex(edRight1);
+            if (idx >= 0) { a1 = true; x1 = e.getX(idx); y1 = e.getY(idx); } else edRight1 = -1;
         }
-        InputState.routeEditGesture(a0, x0, y0, edSlot0Left, a1, x1, y1, edSlot1Left, edPanOut, edCamOut);
+        InputState.routeEditRight(a0, x0, y0, a1, x1, y1, edPanOut, edCamOut);
         input.setEditPan(edPanOut[0] != 0f, edPanOut[1], edPanOut[2]);
         input.setEditCam((int) edCamOut[0], edCamOut[1], edCamOut[2], edCamOut[3], edCamOut[4]);
     }
 
-    private final float[] edPanOut = new float[3], edCamOut = new float[5];
+    private final float[] edPanOut = new float[3], edCamOut = new float[5], edStickOut = new float[2], edStickBounds = new float[2];
 
-    /** A newly-touched-down pointer takes the first free slot (slot0 then slot1), recording whether it
-     *  went down in the left half. Beyond two fingers, extra pointers are ignored. */
-    private void acquireEditSlot(int pid, float x) {
-        boolean left = x < getWidth() * 0.5f;
-        if (edSlot0 == -1) { edSlot0 = pid; edSlot0Left = left; }
-        else if (edSlot1 == -1) { edSlot1 = pid; edSlot1Left = left; }
+    /** Floating stick radius: full deflection at ~16% of screen height, so a comfortable thumb throw. */
+    private float editStickRadius() { return Math.max(80f, getHeight() * 0.16f); }
+
+    /** A newly-touched-down pointer: if it lands in the left move-stick area -- the left ~44% of width,
+     *  inside the UI-clear vertical band the renderer publishes (so a press on the top bar / palette /
+     *  bottom action bar is NOT swallowed) -- and the stick is free, it becomes the stick with its down
+     *  point as the floating origin; otherwise it fills the first free right-hand slot. */
+    private void acquireEditPointer(int pid, float x, float y) {
+        input.getEditStickBounds(edStickBounds);
+        boolean inStickZone = x < getWidth() * 0.44f && y > edStickBounds[0] && y < edStickBounds[1];
+        if (inStickZone && edStickId == -1) {
+            edStickId = pid; edStickOx = x; edStickOy = y;
+        } else if (edRight0 == -1) { edRight0 = pid; }
+        else if (edRight1 == -1) { edRight1 = pid; }
     }
-    private void releaseEditSlot(int pid) {
-        if (pid == edSlot0) edSlot0 = -1;
-        else if (pid == edSlot1) edSlot1 = -1;
+    private void releaseEditPointer(int pid) {
+        if (pid == edStickId) edStickId = -1;
+        else if (pid == edRight0) edRight0 = -1;
+        else if (pid == edRight1) edRight1 = -1;
     }
 
     private void releasePointer(int pid) {
