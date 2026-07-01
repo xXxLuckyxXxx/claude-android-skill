@@ -575,9 +575,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             tickTimers(gdt);
         }
 
-        float adsZoom = (curWeapon == 3) ? 46f : 30f;   // sniper zooms much harder through its scope
-        float fov = 72f - adsZoom * aim + 6f * sprintAnim;
-        Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
+        float fov;
+        if (state == ST_EDIT) {
+            // A much tighter near/far pair than gameplay's 0.05/300 (far:near = 6000:1, fine for a mostly-
+            // horizontal FPS view but causes visible depth-buffer z-fighting bands on the editor's steep,
+            // distant top-down orbit looking at near-coplanar ground meshes). 0.3/200 (far:near = 667:1) is
+            // ample for edCamDist's 4-90m range and removes the banding.
+            fov = 62f;
+            Matrix.perspectiveM(proj, 0, fov, aspect, 0.3f, 200f);
+        } else {
+            float adsZoom = (curWeapon == 3) ? 46f : 30f;   // sniper zooms much harder through its scope
+            fov = 72f - adsZoom * aim + 6f * sprintAnim;
+            Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
+        }
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
@@ -1866,7 +1876,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
     private void edSetToast(String m) { edToast = m; edToastT = 1.8f; }
 
-    /** Per-frame editor logic: orbit/pinch/pan camera + drag-move the selected object. Taps handled in the HUD pass. */
+    /** Per-frame editor logic: rebuilds the orbit camera matrix, then hands off to the pure gesture logic. */
     private void updateEditor(float dt) {
         if (edToastT > 0f) edToastT -= dt;
         float cp = (float) Math.cos(edCamPitch), sp = (float) Math.sin(edCamPitch);
@@ -1877,26 +1887,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         mul4(edVP, proj, view);
 
         input.getEditPointers(edPtr);
-        int count = (int) edPtr[0];
-        float ax = edPtr[1], ay = edPtr[2], bx = edPtr[3], by = edPtr[4];
+        edProcessGesture((int) edPtr[0], edPtr[1], edPtr[2], edPtr[3], edPtr[4]);
+    }
 
-        if (count == 2) {
+    /** 2 fingers: zoom only. 1 finger: drags the selected object if any, else pans the camera across the
+     *  ground (matches every map app -- the simple, expected "move around" gesture; no zoom mixed in).
+     *  Pure math against the already-built edVP -- no Matrix.* device-only calls, so this is independently
+     *  unit-testable off-device (unlike updateEditor(), which needs Matrix.setLookAtM to rebuild edVP first). */
+    private void edProcessGesture(int count, float ax, float ay, float bx, float by) {
+        if (count == 2) {                                     // two fingers: ZOOM only (simple, single-purpose)
             float gap = (float) Math.hypot(bx - ax, by - ay);
-            float mx = (ax + bx) * 0.5f, my = (ay + by) * 0.5f;
-            if (edPrevCount == 2) {
-                if (edPrevGap > 2f && gap > 2f) edCamDist = clamp(edCamDist * edPrevGap / gap, 4f, 90f);
-                if (screenRay(edPrevAx, edPrevAy, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-                    float phx = edHit[0], phz = edHit[2];
-                    if (screenRay(mx, my, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-                        edCamPivotX = clamp(edCamPivotX + (phx - edHit[0]), -60f, 60f);
-                        edCamPivotZ = clamp(edCamPivotZ + (phz - edHit[2]), -60f, 60f);
-                    }
-                }
-            }
-            edPrevGap = gap; edPrevAx = mx; edPrevAy = my;   // reuse prevA as the previous midpoint for pan
+            if (edPrevCount == 2 && edPrevGap > 2f && gap > 2f) edCamDist = clamp(edCamDist * edPrevGap / gap, 4f, 90f);
+            edPrevGap = gap;
             edGrabbed = false;
         } else if (count == 1) {
-            if (selObj >= 0 && armedCat < 0) {
+            if (selObj >= 0 && armedCat < 0) {                // an object is selected: one finger drags IT
                 float[] o = editObjs.get(selObj);
                 if (!edGrabbed || edPrevCount != 1) {
                     if (screenRay(ax, ay, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
@@ -1907,10 +1912,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 } else if (screenRay(ax, ay, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
                     o[2] = edHit[0] + edGrabOffX; o[3] = edHit[2] + edGrabOffZ; editDirty = true;
                 }
-            } else {                                          // orbit (nothing selected, or placing)
-                if (edPrevCount == 1) {
-                    edCamYaw -= (ax - edPrevAx) * 0.005f;
-                    edCamPitch = clamp(edCamPitch - (ay - edPrevAy) * 0.005f, 0.18f, 1.45f);
+            } else {                                          // otherwise: one finger PANS the camera across the
+                                                                // ground (matches every map app -> the simple,
+                                                                // expected "move around" gesture). The ground point
+                                                                // under the finger tracks it 1:1; no zoom mixed in.
+                if (edPrevCount == 1
+                 && screenRay(edPrevAx, edPrevAy, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                    float phx = edHit[0], phz = edHit[2];
+                    if (screenRay(ax, ay, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                        edCamPivotX = clamp(edCamPivotX + (phx - edHit[0]), -60f, 60f);
+                        edCamPivotZ = clamp(edCamPivotZ + (phz - edHit[2]), -60f, 60f);
+                    }
                 }
                 edGrabbed = false;
             }
@@ -2201,6 +2213,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (edBtn(toggleCx, toggleCy, toggleW, toggleH, edPaletteOpen ? "OBJEKTE ZU" : "OBJEKTE", 23f, edPaletteOpen, tapped, px, py)) { edPaletteOpen = !edPaletteOpen; tapped = false; }
         edSwatch(toggleCx - toggleW * 0.5f + 18f * us, toggleCy, 8f * us, edCatTab);
 
+        // --- camera-rotate buttons: 1 finger now PANS (simpler, matches every map app), so looking from a
+        // different angle is a deterministic tap instead of a drag gesture -- one less thing to fumble. ---
+        float camBtnW = Math.min(86f * us, width * 0.09f);
+        float camRx = width - 20f * us - camBtnW * 0.5f;
+        if (edBtn(camRx, toggleCy, camBtnW, toggleH, ">", 26f, false, tapped, px, py)) { edCamYaw += 0.5236f; tapped = false; }
+        camRx -= camBtnW + 8f * us;
+        if (edBtn(camRx, toggleCy, camBtnW, toggleH, "<", 26f, false, tapped, px, py)) { edCamYaw -= 0.5236f; tapped = false; }
+
         if (edPaletteOpen) {
             String[] cats = {"Moebel", "Pflanzen", "Props"};
             float catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
@@ -2247,7 +2267,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "Loeschen", 20f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
         } else {
-            drawTextCenteredShadow("Objekt antippen zum Bearbeiten  -  1 Finger dreht die Kamera  -  2 Finger zoomen", width * 0.5f, height - 30f * us, 20f, 0.75f, 0.8f, 0.9f, 0.85f);
+            drawTextCenteredShadow("Objekt antippen zum Bearbeiten  -  1 Finger bewegt die Kamera  -  2 Finger zoomen", width * 0.5f, height - 30f * us, 20f, 0.75f, 0.8f, 0.9f, 0.85f);
         }
 
         if (tapped) {
