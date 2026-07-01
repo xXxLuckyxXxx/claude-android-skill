@@ -2616,6 +2616,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float dx = t[0] - px, dz = t[1] - pz;
             if (dx * dx + dz * dz < cullSq) blob(t[0], terrainH(t[0], t[1]), 1.3f * t[2], t[1], 1.05f * t[2]);
         }
+        for (float[] o : editObjs) {                              // editor-placed plants/props also cast a contact shadow
+            if ((int) o[0] == 1) {                                  // plant
+                float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
+                float dx = ox - px, dz = oz - pz;
+                if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), 1.3f * s, oz, 1.05f * s);
+            } else if ((int) o[0] == 2) {                           // prop
+                float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
+                float dx = ox - px, dz = oz - pz;
+                float[] pr = PROP_PRESETS[Math.max(0, Math.min((int) o[1], PROP_PRESETS.length - 1))];
+                if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), 0.85f, oz, Math.max(pr[0], pr[2]) * s * 0.6f);
+            }
+        }
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enAlive[i]) blob(enX[i], terrainH(enX[i], enZ[i]), 1.0f, enZ[i], 0.55f);
         }
@@ -4571,12 +4583,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 this.baseLevelText = sceneSb.toString();
                 return true;
             }
-            // A full custom level (has houses/roads): build it as before; FU/T/B bake into the base.
+            // A full custom level (has houses/roads): build the houses/roads as before, but route its FU/T
+            // lines into the SAME editable overlay as the no-houses case, so a hand-authored level (built in
+            // the web editor) stays fully editable in-game too, not just objects newly placed on-device.
             this.roadSegs = roadList.isEmpty() ? null : roadList.toArray(new float[0][]);
             this.hasCustomRoads = this.roadSegs != null;
-            this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
-            this.customFurniture = furns.isEmpty() ? null : furns;
-            this.baseLevelText = rawSb.toString();
+            this.baseLevelText = sceneSb.toString();
+            for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
+            for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {
