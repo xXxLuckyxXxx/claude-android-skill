@@ -250,6 +250,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private boolean edGrabbed; private float edGrabOffX, edGrabOffZ;
     private int edPaletteScroll = 0;
     private int edCatTab = 0;                         // palette category: 0 furniture · 1 plants · 2 props
+    private boolean edPaletteOpen = false;             // collapsed by default so it doesn't cover the world
     private android.content.Context appCtx;           // for getExternalFilesDir on save
     private boolean edSnap = true;
     private final float ED_SNAP_POS = 0.5f, ED_SNAP_YAW = 15f;
@@ -961,10 +962,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // --- Weather: cycle the look + tick/draw rain or snow ----------------------
     private void updateWeather(float dt) {
-        wxTimer -= dt;
-        if (wxTimer <= 0f) { wxIdx = (wxIdx + 1) % WX_ORDER.length; wxTimer = WX_HOLD; weatherLabelT = 4.5f; }
-        if (weatherLabelT > 0f) weatherLabelT -= dt;
-        int w = WX_ORDER[wxIdx];
+        boolean clearForEdit = (state == ST_EDIT);   // full visibility while building; the cycle just pauses, not skips
+        if (!clearForEdit) {
+            wxTimer -= dt;
+            if (wxTimer <= 0f) { wxIdx = (wxIdx + 1) % WX_ORDER.length; wxTimer = WX_HOLD; weatherLabelT = 4.5f; }
+            if (weatherLabelT > 0f) weatherLabelT -= dt;
+        }
+        int w = clearForEdit ? WX_SUN : WX_ORDER[wxIdx];
         // per-weather targets (Sun reads the level's base look so clear days are unchanged)
         float tHr, tHg, tHb, tZr, tZg, tZb, tFr, tFg, tFb, tOver, tFs, tFe, tSun, tAmb, tRain, tSnow;
         if (w == WX_SUN) {
@@ -1851,10 +1855,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void edEnter() {
         state = ST_EDIT;
-        selObj = -1; armedCat = -1; armedKind = -1; edGrabbed = false; edPrevCount = 0;
+        selObj = -1; armedCat = -1; armedKind = -1; edGrabbed = false; edPrevCount = 0; edPaletteOpen = false;
         edCamPivotX = px; edCamPivotZ = pz; edCamYaw = yaw; edCamPitch = 0.85f; edCamDist = 26f;
         editDirty = true;
-        edSetToast("Editor: links Palette, dann SETZEN. Objekt antippen zum Bearbeiten.");
+        edSetToast("OBJEKTE oeffnet die Palette. Objekt antippen zum Bearbeiten.");
     }
     private void edExit() {
         saveLevel(true);
@@ -2003,10 +2007,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // --- editor actions ---
-    /** Tapping the already-armed palette item again un-arms it (second way out of placement mode). */
+    /** Tapping the already-armed palette item again un-arms it (second way out of placement mode).
+     *  Arming also collapses the palette -- you've made your choice, the world view is what matters now. */
     private void edArm(int cat, int kind) {
         if (armedCat == cat && armedKind == kind) { armedCat = -1; armedKind = -1; return; }
-        armedCat = cat; armedKind = kind; selObj = -1; edGrabbed = false;
+        armedCat = cat; armedKind = kind; selObj = -1; edGrabbed = false; edPaletteOpen = false;
     }
 
     /** Place the armed item directly at the tapped screen point's ground hit — one tap, no separate confirm.
@@ -2189,23 +2194,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         rCx -= wBtn + rGap;
         if (edBtn(rCx, topY, wBtn, bh, "UNDO", 23f, false, tapped, px, py)) { edUndoPop(); tapped = false; }
 
-        // --- palette: one translucent card behind the category tabs + kind list ---
-        String[] cats = {"Moebel", "Pflanzen", "Props"};
-        float catY0 = topY + hbH, catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
-        int[][] kinds = edCatKinds(edCatTab);
-        float kx = catX + catW * 0.5f + 14f * us + 210f * us * 0.5f, kw = 210f * us, kh = 50f * us, kGap = 6f * us;
-        float palTop = catY0, palBot = catY0 + Math.max(3 * (catH + catGap), kinds.length * (kh + kGap)) - Math.max(catGap, kGap);
-        float palCx = (catX - catW * 0.5f + kx + kw * 0.5f) * 0.5f, palCy = (palTop + palBot) * 0.5f;
-        drawCard(palCx, palCy, (kx + kw * 0.5f) - (catX - catW * 0.5f) + 20f * us, palBot - palTop + 24f * us, 18f * us, 0.075f, 0.09f, 0.145f, 0.90f);
-        for (int i = 0; i < 3; i++) {
-            float cy = palTop + i * (catH + catGap) + catH * 0.5f;
-            if (edBtn(catX, cy, catW, catH, cats[i], 22f, edCatTab == i, tapped, px, py)) { edCatTab = i; tapped = false; }
-            edSwatch(catX - catW * 0.5f + 20f * us, cy, 9f * us, i);
-        }
-        for (int i = 0; i < kinds.length; i++) {
-            float cy = palTop + i * (kh + kGap) + kh * 0.5f;
-            boolean armedThis = armedCat == kinds[i][0] && armedKind == kinds[i][1];
-            if (edBtn(kx, cy, kw, kh, edLabel(kinds[i][0], kinds[i][1]), 22f, armedThis, tapped, px, py)) { edArm(kinds[i][0], kinds[i][1]); tapped = false; }
+        // --- palette toggle: a small always-visible tab; the category+kind list only exists while open,
+        // so a placed/browsing session mostly shows the world, not a wall of buttons. ---
+        float toggleW = Math.min(190f * us, width * 0.24f), toggleH = 58f * us;
+        float toggleCx = 20f * us + toggleW * 0.5f, toggleCy = topY + hbH + 24f * us + toggleH * 0.5f;
+        if (edBtn(toggleCx, toggleCy, toggleW, toggleH, edPaletteOpen ? "OBJEKTE ZU" : "OBJEKTE", 23f, edPaletteOpen, tapped, px, py)) { edPaletteOpen = !edPaletteOpen; tapped = false; }
+        edSwatch(toggleCx - toggleW * 0.5f + 18f * us, toggleCy, 8f * us, edCatTab);
+
+        if (edPaletteOpen) {
+            String[] cats = {"Moebel", "Pflanzen", "Props"};
+            float catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
+            int[][] kinds = edCatKinds(edCatTab);
+            float kx = catX + catW * 0.5f + 14f * us + 210f * us * 0.5f, kw = 210f * us, kh = 50f * us, kGap = 6f * us;
+            float palTop = toggleCy + toggleH * 0.5f + 14f * us;
+            float palBot = palTop + Math.max(3 * (catH + catGap), kinds.length * (kh + kGap)) - Math.max(catGap, kGap);
+            float palCx = (catX - catW * 0.5f + kx + kw * 0.5f) * 0.5f, palCy = (palTop + palBot) * 0.5f;
+            drawCard(palCx, palCy, (kx + kw * 0.5f) - (catX - catW * 0.5f) + 20f * us, palBot - palTop + 24f * us, 18f * us, 0.075f, 0.09f, 0.145f, 0.90f);
+            for (int i = 0; i < 3; i++) {
+                float cy = palTop + i * (catH + catGap) + catH * 0.5f;
+                if (edBtn(catX, cy, catW, catH, cats[i], 22f, edCatTab == i, tapped, px, py)) { edCatTab = i; tapped = false; }
+                edSwatch(catX - catW * 0.5f + 20f * us, cy, 9f * us, i);
+            }
+            for (int i = 0; i < kinds.length; i++) {
+                float cy = palTop + i * (kh + kGap) + kh * 0.5f;
+                boolean armedThis = armedCat == kinds[i][0] && armedKind == kinds[i][1];
+                if (edBtn(kx, cy, kw, kh, edLabel(kinds[i][0], kinds[i][1]), 22f, armedThis, tapped, px, py)) { edArm(kinds[i][0], kinds[i][1]); tapped = false; }
+            }
         }
 
         // --- placement mode: tap anywhere in the world to drop it; one "Fertig" button to stop ---
