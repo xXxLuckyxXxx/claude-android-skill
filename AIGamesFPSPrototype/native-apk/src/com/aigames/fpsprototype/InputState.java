@@ -95,23 +95,36 @@ public class InputState {
         return true;
     }
 
-    // ===================== in-game editor: rich multi-touch channel =====================
-    // In edit mode the view forwards the live pointer set (up to 2) every frame so the renderer can
-    // drive an orbit camera, pinch-zoom, and drag-to-move. Discrete taps still come via requestMenuTap.
+    // ===================== in-game editor: zoned multi-touch channel =====================
+    // Mirrors the gameplay control split (left = move stick, right = look): a pointer's screen-half at
+    // touch-down decides its role for the whole gesture. Left = pan (or drag the selection); right needs
+    // two fingers for angle (twist) + zoom (pinch). Discrete taps still come via requestMenuTap.
     private boolean editMode;
-    private int edCount;                         // active pointers this frame: 0, 1, or 2
-    private float edAx, edAy, edBx, edBy;        // screen px of pointer A (first) and B (second)
+    private boolean edPanActive;                 // left-half single finger active this frame
+    private float edPanX, edPanY;
+    private int edCamCount;                      // right-half fingers this frame: 0, 1, or 2
+    private float edCamAx, edCamAy, edCamBx, edCamBy;
 
     public synchronized void setEditMode(boolean v) { editMode = v; }
     public synchronized boolean isEditMode() { return editMode; }
 
-    /** View publishes the current pointer set (px). */
-    public synchronized void setEditPointers(int count, float ax, float ay, float bx, float by) {
-        edCount = count; edAx = ax; edAy = ay; edBx = bx; edBy = by;
+    /** View publishes the left-zone (pan) pointer. */
+    public synchronized void setEditPan(boolean active, float x, float y) {
+        edPanActive = active; edPanX = x; edPanY = y;
     }
 
-    /** Renderer reads the pointer set: out = {count, ax, ay, bx, by}. */
-    public synchronized void getEditPointers(float[] out) {
-        out[0] = edCount; out[1] = edAx; out[2] = edAy; out[3] = edBx; out[4] = edBy;
+    /** Renderer reads the pan pointer: out = {active(0/1), x, y}. */
+    public synchronized void getEditPan(float[] out) {
+        out[0] = edPanActive ? 1f : 0f; out[1] = edPanX; out[2] = edPanY;
+    }
+
+    /** View publishes the right-zone (camera) pointer(s). */
+    public synchronized void setEditCam(int count, float ax, float ay, float bx, float by) {
+        edCamCount = count; edCamAx = ax; edCamAy = ay; edCamBx = bx; edCamBy = by;
+    }
+
+    /** Renderer reads the camera pointers: out = {count, ax, ay, bx, by}. */
+    public synchronized void getEditCam(float[] out) {
+        out[0] = edCamCount; out[1] = edCamAx; out[2] = edCamAy; out[3] = edCamBx; out[4] = edCamBy;
     }
 }
