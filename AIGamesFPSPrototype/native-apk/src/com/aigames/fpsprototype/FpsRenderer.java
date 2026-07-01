@@ -272,6 +272,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         {1.6f,0.5f,0.7f, 0.5f,0.35f,0.22f},    // 4 Bank-Kiste (low box)
     };
     private static final String[] PROP_NAMES = {"Kiste", "Fass", "Saeule", "Kuebel", "Kiste flach"};
+    // editor house presets (cat 3): {w, d, h, doorSide, roofStyle, r,g,b, chimney, doorW, doorH, dr,dg,db, doorStyle, material}
+    // -- baked as a box-shell via addBuilding() (walls with a door gap + roof slab + doorstep + chimney/awning),
+    //    so a placed house is solid, walk-in, material-textured, and fully movable in the overlay.
+    private static final float[][] HOUSE_PRESETS = {
+        {5f,5f,3f, 0,0, 0.88f,0.84f,0.74f, 1, 1.6f,2.2f, 0.46f,0.30f,0.17f, 1, 0},   // 0 Cottage (plaster, chimney)
+        {5f,6f,6f, 0,0, 0.72f,0.42f,0.35f, 1, 1.7f,2.3f, 0.34f,0.22f,0.15f, 0, 1},   // 1 Stadthaus (brick, tall)
+        {7f,7f,7f, 0,1, 0.72f,0.72f,0.68f, 0, 1.9f,2.4f, 0.42f,0.42f,0.45f, 2, 2},   // 2 Block (stone, flat)
+        {6f,5f,4f, 0,1, 0.82f,0.74f,0.56f, 0, 2.0f,2.4f, 0.35f,0.30f,0.50f, 3, 0},   // 3 Laden (shop awning)
+    };
+    private static final String[] HOUSE_NAMES = {"Cottage", "Stadthaus", "Block", "Laden"};
     // palette rows: {cat, kind}. Labels resolved in edLabel().
     private static final int[][] ED_PALETTE = {
         {0,0},{0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},{0,8},   // furniture kinds 0..8
@@ -1998,6 +2008,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         } else if (cat == 2) {
             float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
             hx = pr[0] * 0.5f * s; hz = pr[2] * 0.5f * s; hy = pr[1] * 0.5f * s; cy = pr[1] * 0.5f * s;
+        } else if (cat == 3) {
+            float[] hp = HOUSE_PRESETS[Math.max(0, Math.min(kind, HOUSE_PRESETS.length - 1))];
+            float top = hp[2] * s + 0.3f;                 // wall height + roof slab
+            hx = hp[0] * 0.5f * s; hz = hp[1] * 0.5f * s; hy = top * 0.5f; cy = top * 0.5f;
         } else {
             float h = kind == 0 ? 2.4f : (kind == 1 ? 0.9f : 0.5f), rad = kind == 0 ? 0.9f : (kind == 1 ? 0.7f : 0.4f);
             hx = rad * s; hz = rad * s; hy = h * s * 0.5f; cy = h * s * 0.5f;
@@ -2030,6 +2044,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void rebuildOverlay() {
         if (baseBoxes == null) baseBoxes = boxes;                 // first call: snapshot the base
         java.util.List<float[]> ov = new java.util.ArrayList<float[]>();
+        java.util.List<float[]> doorSink = new java.util.ArrayList<float[]>();   // placed-house door leaves (discarded -> open doorway)
         for (float[] o : editObjs) {
             int cat = (int) o[0], kind = (int) o[1]; float x = o[2], z = o[3], yaw = o[4], s = o[5] <= 0f ? 1f : o[5];
             float ca = cosD(yaw), sa = sinD(yaw);
@@ -2044,6 +2059,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             } else if (cat == 2) {
                 float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
                 ov.add(new float[]{x, pr[1] * 0.5f * s, z, pr[0] * s, pr[1] * s, pr[2] * s, pr[3], pr[4], pr[5], yaw});
+            } else if (cat == 3) {
+                // Bake a placed house as a box-shell (walls with a door gap + roof slab + doorstep +
+                // chimney/awning) straight into the overlay; the discarded door leaf leaves a walk-in doorway.
+                float[] hp = HOUSE_PRESETS[Math.max(0, Math.min(kind, HOUSE_PRESETS.length - 1))];
+                addBuilding(ov, doorSink, x, z, hp[0] * s, hp[1] * s, hp[2] * s,
+                            (int) hp[3], (int) hp[4], hp[5], hp[6], hp[7], (int) hp[8],
+                            hp[9] * s, hp[10] * s, hp[11], hp[12], hp[13], (int) hp[14], (int) hp[15], yaw);
             }
         }
         float[][] merged = new float[baseBoxes.length + ov.size()][];
@@ -2120,6 +2142,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static String edLabel(int cat, int kind) {
         if (cat == 0) return kind >= 0 && kind < ED_FURN_NAMES.length ? ED_FURN_NAMES[kind] : "Moebel";
         if (cat == 1) return kind == 1 ? "Busch" : (kind == 2 ? "Blume" : "Baum");
+        if (cat == 3) return kind >= 0 && kind < HOUSE_NAMES.length ? HOUSE_NAMES[kind] : "Haus";
         return kind >= 0 && kind < PROP_NAMES.length ? PROP_NAMES[kind] : "Prop";
     }
     private static final String[] ED_FURN_NAMES = {"Bett", "Schrank", "Tisch", "Stuhl", "Sofa", "Regal", "Pflanze", "Teppich", "Lampe"};
@@ -2133,6 +2156,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             String x = fr(o[2]), z = fr(o[3]), yaw = fr(o[4]); float sc = o[5] <= 0f ? 1f : o[5]; String s = fr(sc);
             if (cat == 0) sb.append("FU ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append('\n');
             else if (cat == 1) sb.append("T ").append(x).append(' ').append(z).append(' ').append(s).append(' ').append(kind).append(' ').append(yaw).append('\n');
+            else if (cat == 3) sb.append("EH ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append('\n');
             else {
                 float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
                 sb.append("B ").append(x).append(' ').append(z).append(' ').append(fr(pr[0] * sc)).append(' ').append(fr(pr[1] * sc)).append(' ').append(fr(pr[2] * sc))
@@ -2213,11 +2237,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int[][] edCatKinds(int t) {
         if (t == 0) return new int[][]{{0,0},{0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},{0,8}};
         if (t == 1) return new int[][]{{1,0},{1,1},{1,2}};
+        if (t == 3) return new int[][]{{3,0},{3,1},{3,2},{3,3}};
         return new int[][]{{2,0},{2,1},{2,2},{2,3},{2,4}};
     }
     /** A small filled swatch (no font glyph needed) so a category/kind reads at a glance. */
     private void edSwatch(float cx, float cy, float r, int cat) {
-        float[] c = cat == 0 ? new float[]{0.60f, 0.42f, 0.26f} : cat == 1 ? new float[]{0.36f, 0.68f, 0.34f} : new float[]{0.62f, 0.66f, 0.72f};
+        float[] c = cat == 0 ? new float[]{0.60f, 0.42f, 0.26f} : cat == 1 ? new float[]{0.36f, 0.68f, 0.34f}
+                  : cat == 3 ? new float[]{0.80f, 0.55f, 0.34f} : new float[]{0.62f, 0.66f, 0.72f};
         drawCircle(cx, cy, r, 0f, 0f, 0f, 0.35f);
         drawCircle(cx, cy - r * 0.12f, r * 0.86f, c[0], c[1], c[2], 1f);
     }
@@ -2269,16 +2295,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float stickTopY = toggleCy + toggleH * 0.5f + 12f * us;   // move-stick may start below the OBJEKTE toggle...
 
         if (edPaletteOpen) {
-            String[] cats = {"Moebel", "Pflanzen", "Props"};
+            String[] cats = {"Moebel", "Pflanzen", "Props", "Haeuser"};
             float catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
             int[][] kinds = edCatKinds(edCatTab);
             float kx = catX + catW * 0.5f + 14f * us + 210f * us * 0.5f, kw = 210f * us, kh = 50f * us, kGap = 6f * us;
             float palTop = toggleCy + toggleH * 0.5f + 14f * us;
-            float palBot = palTop + Math.max(3 * (catH + catGap), kinds.length * (kh + kGap)) - Math.max(catGap, kGap);
+            float palBot = palTop + Math.max(cats.length * (catH + catGap), kinds.length * (kh + kGap)) - Math.max(catGap, kGap);
             stickTopY = palBot + 16f * us;                         // ...or below the whole open palette
             float palCx = (catX - catW * 0.5f + kx + kw * 0.5f) * 0.5f, palCy = (palTop + palBot) * 0.5f;
             drawCard(palCx, palCy, (kx + kw * 0.5f) - (catX - catW * 0.5f) + 20f * us, palBot - palTop + 24f * us, 18f * us, 0.075f, 0.09f, 0.145f, 0.90f);
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < cats.length; i++) {
                 float cy = palTop + i * (catH + catGap) + catH * 0.5f;
                 if (edBtn(catX, cy, catW, catH, cats[i], 22f, edCatTab == i, tapped, px, py)) { edCatTab = i; tapped = false; }
                 edSwatch(catX - catW * 0.5f + 20f * us, cy, 9f * us, i);
@@ -4664,14 +4690,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             java.util.List<float[]> roadList = new java.util.ArrayList<float[]>();
             java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
             java.util.List<float[]> furns = new java.util.ArrayList<float[]>();
-            StringBuilder sceneSb = new StringBuilder();        // scenery lines kept verbatim on save (all but FU/T)
+            java.util.List<float[]> ehouses = new java.util.ArrayList<float[]>();   // editor-placed houses (editable overlay)
+            StringBuilder sceneSb = new StringBuilder();        // scenery lines kept verbatim on save (all but FU/T/EH)
             StringBuilder rawSb = new StringBuilder();          // the whole file (for the H/R custom-level path)
             br = new java.io.BufferedReader(new java.io.FileReader(f));
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
                 if (line.length() > 0) { rawSb.append(line).append('\n');
-                    if (!line.startsWith("FU ") && !line.startsWith("T ")) sceneSb.append(line).append('\n'); }
+                    if (!line.startsWith("FU ") && !line.startsWith("T ") && !line.startsWith("EH ")) sceneSb.append(line).append('\n'); }
                 if (line.length() == 0 || line.charAt(0) == '#') continue;
                 String[] t = line.split("\\s+");
                 if (t[0].equals("SET") && t.length >= 2) {
@@ -4710,6 +4737,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 } else if (t[0].equals("T") && t.length >= 3) {
                     // T x z [scale] [kind: 0 tree · 1 bush · 2 flower]  -> a placed plant
                     trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f), pfDef(t, 4, 0f)});
+                } else if (t[0].equals("EH") && t.length >= 4) {
+                    // EH kind x z [yawDeg] [scale]  -> an editor-placed house (editable box-shell overlay)
+                    ehouses.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pfDef(t, 4, 0f), pfDef(t, 5, 1f)});
                 } else if (t[0].equals("F") && t.length >= 5) {
                     // F x1 z1 x2 z2 [r g b]  -> a fence: one thin box rotated along the segment
                     float x1 = pf(t[1]), z1 = pf(t[2]), x2 = pf(t[3]), z2 = pf(t[4]);
@@ -4728,6 +4758,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 buildWorldInto(L, doors, houses);                  // procedural scenery (keeps its own trees/furniture)
                 for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
                 for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
+                for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4]});
                 for (float[] p : props) L.add(p);                  // arbitrary boxes stay as (non-editable) base scenery
                 this.baseLevelText = sceneSb.toString();
                 return true;
@@ -4740,6 +4771,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             this.baseLevelText = sceneSb.toString();
             for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
             for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
+            for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4]});
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {
