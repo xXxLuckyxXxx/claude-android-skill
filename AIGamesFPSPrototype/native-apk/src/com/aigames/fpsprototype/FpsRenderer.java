@@ -271,6 +271,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private boolean edSnap = true;
     private final float ED_SNAP_POS = 0.5f, ED_SNAP_YAW = 15f;
     private static final float ED_TILT_SENS = 0.0028f;   // px -> radians for the 2-finger tilt/pitch drag
+    private static final float ED_LOOK_SENS = 0.006f;    // px -> radians for the 1-finger orbit (yaw/pitch), like gameplay look
     private String edToast = null; private float edToastT = 0f;
     // undo stack: each entry {String op, Integer index, float[] before}
     private final java.util.List<Object[]> edUndo = new java.util.ArrayList<Object[]>();
@@ -2044,13 +2045,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  independently unit-testable off-device (unlike updateEditor(), which needs Matrix.setLookAtM). */
     private void edProcessGesture(boolean panActive, float panX, float panY,
                                    int camCount, float camAx, float camAy, float camBx, float camBy) {
-        if (selObj >= 0 && armedCat < 0 && panActive) {       // an object is selected: the right finger drags IT
+        // A right finger drags the selected object ONLY if it pressed on it (or is already dragging it);
+        // otherwise that single finger orbits the view (yaw + pitch), like the gameplay look control.
+        boolean grabbing = selObj >= 0 && armedCat < 0 && panActive && (edGrabbed || edRayHitsObj(selObj, panX, panY));
+        if (grabbing) {
             float[] o = editObjs.get(selObj);
             if (!edGrabbed) {
-                // Start a grab ONLY if the finger actually pressed on the selected object -- so a tap
-                // elsewhere (to reselect/deselect) never grabs it. Undo is deferred until it really moves.
-                if (edRayHitsObj(selObj, panX, panY)
-                 && screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
                     edGrabOffX = o[2] - edHit[0]; edGrabOffZ = o[3] - edHit[2];
                     edGrabbed = true; edGrabMoved = false;
                 }
@@ -2062,10 +2063,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 }
                 if (edGrabMoved) { o[2] = nx; o[3] = nz; editDirty = true; }
             }
-        } else {                                              // no drag in progress (or nothing selected)
+        } else {
             if (edGrabbed && edGrabMoved && selObj >= 0) { edSnapObj(selObj); editDirty = true; }
             if (edDraggingHouse) { edDraggingHouse = false; edHouseMeshDirty = true; editDirty = true; }   // re-bake at the drop spot
             edGrabbed = false; edGrabMoved = false;
+            if (panActive && edPrevPanActive) {                        // 1-finger look: turn (yaw) + tilt (pitch)
+                edCamYaw += (panX - edPrevPanX) * ED_LOOK_SENS;
+                edCamPitch = clamp(edCamPitch + (panY - edPrevPanY) * ED_LOOK_SENS, 0.12f, 1.50f);
+            }
         }
         edPrevPanActive = panActive; edPrevPanX = panX; edPrevPanY = panY;
 
@@ -2512,7 +2517,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "Loeschen", 20f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
         } else {
-            drawTextCenteredShadow("Stick links bewegt  -  Objekt antippen  -  2 Finger rechts drehen/zoomen/neigen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
+            drawTextCenteredShadow("Stick links bewegt  -  1 Finger rechts dreht die Sicht  -  2 Finger zoom  -  Objekt antippen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
         }
 
         if (tapped) {
@@ -6043,24 +6048,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int N = 256;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFEDE7DA);                                    // warm light plaster
+        c.drawColor(0xFFC8C4BC);                                    // near-NEUTRAL mid plaster (was near-white) -- keeps each house's hue, just darker + textured
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(55);
-        for (int k = 0; k < 30; k++) {                              // soft low-frequency mottle so big walls aren't dead flat
-            int v = rnd.nextInt(18);
-            p.setColor((0x12 << 24) | ((0xD8 - v) << 16) | ((0xD2 - v) << 8) | (0xC6 - v));
-            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(46), p);
+        for (int k = 0; k < 46; k++) {                              // strong low-frequency mottle (lighter AND darker patches) so walls aren't flat
+            boolean lite = rnd.nextBoolean(); int v = 12 + rnd.nextInt(30);
+            int t = lite ? 0xC8 + v : 0xC8 - v;                     // neutral: shift brightness, not hue
+            p.setColor((0x3C << 24) | (cl255(t) << 16) | (cl255(t - 3) << 8) | cl255(t - 10));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 16 + rnd.nextInt(50), p);
         }
-        for (int k = 0; k < 2600; k++) {                            // fine stucco speckle
-            int v = rnd.nextInt(28);
-            p.setColor((0x2A << 24) | ((0xD6 - v) << 16) | ((0xD0 - v) << 8) | (0xC2 - v));
+        for (int k = 0; k < 3000; k++) {                            // fine stucco speckle with real contrast
+            int v = rnd.nextInt(50) - 25;
+            p.setColor((0x40 << 24) | (cl255(0xC4 + v) << 16) | (cl255(0xC0 + v) << 8) | cl255(0xB6 + v));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
-        p.setColor(0x10000000);                                     // faint horizontal coat lines
-        for (int row = 1; row < 6; row++) { float y = row * N / 6f; c.drawRect(0, y, N, y + 1.2f, p); }
-        p.setColor(0x0E000000);                                     // a few faint vertical weather streaks
-        for (int k = 0; k < 16; k++) { float x = rnd.nextInt(N); c.drawRect(x, 0, x + 1.4f, N, p); }
+        p.setColor(0x24000000);                                     // horizontal coat lines (visible)
+        for (int row = 1; row < 6; row++) { float y = row * N / 6f; c.drawRect(0, y, N, y + 1.6f, p); }
+        p.setColor(0x1C000000);                                     // vertical weather streaks
+        for (int k = 0; k < 22; k++) { float x = rnd.nextInt(N); c.drawRect(x, 0, x + 1.8f, N, p); }
         return b;
     }
 
