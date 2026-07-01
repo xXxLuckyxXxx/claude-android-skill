@@ -244,10 +244,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // orbit edit camera
     private float edCamYaw = 0.7f, edCamPitch = 0.85f, edCamDist = 26f, edCamPivotX = 0f, edCamPivotZ = 9f;
     // gesture state, split by zone like the gameplay controls (left = move, right = look):
-    // left-half single finger = pan; right-half two fingers = twist (angle) + pinch (zoom).
+    // left-half single finger = pan; right-half two fingers = twist (angle) + pinch (zoom) + vertical
+    // midpoint drift (tilt/pitch) all read off the same two fingers, like Google Maps' 2-finger navigation.
     private final float[] edPanArr = new float[3], edCamArr = new float[5];
     private boolean edPrevPanActive; private float edPrevPanX, edPrevPanY;
-    private int edPrevCamCount = 0; private float edPrevCamGap, edPrevCamAng;
+    private int edPrevCamCount = 0; private float edPrevCamGap, edPrevCamAng, edPrevCamMidY;
     private boolean edGrabbed; private float edGrabOffX, edGrabOffZ;
     private int edPaletteScroll = 0;
     private int edCatTab = 0;                         // palette category: 0 furniture · 1 plants · 2 props
@@ -255,6 +256,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private android.content.Context appCtx;           // for getExternalFilesDir on save
     private boolean edSnap = true;
     private final float ED_SNAP_POS = 0.5f, ED_SNAP_YAW = 15f;
+    private static final float ED_TILT_SENS = 0.0028f;   // px -> radians for the 2-finger tilt/pitch drag
     private String edToast = null; private float edToastT = 0f;
     // undo stack: each entry {String op, Integer index, float[] before}
     private final java.util.List<Object[]> edUndo = new java.util.ArrayList<Object[]>();
@@ -1933,17 +1935,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         edPrevPanActive = panActive; edPrevPanX = panX; edPrevPanY = panY;
 
-        if (camCount == 2) {                                  // right-half two fingers: twist (yaw) + pinch (zoom)
+        if (camCount == 2) {          // right-half two fingers: pinch=zoom, twist=yaw, vertical drift=tilt (pitch)
             float gap = (float) Math.hypot(camBx - camAx, camBy - camAy);
             float ang = (float) Math.atan2(camBy - camAy, camBx - camAx);
+            float midY = (camAy + camBy) * 0.5f;
             if (edPrevCamCount == 2) {
                 if (edPrevCamGap > 2f && gap > 2f) edCamDist = clamp(edCamDist * edPrevCamGap / gap, 4f, 90f);
                 float dAng = ang - edPrevCamAng;
                 while (dAng > Math.PI) dAng -= 2f * (float) Math.PI;
                 while (dAng < -Math.PI) dAng += 2f * (float) Math.PI;
                 edCamYaw += dAng;
+                // Dragging the two-finger pair DOWN the screen flattens toward a top-down view (pitch up
+                // toward 90 deg); dragging UP tilts more level with the horizon (pitch down) -- same
+                // convention as Google Maps' two-finger tilt. All three axes read off the same 2 fingers,
+                // like Maps' combined pan/zoom/rotate/tilt gesture -- no separate buttons needed.
+                edCamPitch = clamp(edCamPitch + (midY - edPrevCamMidY) * ED_TILT_SENS, 0.12f, 1.50f);
             }
-            edPrevCamGap = gap; edPrevCamAng = ang;
+            edPrevCamGap = gap; edPrevCamAng = ang; edPrevCamMidY = midY;
         }
         edPrevCamCount = camCount;
     }
@@ -2273,7 +2281,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "Loeschen", 20f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
         } else {
-            drawTextCenteredShadow("Objekt antippen  -  links 1 Finger bewegt  -  rechts 2 Finger drehen/zoomen", width * 0.5f, height - 30f * us, 20f, 0.75f, 0.8f, 0.9f, 0.85f);
+            drawTextCenteredShadow("Objekt antippen  -  links 1 Finger bewegt  -  rechts 2 Finger drehen/zoomen/neigen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
         }
 
         if (tapped) {
