@@ -14,6 +14,7 @@ final class Hud {
     static final float AIM_RADIUS = 78f;     // aim-down-sights toggle (right edge)
     static final float JUMP_RADIUS = 78f;    // jump button (right edge, below aim)
     static final float INTERACT_RADIUS = 98f; // door prompt (bottom-centre, only when in range)
+    static final float MENU_RADIUS = 62f;     // return-to-hub button (top-right corner)
 
     static float moveCx()          { return MOVE_MARGIN; }
     static float moveCy(int h)     { return h - MOVE_MARGIN; }
@@ -27,6 +28,8 @@ final class Hud {
     static float jumpCy(int h)     { return h * 0.58f; }
     static float interactCx(int w) { return w * 0.5f; }
     static float interactCy(int h) { return h - 200f; }
+    static float menuCx(int w)     { return w - 96f; }
+    static float menuCy(int h)     { return 84f; }
 
     private Hud() {}
 }
