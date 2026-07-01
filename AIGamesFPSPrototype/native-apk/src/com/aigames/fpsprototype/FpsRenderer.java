@@ -262,6 +262,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // so sandbox placements NEVER leak into combat and never touch level.lvl.
     private final java.util.List<float[]> levelObjsBackup = new java.util.ArrayList<float[]>();
     private int sbTool = 0;                            // selected sandbox tool (index into SB_TOOLS)
+    private final float[] sbVP = new float[16];        // scratch first-person view-projection for reticle picking
     // sandbox tool set -> {editObjs cat, kind}. All reuse the editor's presets/builders.
     private static final int[][] SB_TOOLS = {
         {2,0}, {2,1}, {2,2}, {2,3},   // Kiste, Fass, Saeule, Kuebel (props)
@@ -2508,18 +2509,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawTextCentered("EXIT", exX, exY, 26f, 1f, 0.94f, 0.92f, 1f);
         if (exHit) { sandboxExit(); return; }
 
-        // action row — operate on the current selection (auto-selected on place)
+        // action row — PLATZIEREN & WAEHLEN are always live; BEWEGEN/DREHEN/LOESCHEN need a selection.
+        // WAEHLEN re-selects whatever object the centre reticle is pointing at (so you can edit anything,
+        // not just the just-placed one — matters especially after a reload, when nothing is selected).
         boolean has = selObj >= 0 && selObj < editObjs.size();
-        float aw = 210f * us, ah = 56f * us, agap = 10f * us, ax = 16f * us + aw * 0.5f, y2 = 112f * us;
-        String[] acts = {"PLATZIEREN", "BEWEGEN", "DREHEN", "LOESCHEN"};
-        for (int i = 0; i < 4; i++) {
-            boolean enabled = (i == 0) || has;
-            boolean hit = edBtn(ax, y2, aw, ah, acts[i], 20f, false, tapped && enabled, tx, ty);
+        float aw = 190f * us, ah = 56f * us, agap = 8f * us, ax = 16f * us + aw * 0.5f, y2 = 112f * us;
+        String[] acts = {"PLATZIEREN", "WAEHLEN", "BEWEGEN", "DREHEN", "LOESCHEN"};
+        for (int i = 0; i < acts.length; i++) {
+            boolean enabled = (i <= 1) || has;
+            boolean hit = edBtn(ax, y2, aw, ah, acts[i], 19f, false, tapped && enabled, tx, ty);
             if (!enabled) drawRoundRect(ax, y2, aw, ah, Math.min(16f * us, ah * 0.32f), 0.04f, 0.05f, 0.07f, 0.55f);
             if (hit) {
                 if (i == 0) edPlaceInFront(SB_TOOLS[sbTool][0], SB_TOOLS[sbTool][1]);
-                else if (i == 1) edMoveInFront();
-                else if (i == 2) { edRotate(15f); saveSandboxObjs(); }
+                else if (i == 1) {
+                    int p = sbPickReticle();
+                    if (p >= 0) { selObj = p; if (sfx != null) sfx.swap(); edSetToast(edLabel((int) editObjs.get(p)[0], (int) editObjs.get(p)[1]) + " gewaehlt"); }
+                    else edSetToast("Nichts anvisiert — Objekt anschauen");
+                } else if (i == 2) edMoveInFront();
+                else if (i == 3) { edRotate(15f); saveSandboxObjs(); }
                 else { edDelete(); saveSandboxObjs(); }
                 tapped = false;
             }
@@ -2539,7 +2546,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // (e.g. LOESCHEN) may have changed selObj/editObjs this same frame, so `has` is stale by now.
         boolean selNow = selObj >= 0 && selObj < editObjs.size();
         String hint = selNow ? ("Ausgewaehlt: " + edLabel((int) editObjs.get(selObj)[0], (int) editObjs.get(selObj)[1]))
-                             : "PLATZIEREN tippen — Objekt erscheint vor dir";
+                             : "PLATZIEREN: Objekt vor dir  ·  WAEHLEN: anvisiertes Objekt bearbeiten";
         drawTextCentered(hint, width * 0.5f, height - 34f * us, 18f, 0.85f, 0.90f, 0.98f, 0.9f);
         drawText("SANDBOX", 18f * us, height - 16f * us, 14f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.8f);
         if (edToast != null && edToastT > 0f) drawTextCentered(edToast, width * 0.5f, 172f * us, 20f, 1f, 1f, 0.85f, Math.min(1f, edToastT));
@@ -2809,6 +2816,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edSnapObj(selObj);
         if (sfx != null) sfx.swap();
         saveSandboxObjs();
+    }
+
+    /** SANDBOX "select what you're looking at": cast a ray from the screen-centre reticle (using the live
+     *  first-person view-projection) and select the nearest editObjs object it hits. -1 = nothing hit. Mirrors
+     *  edPickAt but feeds the FP camera's proj*view instead of the editor's orbit matrix. */
+    private int sbPickReticle() {
+        Matrix.multiplyMM(sbVP, 0, proj, 0, view, 0);
+        if (!screenRay(width * 0.5f, height * 0.5f, width, height, sbVP, edRO, edRD)) return -1;
+        int best = -1; float bestT = 1e30f; float[] b = new float[6];
+        for (int i = 0; i < editObjs.size(); i++) {
+            float[] o = editObjs.get(i);
+            edObjBounds(o, b);
+            float t = rayBox(edRO, edRD, b[0], b[1], b[2], b[3] + 0.3f, b[4] + 0.3f, b[5] + 0.3f, o[4]);
+            if (t >= 0f && t < bestT) { bestT = t; best = i; }
+        }
+        return best;
     }
 
     /** Persist the sandbox overlay to a SEPARATE <externalFiles>/sandbox.lvl (never level.lvl). Generic
