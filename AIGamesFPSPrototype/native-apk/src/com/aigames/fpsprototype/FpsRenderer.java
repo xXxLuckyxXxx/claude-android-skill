@@ -691,7 +691,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (b.length > 9 && b[9] != 0f) Matrix.rotateM(model, 0, b[9], 0f, 1f, 0f);   // props/fences carry a yaw
             Matrix.scaleM(model, 0, b[3], b[4], b[5]);
             float boost = (i == hitBox && hitTimer > 0f) ? 1.6f : 1f;
-            float cr = mat == 0 ? b[6] : 1f, cg = mat == 0 ? b[7] : 1f, cb = mat == 0 ? b[8] : 1f;   // brick/stone/timber carry their own colour
+            // Plaster (mat 0) carries its own pastel colour; deepen it a touch so light facades read richer,
+            // not washed-out next to the textured brick/stone walls. Brick/stone/timber stay white x texture.
+            float cr = mat == 0 ? b[6] * 0.87f : 1f, cg = mat == 0 ? b[7] * 0.87f : 1f, cb = mat == 0 ? b[8] * 0.87f : 1f;
             drawWorld(cube, 36, 0f, cr * boost, cg * boost, cb * boost);
         }
         GLES20.glUniform1f(uWorldUV, 0f);                      // restore mesh UVs for roofs/windows/bands/interiors
@@ -5526,7 +5528,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int start = o / 8;
             o = roofPrism(d, o, hh[0], hh[1], hh[2], hh[3], hh[4], hh[9], hh[10]);     // cx cz w d h pitch overhang
             rotateVertSpanY(d, start, o / 8 - start, hh[0], hh[1], hh.length > 25 ? hh[25] : 0f);   // spin with the house
-            roofGroups[gi++] = new float[]{start, o / 8 - start, hh[6], hh[7], hh[8]}; // firstVert, count, roof rgb
+            // Guard against washed-out almost-white roofs: pull a BRIGHT + LOW-SATURATION roof colour toward
+            // terracotta. Terracotta and grey slate (either saturated or not bright) pass through unchanged.
+            float rr = hh[6], rg = hh[7], rb = hh[8];
+            float rmx = Math.max(rr, Math.max(rg, rb)), rmn = Math.min(rr, Math.min(rg, rb));
+            float rsat = rmx > 0.01f ? (rmx - rmn) / rmx : 0f;
+            float rt = clamp((rmx - 0.70f) / 0.25f, 0f, 1f) * clamp((0.22f - rsat) / 0.22f, 0f, 1f);
+            roofGroups[gi++] = new float[]{start, o / 8 - start, rr + (0.69f - rr) * rt, rg + (0.31f - rg) * rt, rb + (0.16f - rb) * rt};
         }
         roofVerts = o / 8;
         return java.util.Arrays.copyOf(d, o);
