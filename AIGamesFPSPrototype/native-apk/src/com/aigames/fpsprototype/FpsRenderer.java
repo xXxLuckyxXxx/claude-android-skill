@@ -158,6 +158,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float[][] interiorGroups;              // baked house-interior material groups: {firstVert, vertCount, r,g,b}
     private java.util.List<float[]> interiorPieces;// furniture/floor/ceiling specs {x,y,z,w,h,d,colorIdx}, built once
     private java.util.List<float[]> customFurniture;// level-placed FU pieces {kind,x,z,yaw,scale} (editor furniture tool)
+    // Editor-placed houses get their OWN small mesh set (pitched roof + windows + bands + interior), baked from
+    // the cat-3 editObjs and drawn alongside the base town meshes -- so placed houses look identical to the town,
+    // not flat box-shells. Rebuilt only when the house set changes (edHouseMeshDirty), and hidden mid-drag
+    // (edDraggingHouse) so a moving house shows its box-shell walls without a detached roof.
+    private FloatBuffer ovRoofMesh, ovWinMesh, ovTrimMesh, ovRevealMesh, ovBandMesh, ovIntMesh;
+    private float[][] ovRoofGroups, ovWinGroups, ovBandGroups, ovIntGroups;
+    private int ovRoofVerts, ovWinVerts, ovTrimVerts, ovRevealVerts, ovBandVerts, ovIntVerts;
+    private java.util.List<float[]> ovHouseColliders;   // furniture collision proxies for placed houses (merged into boxes)
+    private boolean edHouseMeshDirty = true, edDraggingHouse;   // bake overlay-house meshes on first overlay build
     private static final float[][] INT_COLS = {    // interior material palette (indexed by colorIdx)
         {0.46f, 0.33f, 0.21f},   // 0 wood floor
         {0.86f, 0.84f, 0.80f},   // 1 ceiling
@@ -713,6 +722,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, woodTex);
             for (float[] gp : interiorGroups) drawWorldRange(interiorMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
         }
+
+        // editor-placed houses: their own pitched roofs / windows / bands / interiors, same pipeline as the town.
+        // Hidden only while a house is being dragged (its box-shell walls follow the finger instead).
+        if (!edDraggingHouse) {
+            if (ovRoofGroups != null) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);
+                for (float[] gp : ovRoofGroups) drawWorldRange(ovRoofMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            }
+            if (ovRevealVerts > 0) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winBackTex);
+                drawWorld(ovRevealMesh, ovRevealVerts, 0f, 1f, 1f, 1f);
+            }
+            if (ovWinGroups != null) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
+                GLES20.glEnable(GLES20.GL_BLEND);
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+                GLES20.glDepthMask(false);
+                for (float[] gp : ovWinGroups) drawWorldRange(ovWinMesh, (int) gp[0], (int) gp[1], 5f, gp[2], gp[3], gp[4]);
+                GLES20.glDepthMask(true);
+                GLES20.glDisable(GLES20.GL_BLEND);
+            }
+            if (ovTrimVerts > 0) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wallTex);
+                drawWorld(ovTrimMesh, ovTrimVerts, 0f, 0.95f, 0.93f, 0.86f);
+            }
+            if (ovBandGroups != null) {
+                for (float[] gp : ovBandGroups) drawWorldRange(ovBandMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            }
+            if (ovIntGroups != null) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, woodTex);
+                for (float[] gp : ovIntGroups) drawWorldRange(ovIntMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            }
+        }
+
         drawOverlayFurniture();                                // editor-placed furniture (drawn every frame, all states)
         if (state == ST_EDIT) drawEditGizmos();                // selection markers + placement reticle (3D)
 
@@ -1884,7 +1927,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         selObj = -1; armedCat = -1; armedKind = -1; edGrabbed = false; edGrabMoved = false; edPaletteOpen = false;
         edPrevPanActive = false; edPrevCamCount = 0;
         edCamPivotX = px; edCamPivotZ = pz; edCamYaw = yaw; edCamPitch = 0.85f; edCamDist = 26f;
-        editDirty = true;
+        editDirty = true; edDraggingHouse = false;
         edSetToast("OBJEKTE oeffnet die Palette. Objekt antippen zum Bearbeiten.");
     }
     private void edExit() {
@@ -1958,11 +2001,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float nx = edHit[0] + edGrabOffX, nz = edHit[2] + edGrabOffZ;
                 if (!edGrabMoved && (Math.abs(nx - o[2]) > 0.03f || Math.abs(nz - o[3]) > 0.03f)) {
                     edPushUndo("MOD", selObj, o); edGrabMoved = true;   // one snapshot, only once it truly moves
+                    if ((int) o[0] == 3) edDraggingHouse = true;        // hide the heavy house mesh while it slides (box-shell follows)
                 }
                 if (edGrabMoved) { o[2] = nx; o[3] = nz; editDirty = true; }
             }
         } else {                                              // no drag in progress (or nothing selected)
             if (edGrabbed && edGrabMoved && selObj >= 0) { edSnapObj(selObj); editDirty = true; }
+            if (edDraggingHouse) { edDraggingHouse = false; edHouseMeshDirty = true; editDirty = true; }   // re-bake at the drop spot
             edGrabbed = false; edGrabMoved = false;
         }
         edPrevPanActive = panActive; edPrevPanX = panX; edPrevPanY = panY;
@@ -2041,8 +2086,66 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return best;
     }
 
+    /** The 27-field house record (matching the mesh builders' houseRects format) for a placed house preset. */
+    private float[] ovHouseRecord(int kind, float x, float z, float yaw, float s) {
+        float[] hp = HOUSE_PRESETS[Math.max(0, Math.min(kind, HOUSE_PRESETS.length - 1))];
+        float w = hp[0] * s, d = hp[1] * s, h = hp[2] * s;
+        float storeys = h >= 5.5f ? 2f : 1f;
+        return new float[]{
+            x, z, w, d, h, hp[3],                          // cx cz w d h doorSide
+            0.69f, 0.31f, 0.16f,                           // roof colour (terracotta)
+            -1f, -1f,                                      // pitch, overhang (auto)
+            2f, 1f,                                        // window density, size
+            GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2],      // glass tint
+            0.30f, 0.42f, 0.40f, 0.40f,                    // foundation height + colour
+            -1f, -1f, -1f,                                 // trim band (none)
+            storeys, hp[9] * s, yaw, 1f                    // storeys, doorW, yaw, autoFurnish
+        };
+    }
+
+    /** Bake the pitched roofs / windows / bands / interiors of ALL placed houses into a separate small mesh set,
+     *  reusing the town's builders by briefly pointing houseRects/interiorPieces at the overlay list and then
+     *  restoring the base town's meshes untouched. Runs only on edHouseMeshDirty, so the window builder's large
+     *  scratch is never allocated per frame. */
+    private void bakeOverlayHouses() {
+        java.util.List<float[]> ovH = new java.util.ArrayList<float[]>();
+        for (float[] o : editObjs)
+            if ((int) o[0] == 3) ovH.add(ovHouseRecord((int) o[1], o[2], o[3], o[4], o[5] <= 0f ? 1f : o[5]));
+        if (ovH.isEmpty()) {
+            ovRoofMesh = ovWinMesh = ovTrimMesh = ovRevealMesh = ovBandMesh = ovIntMesh = null;
+            ovRoofVerts = ovWinVerts = ovTrimVerts = ovRevealVerts = ovBandVerts = ovIntVerts = 0;
+            ovRoofGroups = ovWinGroups = ovBandGroups = ovIntGroups = null;
+            ovHouseColliders = null;
+            return;
+        }
+        // snapshot every base field the builders overwrite, so the town's meshes are untouched afterwards
+        java.util.List<float[]> sRects = houseRects, sPieces = interiorPieces;
+        float[][] sRoofG = roofGroups, sWinG = winGroups, sBandG = bandGroups, sIntG = interiorGroups;
+        int sRoofV = roofVerts, sWinV = windowVerts, sTrimV = trimVerts, sRevealV = revealVerts, sBandV = bandVerts, sIntV = interiorVerts;
+        float[] sTrim = trimData, sReveal = revealData;
+        java.util.List<float[]> colliders = new java.util.ArrayList<float[]>();
+        try {
+            houseRects = ovH;
+            ovRoofMesh = makeBuffer(makeRoofMesh());   ovRoofGroups = roofGroups; ovRoofVerts = roofVerts;
+            ovWinMesh  = makeBuffer(makeWindowMesh());  ovWinGroups = winGroups;  ovWinVerts = windowVerts;
+            ovTrimMesh = makeBuffer(trimData);          ovTrimVerts = trimVerts;
+            ovRevealMesh = makeBuffer(revealData);      ovRevealVerts = revealVerts;
+            ovBandMesh = makeBuffer(makeBandMesh());    ovBandGroups = bandGroups; ovBandVerts = bandVerts;
+            interiorPieces = new java.util.ArrayList<float[]>();
+            for (float[] hh : ovH) furnishHouse(colliders, hh[0], hh[1], hh[2], hh[3], hh[4], (int) hh[5], hh[25]);
+            ovIntMesh = makeBuffer(makeInteriorMesh()); ovIntGroups = interiorGroups; ovIntVerts = interiorVerts;
+        } finally {
+            houseRects = sRects; interiorPieces = sPieces;
+            roofGroups = sRoofG; winGroups = sWinG; bandGroups = sBandG; interiorGroups = sIntG;
+            roofVerts = sRoofV; windowVerts = sWinV; trimVerts = sTrimV; revealVerts = sRevealV; bandVerts = sBandV; interiorVerts = sIntV;
+            trimData = sTrim; revealData = sReveal;
+        }
+        ovHouseColliders = colliders.isEmpty() ? null : colliders;
+    }
+
     private void rebuildOverlay() {
         if (baseBoxes == null) baseBoxes = boxes;                 // first call: snapshot the base
+        if (edHouseMeshDirty) { bakeOverlayHouses(); edHouseMeshDirty = false; }
         java.util.List<float[]> ov = new java.util.ArrayList<float[]>();
         java.util.List<float[]> doorSink = new java.util.ArrayList<float[]>();   // placed-house door leaves (discarded -> open doorway)
         for (float[] o : editObjs) {
@@ -2068,9 +2171,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                             hp[9] * s, hp[10] * s, hp[11], hp[12], hp[13], (int) hp[14], (int) hp[15], yaw);
             }
         }
-        float[][] merged = new float[baseBoxes.length + ov.size()][];
+        int extra = ovHouseColliders == null ? 0 : ovHouseColliders.size();
+        float[][] merged = new float[baseBoxes.length + ov.size() + extra][];
         System.arraycopy(baseBoxes, 0, merged, 0, baseBoxes.length);
-        for (int i = 0; i < ov.size(); i++) merged[baseBoxes.length + i] = ov.get(i);
+        int mi = baseBoxes.length;
+        for (int i = 0; i < ov.size(); i++) merged[mi++] = ov.get(i);
+        if (ovHouseColliders != null) for (float[] c : ovHouseColliders) merged[mi++] = c;   // placed-house furniture collision
         boxes = merged;
         makeOverlayTrees();
         editDirty = false;
@@ -2113,17 +2219,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         editObjs.add(o);
         edSnapObj(editObjs.size() - 1);
         edPushUndo("ADD", editObjs.size() - 1, null);
-        editDirty = true; if (sfx != null) sfx.swap();
+        editDirty = true; edHouseMeshDirty = true; if (sfx != null) sfx.swap();
         edSetToast(edLabel(armedCat, armedKind) + " platziert");
     }
-    private void edRotate(float deg) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[4] = ((o[4] + deg) % 360f + 360f) % 360f; editDirty = true; }
-    private void edScale(float f) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[5] = clamp((o[5] <= 0f ? 1f : o[5]) * f, 0.3f, 4f); editDirty = true; }
-    private void edDelete() { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("DEL", selObj, o); editObjs.remove(selObj); selObj = -1; editDirty = true; if (sfx != null) sfx.swap(); }
+    private void edRotate(float deg) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[4] = ((o[4] + deg) % 360f + 360f) % 360f; editDirty = true; edHouseMeshDirty = true; }
+    private void edScale(float f) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[5] = clamp((o[5] <= 0f ? 1f : o[5]) * f, 0.3f, 4f); editDirty = true; edHouseMeshDirty = true; }
+    private void edDelete() { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("DEL", selObj, o); editObjs.remove(selObj); selObj = -1; editDirty = true; edHouseMeshDirty = true; if (sfx != null) sfx.swap(); }
     private void edDuplicate() {
         if (selObj < 0) return; float[] o = editObjs.get(selObj);
         float[] c = o.clone(); c[2] += 1.5f; c[3] += 1.5f;
         editObjs.add(c); selObj = editObjs.size() - 1; edSnapObj(selObj);
-        edPushUndo("ADD", selObj, null); editDirty = true; if (sfx != null) sfx.swap();
+        edPushUndo("ADD", selObj, null); editDirty = true; edHouseMeshDirty = true; if (sfx != null) sfx.swap();
     }
     private void edPushUndo(String op, int idx, float[] before) {
         edUndo.add(new Object[]{op, Integer.valueOf(idx), before == null ? null : before.clone()});
@@ -2136,7 +2242,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (op.equals("ADD")) { if (idx >= 0 && idx < editObjs.size()) editObjs.remove(idx); selObj = -1; }
         else if (op.equals("DEL")) { if (before != null) { idx = Math.min(idx, editObjs.size()); editObjs.add(idx, before); selObj = idx; } }
         else if (op.equals("MOD")) { if (before != null && idx >= 0 && idx < editObjs.size()) editObjs.set(idx, before); selObj = idx; }
-        editDirty = true; edSetToast("Rueckgaengig");
+        editDirty = true; edHouseMeshDirty = true; edSetToast("Rueckgaengig");
     }
 
     private static String edLabel(int cat, int kind) {
