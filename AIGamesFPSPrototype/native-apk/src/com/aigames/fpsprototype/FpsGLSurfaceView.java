@@ -23,6 +23,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private int aimPointerId = -1;
     private int jumpPointerId = -1;
     private int interactPointerId = -1;
+    private int menuPointerId = -1;
     private float lookLastX, lookLastY;
 
     public FpsGLSurfaceView(Context context, int build) {
@@ -39,6 +40,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
     private long edDownTime;
     private boolean edMoved;
     private static final float EDIT_TAP_SLOP = 26f;   // px travel under which a press counts as a tap
+    private long edLastTapTime; private float edLastTapX, edLastTapY;   // for double-tap detection (deep-edit an object)
     // Real-mobile-FPS layout: the LEFT lower area is a floating movement stick (translates the camera);
     // the RIGHT side is up to two pointers (1 = drag selected object, 2 = zoom/rotate/tilt). A finger's
     // role is fixed at touch-down by where it lands.
@@ -91,6 +93,7 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 aimPointerId = -1;
                 jumpPointerId = -1;
                 interactPointerId = -1;
+                menuPointerId = -1;
                 input.setMove(0f, 0f);
                 input.setFireHeld(false);
                 break;
@@ -135,7 +138,11 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                 break;
             case MotionEvent.ACTION_UP:
                 if (edTapId != -1 && !edMoved && (e.getEventTime() - edDownTime) < 260) {
-                    input.requestMenuTap(edDownX, edDownY);   // a clean tap: routed to UI / select / place
+                    long now = e.getEventTime();
+                    float ddx = edDownX - edLastTapX, ddy = edDownY - edLastTapY;
+                    boolean dbl = (now - edLastTapTime) < 320 && (ddx * ddx + ddy * ddy) < 90f * 90f;
+                    if (dbl) { input.requestEditDoubleTap(edDownX, edDownY); edLastTapTime = 0; }   // second quick tap nearby -> deep edit
+                    else { input.requestMenuTap(edDownX, edDownY); edLastTapTime = now; edLastTapX = edDownX; edLastTapY = edDownY; }
                 }
                 edTapId = -1;
                 edStickId = -1; edRight0 = -1; edRight1 = -1;   // the whole gesture just ended
@@ -213,11 +220,21 @@ public class FpsGLSurfaceView extends GLSurfaceView {
             jumpPointerId = -1;
         } else if (pid == interactPointerId) {
             interactPointerId = -1;
+        } else if (pid == menuPointerId) {
+            menuPointerId = -1;
         }
     }
 
     private void assign(int pid, float x, float y) {
         int w = getWidth(), h = getHeight();
+
+        // Menu button (top-right): one tap returns to the hub/main menu (aborts the run).
+        float mdx = x - Hud.menuCx(w), mdy = y - Hud.menuCy(h);
+        if (menuPointerId == -1 && mdx * mdx + mdy * mdy <= Hud.MENU_RADIUS * Hud.MENU_RADIUS) {
+            menuPointerId = pid;
+            input.requestHubMenu();
+            return;
+        }
 
         // Fire button (bottom-right) takes priority.
         float fdx = x - Hud.fireCx(w), fdy = y - Hud.fireCy(h);

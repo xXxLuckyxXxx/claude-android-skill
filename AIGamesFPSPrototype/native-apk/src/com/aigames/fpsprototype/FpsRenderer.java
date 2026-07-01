@@ -248,6 +248,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private String baseLevelText = "";              // scenery lines (H/R/F/SET) re-emitted verbatim on save
     private boolean editDirty = true;               // rebuild overlay (boxes + plant mesh) on the GL thread
     private FloatBuffer overlayTrees; private int overlayTreeVerts;
+    // Interior editing: double-tap a placed house -> a top-down "look inside" view of THAT house (its roof
+    // hidden, ceiling off), where its furniture is editable. -1 = normal town view.
+    private int edInsideHouse = -1;
+    private float edSavePivotX, edSavePivotZ, edSaveYaw, edSavePitch, edSaveDist;   // town camera, restored on leaving
     private int selObj = -1;                         // selected editObjs index, -1 = none
     private int armedCat = -1, armedKind = -1;       // palette item armed for placement (-1 = none)
     // orbit edit camera
@@ -271,7 +275,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // undo stack: each entry {String op, Integer index, float[] before}
     private final java.util.List<Object[]> edUndo = new java.util.ArrayList<Object[]>();
     // scratch
-    private final float[] edVP = new float[16], edRO = new float[3], edRD = new float[3], edHit = new float[3], edTap = new float[2];
+    private final float[] edVP = new float[16], edRO = new float[3], edRD = new float[3], edHit = new float[3], edTap = new float[2], edTap2 = new float[2];
     // prop presets {w,h,d, r,g,b}
     private static final float[][] PROP_PRESETS = {
         {1.2f,1.2f,1.2f, 0.55f,0.40f,0.24f},   // 0 Kiste (crate)
@@ -323,6 +327,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final int[] abLevel = new int[AB_COUNT];
     // Per-run economy (reset by restart()).
     private long runCash = 0, runXp = 0;
+    private long preRunCash = 0, preRunXp = 0; private int preRunLevel = 1;   // bank snapshot for un-counting an aborted run
     private int runKills = 0, levelsGainedThisRun = 0;
     private int jumpsUsed = 0;
 
@@ -726,7 +731,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // editor-placed houses: their own pitched roofs / windows / bands / interiors, same pipeline as the town.
         // Hidden only while a house is being dragged (its box-shell walls follow the finger instead).
         if (!edDraggingHouse) {
-            if (ovRoofGroups != null) {
+            if (ovRoofGroups != null && edInsideHouse < 0) {   // hide the roof while looking inside a house from above
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);
                 for (float[] gp : ovRoofGroups) drawWorldRange(ovRoofMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
             }
@@ -1629,6 +1634,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     0f, 1f, 0f);
             return;
         }
+        if (input.consumeHubMenu()) { abortToHub(); return; }   // MENU button: bail to the hub (run does NOT count)
         if (input.consumeAimToggle()) aimOn = !aimOn;
         if (input.consumeSwitch()) cycleWeapon();
 
@@ -1931,6 +1937,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edSetToast("OBJEKTE oeffnet die Palette. Objekt antippen zum Bearbeiten.");
     }
     private void edExit() {
+        edInsideHouse = -1;
         saveLevel(true);
         // Fog was snapped far out for the editor's clear overhead view; reset it to the level base so the
         // hub doesn't render fog-free for several seconds while the weather crossfade drags it back.
@@ -1938,6 +1945,54 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         state = ST_HUB; hubWasShown = false;
     }
     private void edSetToast(String m) { edToast = m; edToastT = 1.8f; }
+
+    /** Double-tapping a placed house drops into a top-down "look inside" view of it: its roof is hidden and
+     *  its baked interior is unpacked into editable furniture pieces you can move/rotate/delete/add. */
+    private void edEnterHouse(int idx) {
+        if (idx < 0 || idx >= editObjs.size() || (int) editObjs.get(idx)[0] != 3) return;
+        edUnpackHouse(idx);
+        float[] o = editObjs.get(idx);
+        edSavePivotX = edCamPivotX; edSavePivotZ = edCamPivotZ; edSaveYaw = edCamYaw; edSavePitch = edCamPitch; edSaveDist = edCamDist;
+        edInsideHouse = idx;
+        float[] hp = HOUSE_PRESETS[Math.max(0, Math.min((int) o[1], HOUSE_PRESETS.length - 1))];
+        float s = o[5] <= 0f ? 1f : o[5];
+        edCamPivotX = o[2]; edCamPivotZ = o[3];
+        edCamYaw = o[4] * 0.017453292f;                    // face the house's own orientation
+        edCamPitch = 1.48f;                                 // almost straight down
+        edCamDist = Math.max(hp[0], hp[1]) * s * 1.1f + 3f;
+        selObj = -1; armedCat = -1; armedKind = -1; edPaletteOpen = false; edCatTab = 0;
+        edSetToast("Innenraum: Moebel antippen und bearbeiten");
+    }
+    private void edLeaveHouse() {
+        edInsideHouse = -1;
+        edCamPivotX = edSavePivotX; edCamPivotZ = edSavePivotZ; edCamYaw = edSaveYaw; edCamPitch = edSavePitch; edCamDist = edSaveDist;
+        selObj = -1; armedCat = -1; armedKind = -1;
+    }
+    /** Turn a house's auto-furnished (baked) interior into editable FU furniture pieces, once. Marks the house
+     *  custom-furnished (field 6) so its baked furniture + ceiling stay off and a plain floor is drawn instead. */
+    private void edUnpackHouse(int idx) {
+        float[] o = editObjs.get(idx);
+        if (o.length > 6 && o[6] != 0f) return;             // already unpacked
+        if (o.length <= 6) { float[] n = new float[7]; System.arraycopy(o, 0, n, 0, o.length); editObjs.set(idx, n); o = n; }
+        o[6] = 1f;
+        int kind = (int) o[1]; float s = o[5] <= 0f ? 1f : o[5];
+        float[] hp = HOUSE_PRESETS[Math.max(0, Math.min(kind, HOUSE_PRESETS.length - 1))];
+        float w = hp[0] * s, d = hp[1] * s, cx = o[2], cz = o[3], yaw = o[4];
+        float ca = cosD(yaw), sa = sinD(yaw);
+        float[][] lay = {                                   // {furnKind, localX, localZ}
+            {7, 0f, 0f},                                    // Teppich (rug), centre
+            {0, -w * 0.24f, -d * 0.24f},                    // Bett
+            {1,  w * 0.30f, -d * 0.30f},                    // Schrank
+            {2,  w * 0.18f,  d * 0.20f},                    // Tisch
+            {3,  w * 0.18f - 0.7f, d * 0.20f},              // Stuhl
+            {3,  w * 0.18f + 0.7f, d * 0.20f},              // Stuhl
+        };
+        for (float[] p : lay) {
+            float wx = cx + p[1] * ca + p[2] * sa, wz = cz - p[1] * sa + p[2] * ca;
+            editObjs.add(new float[]{0f, p[0], wx, wz, yaw, 1f});
+        }
+        edHouseMeshDirty = true; editDirty = true;
+    }
 
     /** Move the orbit camera's ground pivot by a stick deflection, relative to the current view yaw:
      *  my (screen-up) drives forward/back along the view direction, mx (screen-right) strafes. Pure +
@@ -2086,8 +2141,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return best;
     }
 
-    /** The 27-field house record (matching the mesh builders' houseRects format) for a placed house preset. */
-    private float[] ovHouseRecord(int kind, float x, float z, float yaw, float s) {
+    /** The 27-field house record (matching the mesh builders' houseRects format) for a placed house preset.
+     *  {@code furnished}=false -> auto-furnish the interior (baked); true -> custom-furnished (editable FU
+     *  pieces), so the baked furniture + ceiling are suppressed. */
+    private float[] ovHouseRecord(int kind, float x, float z, float yaw, float s, boolean furnished) {
         float[] hp = HOUSE_PRESETS[Math.max(0, Math.min(kind, HOUSE_PRESETS.length - 1))];
         float w = hp[0] * s, d = hp[1] * s, h = hp[2] * s;
         float storeys = h >= 5.5f ? 2f : 1f;
@@ -2099,7 +2156,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2],      // glass tint
             0.30f, 0.42f, 0.40f, 0.40f,                    // foundation height + colour
             -1f, -1f, -1f,                                 // trim band (none)
-            storeys, hp[9] * s, yaw, 1f                    // storeys, doorW, yaw, autoFurnish
+            storeys, hp[9] * s, yaw, furnished ? 0f : 1f   // storeys, doorW, yaw, autoFurnish
         };
     }
 
@@ -2110,7 +2167,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void bakeOverlayHouses() {
         java.util.List<float[]> ovH = new java.util.ArrayList<float[]>();
         for (float[] o : editObjs)
-            if ((int) o[0] == 3) ovH.add(ovHouseRecord((int) o[1], o[2], o[3], o[4], o[5] <= 0f ? 1f : o[5]));
+            if ((int) o[0] == 3) ovH.add(ovHouseRecord((int) o[1], o[2], o[3], o[4], o[5] <= 0f ? 1f : o[5], o.length > 6 && o[6] != 0f));
         if (ovH.isEmpty()) {
             ovRoofMesh = ovWinMesh = ovTrimMesh = ovRevealMesh = ovBandMesh = ovIntMesh = null;
             ovRoofVerts = ovWinVerts = ovTrimVerts = ovRevealVerts = ovBandVerts = ovIntVerts = 0;
@@ -2132,7 +2189,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             ovRevealMesh = makeBuffer(revealData);      ovRevealVerts = revealVerts;
             ovBandMesh = makeBuffer(makeBandMesh());    ovBandGroups = bandGroups; ovBandVerts = bandVerts;
             interiorPieces = new java.util.ArrayList<float[]>();
-            for (float[] hh : ovH) furnishHouse(colliders, hh[0], hh[1], hh[2], hh[3], hh[4], (int) hh[5], hh[25]);
+            for (float[] hh : ovH) if (hh[26] != 0f) furnishHouse(colliders, hh[0], hh[1], hh[2], hh[3], hh[4], (int) hh[5], hh[25]);   // skip unpacked houses (their furniture is editable FU)
             ovIntMesh = makeBuffer(makeInteriorMesh()); ovIntGroups = interiorGroups; ovIntVerts = interiorVerts;
         } finally {
             houseRects = sRects; interiorPieces = sPieces;
@@ -2169,6 +2226,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 addBuilding(ov, doorSink, x, z, hp[0] * s, hp[1] * s, hp[2] * s,
                             (int) hp[3], (int) hp[4], hp[5], hp[6], hp[7], (int) hp[8],
                             hp[9] * s, hp[10] * s, hp[11], hp[12], hp[13], (int) hp[14], (int) hp[15], yaw);
+                if (o.length > 6 && o[6] != 0f) {   // unpacked house: baked interior/ceiling off -> a plain thin (walkable) floor
+                    float fw = Math.max(0.6f, hp[0] * s - 0.3f), fd = Math.max(0.6f, hp[1] * s - 0.3f);
+                    ov.add(new float[]{x, 0.02f, z, fw, 0.04f, fd, 0.55f, 0.45f, 0.34f, yaw});
+                }
             }
         }
         int extra = ovHouseColliders == null ? 0 : ovHouseColliders.size();
@@ -2262,7 +2323,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             String x = fr(o[2]), z = fr(o[3]), yaw = fr(o[4]); float sc = o[5] <= 0f ? 1f : o[5]; String s = fr(sc);
             if (cat == 0) sb.append("FU ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append('\n');
             else if (cat == 1) sb.append("T ").append(x).append(' ').append(z).append(' ').append(s).append(' ').append(kind).append(' ').append(yaw).append('\n');
-            else if (cat == 3) sb.append("EH ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append('\n');
+            else if (cat == 3) sb.append("EH ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append(' ').append(o.length > 6 ? (int) o[6] : 0).append('\n');
             else {
                 float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
                 sb.append("B ").append(x).append(' ').append(z).append(' ').append(fr(pr[0] * sc)).append(' ').append(fr(pr[1] * sc)).append(' ').append(fr(pr[2] * sc))
@@ -2379,8 +2440,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawRectPx(width * 0.5f, hbH + (4f + i * 6f) * us, width, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.05f - i * 0.01f);
         drawRectPx(width * 0.5f, hbH, width, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f);
         float fertigW = Math.min(210f * us, width * 0.22f);
-        if (edBtn(20f * us + fertigW * 0.5f, topY, fertigW, bh, "FERTIG", 27f, false, tapped, px, py)) { edExit(); return; }
-        drawTextCenteredShadow("EDITOR", width * 0.5f, topY, 25f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+        if (edInsideHouse >= 0) {
+            if (edBtn(20f * us + fertigW * 0.5f, topY, fertigW, bh, "ZURUECK", 25f, false, tapped, px, py)) { edLeaveHouse(); return; }
+        } else if (edBtn(20f * us + fertigW * 0.5f, topY, fertigW, bh, "MENUE", 26f, false, tapped, px, py)) { edExit(); return; }
+        drawTextCenteredShadow(edInsideHouse >= 0 ? "INNENRAUM" : "EDITOR", width * 0.5f, topY, 25f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
         // Right-side group sized as a fixed FRACTION of width (never fixed px) so it can never collide with
         // FERTIG on a narrow/low-res screen — three equal buttons filling a 58%-of-width budget.
         float rGap = 10f * us, rBudget = width * 0.58f, wBtn = (rBudget - 2f * rGap) / 3f;
@@ -2427,7 +2490,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawChip(width * 0.5f, height - 46f * us, measureText("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), 24f) + 46f * us, 54f * us, 0.07f, 0.10f, 0.16f, 0.92f);
             drawTextCentered("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), width * 0.5f, height - 46f * us, 24f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
             float doneW = Math.min(230f * us, width * 0.24f);
-            if (edBtn(width - 20f * us - doneW * 0.5f, height - 46f * us, doneW, 74f * us, "FERTIG", 27f, true, tapped, px, py)) { armedCat = -1; armedKind = -1; tapped = false; }
+            if (edBtn(width - 20f * us - doneW * 0.5f, height - 46f * us, doneW, 74f * us, "OK", 27f, true, tapped, px, py)) { armedCat = -1; armedKind = -1; tapped = false; }
         } else if (selObj >= 0 && selObj < editObjs.size()) {
             float[] o = editObjs.get(selObj);
             String info = edLabel((int) o[0], (int) o[1]) + "  x" + (Math.round((o[5] <= 0f ? 1f : o[5]) * 10f) / 10f);
@@ -2453,6 +2516,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (tapped) {
             if (armedCat >= 0) edPlaceAt(px, py);          // world tap while armed: place directly where tapped
             else selObj = edPickAt(px, py);                // otherwise: select / deselect
+        }
+        if (input.consumeEditDoubleTap(edTap2)) {          // double-tap: deep-edit the object under the finger
+            int hit = edPickAt(edTap2[0], edTap2[1]);
+            if (hit >= 0 && (int) editObjs.get(hit)[0] == 3 && edInsideHouse < 0) edEnterHouse(hit);   // a house -> its interior
+            else if (hit >= 0) { selObj = hit; edSetToast("Bearbeiten: ziehen zum Verschieben"); }     // other object -> select + move
         }
 
         // --- left move stick: publish the clear vertical band, draw a faint corner hint when navigating,
@@ -2530,9 +2598,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Begin a fresh run from the hub. */
     private void startRun() {
+        preRunCash = cash; preRunXp = xp; preRunLevel = playerLevel;   // snapshot the bank so an ABORTED run can be un-counted
         restart();
         state = ST_PLAYING;
         hubWasShown = false; hubTabShown = -1;   // replay hub entrance + content stagger next visit
+    }
+
+    /** Leave a run early via the in-game MENU button: this is an ABORT, so the run's earnings do NOT count --
+     *  cash/xp are rolled back to the pre-run snapshot and the high score is left untouched (unlike dying,
+     *  which banks the run through the summary). */
+    private void abortToHub() {
+        cash = preRunCash; xp = preRunXp; playerLevel = preRunLevel;   // roll back everything earned this run
+        saveMeta();                               // persist the rollback so nothing leaks if the app closes
+        deathAnim = 0f; aimOn = false; aim = 0f; sprinting = false;
+        state = ST_HUB; hubWasShown = false; hubTabShown = -1;
     }
 
     // --- shooting & weapons ---
@@ -3121,6 +3200,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawRectPx(jpx, jpy - 11f * us, 11f * us, 6f * us, 1f, 1f, 1f, 0.9f);
             drawRectPx(jpx, jpy - 2f * us, 21f * us, 6f * us, 1f, 1f, 1f, 0.9f);
             drawRectPx(jpx, jpy + 7f * us, 31f * us, 6f * us, 1f, 1f, 1f, 0.9f);
+
+            // menu button (top-right) — one tap returns to the hub (aborts the run, earnings do not count)
+            float mnx = Hud.menuCx(width), mny = Hud.menuCy(height);
+            drawPad(mnx, mny, Hud.MENU_RADIUS, 0.22f, 0.26f, 0.36f, 0.5f);
+            drawTextCentered("MENU", mnx, mny, 18f, 0.92f, 0.95f, 1f, 0.95f);
 
             // door prompt — appears only when you're in range of a door; tap it to open/close
             if (nearDoor >= 0) {
@@ -4844,8 +4928,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     // T x z [scale] [kind: 0 tree · 1 bush · 2 flower]  -> a placed plant
                     trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f), pfDef(t, 4, 0f)});
                 } else if (t[0].equals("EH") && t.length >= 4) {
-                    // EH kind x z [yawDeg] [scale]  -> an editor-placed house (editable box-shell overlay)
-                    ehouses.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pfDef(t, 4, 0f), pfDef(t, 5, 1f)});
+                    // EH kind x z [yawDeg] [scale] [furnished]  -> an editor-placed house (editable overlay)
+                    ehouses.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pfDef(t, 4, 0f), pfDef(t, 5, 1f), pfDef(t, 6, 0f)});
                 } else if (t[0].equals("F") && t.length >= 5) {
                     // F x1 z1 x2 z2 [r g b]  -> a fence: one thin box rotated along the segment
                     float x1 = pf(t[1]), z1 = pf(t[2]), x2 = pf(t[3]), z2 = pf(t[4]);
@@ -4864,7 +4948,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 buildWorldInto(L, doors, houses);                  // procedural scenery (keeps its own trees/furniture)
                 for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
                 for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
-                for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4]});
+                for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4], eh.length > 5 ? eh[5] : 0f});
                 for (float[] p : props) L.add(p);                  // arbitrary boxes stay as (non-editable) base scenery
                 this.baseLevelText = sceneSb.toString();
                 return true;
@@ -4877,7 +4961,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             this.baseLevelText = sceneSb.toString();
             for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
             for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
-            for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4]});
+            for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4], eh.length > 5 ? eh[5] : 0f});
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {

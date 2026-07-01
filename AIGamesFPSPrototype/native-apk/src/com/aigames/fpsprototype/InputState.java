@@ -78,6 +78,14 @@ public class InputState {
         return i;
     }
 
+    private boolean hubMenuRequested;            // one-shot: return to the hub/main menu from gameplay
+    public synchronized void requestHubMenu() { hubMenuRequested = true; }
+    public synchronized boolean consumeHubMenu() {
+        boolean h = hubMenuRequested;
+        hubMenuRequested = false;
+        return h;
+    }
+
     // Published by the renderer; read by the view to route taps to the menu instead of gameplay.
     public synchronized void setMenuMode(boolean v) { menuMode = v; }
     public synchronized boolean isMenuMode() { return menuMode; }
@@ -92,6 +100,16 @@ public class InputState {
         if (!menuTapRequested) return false;
         out[0] = menuTapX; out[1] = menuTapY;
         menuTapRequested = false;
+        return true;
+    }
+
+    private boolean edDoubleTapRequested; private float edDoubleTapX, edDoubleTapY;
+    /** One-shot editor double-tap at screen pixels (deep-edit an object: house -> interior view). */
+    public synchronized void requestEditDoubleTap(float x, float y) { edDoubleTapRequested = true; edDoubleTapX = x; edDoubleTapY = y; }
+    public synchronized boolean consumeEditDoubleTap(float[] out) {
+        if (!edDoubleTapRequested) return false;
+        out[0] = edDoubleTapX; out[1] = edDoubleTapY;
+        edDoubleTapRequested = false;
         return true;
     }
 
