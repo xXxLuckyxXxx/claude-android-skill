@@ -246,10 +246,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // gesture state, split by zone like the gameplay controls (left = move, right = look):
     // left-half single finger = pan; right-half two fingers = twist (angle) + pinch (zoom) + vertical
     // midpoint drift (tilt/pitch) all read off the same two fingers, like Google Maps' 2-finger navigation.
-    private final float[] edPanArr = new float[3], edCamArr = new float[5];
+    private final float[] edPanArr = new float[3], edCamArr = new float[5], edStickArr = new float[5];
     private boolean edPrevPanActive; private float edPrevPanX, edPrevPanY;
     private int edPrevCamCount = 0; private float edPrevCamGap, edPrevCamAng, edPrevCamMidY;
-    private boolean edGrabbed; private float edGrabOffX, edGrabOffZ;
+    private boolean edGrabbed, edGrabMoved; private float edGrabOffX, edGrabOffZ;
+    private final float[] edBnd = new float[6];    // scratch bounds for edRayHitsObj
     private int edPaletteScroll = 0;
     private int edCatTab = 0;                         // palette category: 0 furniture · 1 plants · 2 props
     private boolean edPaletteOpen = false;             // collapsed by default so it doesn't cover the world
@@ -989,6 +990,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             tZr = skyZenith[0];  tZg = skyZenith[1];  tZb = skyZenith[2];
             tFr = fog[0]; tFg = fog[1]; tFb = fog[2];
             tOver = 0f; tFs = fogStart; tFe = fogEnd; tSun = sunInt; tAmb = ambient; tRain = 0f; tSnow = 0f;
+            if (clearForEdit) { tFs = 6000f; tFe = 14000f; }   // build mode: fog pushed far past the whole town -> no overhead haze
         } else if (w == WX_FOG) {
             tHr = 0.74f; tHg = 0.77f; tHb = 0.80f; tZr = 0.66f; tZg = 0.70f; tZb = 0.74f;
             tFr = 0.78f; tFg = 0.81f; tFb = 0.84f; tOver = 0.88f; tFs = 3f; tFe = 28f; tSun = 0.70f; tAmb = 1.15f; tRain = 0f; tSnow = 0f;
@@ -1006,6 +1008,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         wOvercast += (tOver - wOvercast) * k; effFogStart += (tFs - effFogStart) * k; effFogEnd += (tFe - effFogEnd) * k;
         effSunInt += (tSun - effSunInt) * k; effAmbient += (tAmb - effAmbient) * k;
         wRain += (tRain - wRain) * k; wSnow += (tSnow - wSnow) * k;
+        if (clearForEdit) { effFogStart = tFs; effFogEnd = tFe; wOvercast = 0f; }   // snap: zero haze from the first editor frame
         updateWeatherParticles(dt);
     }
 
@@ -1868,7 +1871,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void edEnter() {
         state = ST_EDIT;
-        selObj = -1; armedCat = -1; armedKind = -1; edGrabbed = false; edPaletteOpen = false;
+        selObj = -1; armedCat = -1; armedKind = -1; edGrabbed = false; edGrabMoved = false; edPaletteOpen = false;
         edPrevPanActive = false; edPrevCamCount = 0;
         edCamPivotX = px; edCamPivotZ = pz; edCamYaw = yaw; edCamPitch = 0.85f; edCamDist = 26f;
         editDirty = true;
@@ -1876,13 +1879,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
     private void edExit() {
         saveLevel(true);
+        // Fog was snapped far out for the editor's clear overhead view; reset it to the level base so the
+        // hub doesn't render fog-free for several seconds while the weather crossfade drags it back.
+        effFogStart = fogStart; effFogEnd = fogEnd;
         state = ST_HUB; hubWasShown = false;
     }
     private void edSetToast(String m) { edToast = m; edToastT = 1.8f; }
 
+    /** Move the orbit camera's ground pivot by a stick deflection, relative to the current view yaw:
+     *  my (screen-up) drives forward/back along the view direction, mx (screen-right) strafes. Pure +
+     *  unit-testable. pivotXZ = {x,z}, updated in place and clamped to the town bounds. */
+    static void edMovePivot(float[] pivotXZ, float yaw, float mx, float my, float speed, float dt) {
+        float s = (float) Math.sin(yaw), c = (float) Math.cos(yaw);
+        // ground forward (toward where the camera looks) = (-sin,-cos); screen-right = (cos,-sin)
+        float dX = (c * mx - s * my) * speed * dt;
+        float dZ = (-s * mx - c * my) * speed * dt;
+        pivotXZ[0] = clamp(pivotXZ[0] + dX, -60f, 60f);
+        pivotXZ[1] = clamp(pivotXZ[1] + dZ, -60f, 60f);
+    }
+
+    private final float[] edPivotXZ = new float[2];
+
     /** Per-frame editor logic: rebuilds the orbit camera matrix, then hands off to the pure gesture logic. */
     private void updateEditor(float dt) {
         if (edToastT > 0f) edToastT -= dt;
+
+        // left move stick: translate the camera pivot over the ground, yaw-relative, speed scaled by zoom
+        input.getEditStick(edStickArr);
+        if (edStickArr[0] != 0f && (edStickArr[1] != 0f || edStickArr[2] != 0f)) {
+            edPivotXZ[0] = edCamPivotX; edPivotXZ[1] = edCamPivotZ;
+            float speed = clamp(edCamDist * 0.85f, 9f, 60f);
+            edMovePivot(edPivotXZ, edCamYaw, edStickArr[1], edStickArr[2], speed, dt);
+            edCamPivotX = edPivotXZ[0]; edCamPivotZ = edPivotXZ[1];
+        }
+
         float cp = (float) Math.cos(edCamPitch), sp = (float) Math.sin(edCamPitch);
         float ex = edCamPivotX + edCamDist * cp * (float) Math.sin(edCamYaw);
         float ey = Math.max(1.5f, edCamDist * sp);
@@ -1896,42 +1926,34 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                          (int) edCamArr[0], edCamArr[1], edCamArr[2], edCamArr[3], edCamArr[4]);
     }
 
-    /** Zoned like the gameplay controls (left = move, right = look): the LEFT-half single finger either
-     *  drags the selected object, or else pans the camera across the ground (ground point tracks the
-     *  finger 1:1). The RIGHT-half needs two fingers: pinch changes distance (zoom), and twisting the pair
-     *  (the angle of the line between them) rotates the camera (yaw) -- both from the same gesture, as in
-     *  most map/photo apps. Pure math against the already-built edVP -- no Matrix.* device-only calls, so
-     *  this is independently unit-testable off-device (unlike updateEditor(), which needs Matrix.setLookAtM
-     *  to rebuild edVP first). */
+    /** Real-mobile-FPS controls: the LEFT move stick translates the camera (handled in updateEditor); the
+     *  RIGHT side is what this routes. A single right finger drags the selected object (ground point tracks
+     *  the finger 1:1); with nothing selected it does nothing. Two right fingers: pinch changes distance
+     *  (zoom), twisting the pair rotates yaw, vertical drift tilts pitch -- all from the same gesture, like
+     *  a map app. Pure math against the already-built edVP -- no Matrix.* device-only calls, so this is
+     *  independently unit-testable off-device (unlike updateEditor(), which needs Matrix.setLookAtM). */
     private void edProcessGesture(boolean panActive, float panX, float panY,
                                    int camCount, float camAx, float camAy, float camBx, float camBy) {
-        if (selObj >= 0 && armedCat < 0) {                    // an object is selected: the pan finger drags IT
-            if (panActive) {
-                float[] o = editObjs.get(selObj);
-                if (!edGrabbed || !edPrevPanActive) {
-                    if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-                        edGrabOffX = o[2] - edHit[0]; edGrabOffZ = o[3] - edHit[2];
-                        edGrabbed = true;
-                        edPushUndo("MOD", selObj, o);       // one snapshot per drag
-                    }
-                } else if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-                    o[2] = edHit[0] + edGrabOffX; o[3] = edHit[2] + edGrabOffZ; editDirty = true;
+        if (selObj >= 0 && armedCat < 0 && panActive) {       // an object is selected: the right finger drags IT
+            float[] o = editObjs.get(selObj);
+            if (!edGrabbed) {
+                // Start a grab ONLY if the finger actually pressed on the selected object -- so a tap
+                // elsewhere (to reselect/deselect) never grabs it. Undo is deferred until it really moves.
+                if (edRayHitsObj(selObj, panX, panY)
+                 && screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                    edGrabOffX = o[2] - edHit[0]; edGrabOffZ = o[3] - edHit[2];
+                    edGrabbed = true; edGrabMoved = false;
                 }
-            } else {
-                if (edGrabbed) { edSnapObj(selObj); editDirty = true; }
-                edGrabbed = false;
-            }
-        } else {                                              // otherwise: the pan finger moves the CAMERA
-            if (panActive && edPrevPanActive
-             && screenRay(edPrevPanX, edPrevPanY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-                float phx = edHit[0], phz = edHit[2];
-                if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-                    // ground point under the finger tracks the finger 1:1 (content-follows-finger, like a map)
-                    edCamPivotX = clamp(edCamPivotX - (phx - edHit[0]), -60f, 60f);
-                    edCamPivotZ = clamp(edCamPivotZ - (phz - edHit[2]), -60f, 60f);
+            } else if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                float nx = edHit[0] + edGrabOffX, nz = edHit[2] + edGrabOffZ;
+                if (!edGrabMoved && (Math.abs(nx - o[2]) > 0.03f || Math.abs(nz - o[3]) > 0.03f)) {
+                    edPushUndo("MOD", selObj, o); edGrabMoved = true;   // one snapshot, only once it truly moves
                 }
+                if (edGrabMoved) { o[2] = nx; o[3] = nz; editDirty = true; }
             }
-            edGrabbed = false;
+        } else {                                              // no drag in progress (or nothing selected)
+            if (edGrabbed && edGrabMoved && selObj >= 0) { edSnapObj(selObj); editDirty = true; }
+            edGrabbed = false; edGrabMoved = false;
         }
         edPrevPanActive = panActive; edPrevPanX = panX; edPrevPanY = panY;
 
@@ -1981,6 +2003,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             hx = rad * s; hz = rad * s; hy = h * s * 0.5f; cy = h * s * 0.5f;
         }
         out[0] = o[2]; out[1] = cy; out[2] = o[3]; out[3] = hx; out[4] = hy; out[5] = hz;
+    }
+
+    /** True if the ray through screen (sx,sy) hits object i's (yaw-aware) bounds -- used to gate a drag so
+     *  only a press ON the selected object starts moving it (a tap elsewhere just reselects/deselects). */
+    private boolean edRayHitsObj(int i, float sx, float sy) {
+        if (i < 0 || i >= editObjs.size()) return false;
+        if (!screenRay(sx, sy, width, height, edVP, edRO, edRD)) return false;
+        float[] o = editObjs.get(i); edObjBounds(o, edBnd);
+        return rayBox(edRO, edRD, edBnd[0], edBnd[1], edBnd[2], edBnd[3] + 0.25f, edBnd[4] + 0.25f, edBnd[5] + 0.25f, o[4]) >= 0f;
     }
 
     /** Ray-pick the nearest editObj at screen (px,py); returns its index or -1. */
@@ -2235,6 +2266,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (edBtn(toggleCx, toggleCy, toggleW, toggleH, edPaletteOpen ? "OBJEKTE ZU" : "OBJEKTE", 23f, edPaletteOpen, tapped, px, py)) { edPaletteOpen = !edPaletteOpen; tapped = false; }
         edSwatch(toggleCx - toggleW * 0.5f + 18f * us, toggleCy, 8f * us, edCatTab);
 
+        float stickTopY = toggleCy + toggleH * 0.5f + 12f * us;   // move-stick may start below the OBJEKTE toggle...
+
         if (edPaletteOpen) {
             String[] cats = {"Moebel", "Pflanzen", "Props"};
             float catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
@@ -2242,6 +2275,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float kx = catX + catW * 0.5f + 14f * us + 210f * us * 0.5f, kw = 210f * us, kh = 50f * us, kGap = 6f * us;
             float palTop = toggleCy + toggleH * 0.5f + 14f * us;
             float palBot = palTop + Math.max(3 * (catH + catGap), kinds.length * (kh + kGap)) - Math.max(catGap, kGap);
+            stickTopY = palBot + 16f * us;                         // ...or below the whole open palette
             float palCx = (catX - catW * 0.5f + kx + kw * 0.5f) * 0.5f, palCy = (palTop + palBot) * 0.5f;
             drawCard(palCx, palCy, (kx + kw * 0.5f) - (catX - catW * 0.5f) + 20f * us, palBot - palTop + 24f * us, 18f * us, 0.075f, 0.09f, 0.145f, 0.90f);
             for (int i = 0; i < 3; i++) {
@@ -2281,12 +2315,36 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "Loeschen", 20f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
         } else {
-            drawTextCenteredShadow("Objekt antippen  -  1 Finger links bewegt  -  2 Finger drehen/zoomen/neigen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
+            drawTextCenteredShadow("Stick links bewegt  -  Objekt antippen  -  2 Finger rechts drehen/zoomen/neigen", width * 0.5f, height - 30f * us, 19f, 0.75f, 0.8f, 0.9f, 0.85f);
         }
 
         if (tapped) {
             if (armedCat >= 0) edPlaceAt(px, py);          // world tap while armed: place directly where tapped
             else selObj = edPickAt(px, py);                // otherwise: select / deselect
+        }
+
+        // --- left move stick: publish the clear vertical band, draw a faint corner hint when navigating,
+        //     and the live floating stick while held. Band excludes the top bar/palette and bottom bar so a
+        //     press on a button is never swallowed by the stick. ---
+        float stickBotY = height - 60f * us;                       // above the bottom hint line...
+        if (armedCat >= 0) stickBotY = height - 96f * us;          // ...or the place chip + FERTIG...
+        else if (selObj >= 0 && selObj < editObjs.size()) stickBotY = height - 118f * us;   // ...or the action bar + info chip
+        input.setEditStickBounds(stickTopY, stickBotY);
+
+        input.getEditStick(edStickArr);
+        float rStick = Math.max(80f, height * 0.16f);
+        boolean stickOn = edStickArr[0] != 0f;
+        boolean navFree = armedCat < 0 && selObj < 0;              // only show the idle hint during free navigation
+        if (stickOn || navFree) {
+            float baseCx = stickOn ? edStickArr[3] : width * 0.13f;
+            float baseCy = stickOn ? edStickArr[4] : height * 0.72f;
+            float knobX = stickOn ? baseCx + edStickArr[1] * rStick : baseCx;
+            float knobY = stickOn ? baseCy - edStickArr[2] * rStick : baseCy;
+            float ringA = stickOn ? 0.30f : 0.16f, wellA = stickOn ? 0.42f : 0.22f, knobA = stickOn ? 0.85f : 0.5f;
+            drawCircle(baseCx, baseCy, rStick + 2.5f * us, 1f, 1f, 1f, ringA);        // ring
+            drawCircle(baseCx, baseCy, rStick, 0.10f, 0.12f, 0.16f, wellA);          // dark well
+            drawPad(knobX, knobY, 62f, 0.85f, 0.88f, 0.95f, knobA);                  // glossy knob
+            if (!stickOn) drawTextCentered("BEWEGEN", baseCx, baseCy + rStick + 22f * us, 17f, 0.8f, 0.85f, 0.95f, 0.7f);
         }
 
         if (edToastT > 0f && edToast != null) {

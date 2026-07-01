@@ -95,48 +95,77 @@ public class InputState {
         return true;
     }
 
-    // ===================== in-game editor: two-slot multi-touch channel =====================
-    // Two pointer slots, filled in touch-down order (not by screen-half). The routing rule
-    // (routeEditGesture) then decides each frame: any TWO active fingers drive the camera (pinch=zoom,
-    // twist=yaw, vertical drift=tilt) no matter where they are -- so one-left + one-right zooms just like
-    // two-on-the-right. A lone finger pans/drags only if it went down in the left half; a lone right
-    // finger is a no-op (it would otherwise fight object selection). Discrete taps still come via
-    // requestMenuTap.
+    // ===================== in-game editor: stick + right-hand multi-touch =====================
+    // Like a real mobile FPS: the LEFT side is a floating movement stick (translates the camera over the
+    // town), and the RIGHT side handles the rest -- one finger drags a selected object, two fingers
+    // pinch=zoom / twist=yaw / vertical-drift=tilt. Discrete taps (select/place) still come via
+    // requestMenuTap. Three published channels: stick, pan (right 1-finger object drag), cam (right 2).
     private boolean editMode;
-    private boolean edPanActive;                 // single finger driving pan/drag this frame
+    private boolean edStickActive;               // left move stick engaged this frame
+    private float edStickX, edStickY;            // stick deflection, [-1,1], x=screen-right, y=screen-up
+    private float edStickOx, edStickOy;          // floating stick origin (finger-down point), screen px, for drawing
+    private boolean edPanActive;                 // right single finger driving object drag this frame
     private float edPanX, edPanY;
-    private int edCamCount;                      // camera fingers this frame: 0 or 2
+    private int edCamCount;                      // right camera fingers this frame: 0 or 2
     private float edCamAx, edCamAy, edCamBx, edCamBy;
 
     /**
-     * Pure routing rule for the editor's two pointer slots -> pan channel + camera channel. Static and
-     * side-effect-free so it is unit-testable off-device (no Android/GL). Slot order is the touch-down
-     * order; {@code leftN} is whether that finger went DOWN in the left screen half.
+     * Pure routing rule for the editor's RIGHT-hand pointer slots -> pan channel + camera channel. Static
+     * and side-effect-free so it is unit-testable off-device (no Android/GL). Slot order is touch-down order.
      *   - two active fingers  -> camera pair (count=2, A=slot0, B=slot1), pan inactive;
-     *   - one active finger   -> pan active IFF it went down in the left half, camera count=0;
-     *   - none                -> idle.
+     *   - one active finger    -> pan active (drags the selected object), camera count=0;
+     *   - none                 -> idle.
      * panOut = {active(0/1), x, y};  camOut = {count, ax, ay, bx, by}.
      */
-    static void routeEditGesture(boolean a0, float x0, float y0, boolean left0,
-                                 boolean a1, float x1, float y1, boolean left1,
-                                 float[] panOut, float[] camOut) {
+    static void routeEditRight(boolean a0, float x0, float y0,
+                               boolean a1, float x1, float y1,
+                               float[] panOut, float[] camOut) {
         panOut[0] = 0f; panOut[1] = 0f; panOut[2] = 0f;
         camOut[0] = 0f; camOut[1] = 0f; camOut[2] = 0f; camOut[3] = 0f; camOut[4] = 0f;
-        if (a0 && a1) {                       // any two fingers -> camera pinch/twist/tilt, wherever they are
+        if (a0 && a1) {                       // two right fingers -> camera pinch/twist/tilt
             camOut[0] = 2f;
             camOut[1] = x0; camOut[2] = y0;
             camOut[3] = x1; camOut[4] = y1;
-        } else if (a0) {                      // lone finger: pan only if it started on the left
-            if (left0) { panOut[0] = 1f; panOut[1] = x0; panOut[2] = y0; }
+        } else if (a0) {                      // one right finger -> object drag
+            panOut[0] = 1f; panOut[1] = x0; panOut[2] = y0;
         } else if (a1) {
-            if (left1) { panOut[0] = 1f; panOut[1] = x1; panOut[2] = y1; }
+            panOut[0] = 1f; panOut[1] = x1; panOut[2] = y1;
         }
+    }
+
+    /**
+     * Floating-stick deflection from its origin: out = {x, y} where x is screen-right (+) and y is
+     * screen-UP (+), each in [-1,1] with the overall magnitude clamped to 1. Pure + unit-testable.
+     */
+    static void stickVector(float curX, float curY, float originX, float originY, float radius, float[] out) {
+        float dx = (curX - originX) / radius;
+        float dy = -(curY - originY) / radius;         // screen y grows downward -> negate so up is +
+        float len = (float) Math.sqrt(dx * dx + dy * dy);
+        if (len > 1f) { dx /= len; dy /= len; }
+        out[0] = dx; out[1] = dy;
     }
 
     public synchronized void setEditMode(boolean v) { editMode = v; }
     public synchronized boolean isEditMode() { return editMode; }
 
-    /** View publishes the left-zone (pan) pointer. */
+    // The renderer publishes the vertical band (screen px) that is clear of editor UI (top bar/palette
+    // above, action bar/hint below); the view only lets a finger become the move stick inside this band,
+    // so a press on a button is never swallowed by the stick.
+    private float edStickMinY = 0f, edStickMaxY = 1e9f;
+    public synchronized void setEditStickBounds(float minY, float maxY) { edStickMinY = minY; edStickMaxY = maxY; }
+    public synchronized void getEditStickBounds(float[] out) { out[0] = edStickMinY; out[1] = edStickMaxY; }
+
+    /** View publishes the left move stick: deflection (mx,my in [-1,1]) + its floating origin (px). */
+    public synchronized void setEditStick(boolean active, float mx, float my, float ox, float oy) {
+        edStickActive = active; edStickX = mx; edStickY = my; edStickOx = ox; edStickOy = oy;
+    }
+
+    /** Renderer reads the stick: out = {active(0/1), mx, my, originX, originY}. */
+    public synchronized void getEditStick(float[] out) {
+        out[0] = edStickActive ? 1f : 0f; out[1] = edStickX; out[2] = edStickY; out[3] = edStickOx; out[4] = edStickOy;
+    }
+
+    /** View publishes the right single-finger (object drag) pointer. */
     public synchronized void setEditPan(boolean active, float x, float y) {
         edPanActive = active; edPanX = x; edPanY = y;
     }
@@ -146,7 +175,7 @@ public class InputState {
         out[0] = edPanActive ? 1f : 0f; out[1] = edPanX; out[2] = edPanY;
     }
 
-    /** View publishes the right-zone (camera) pointer(s). */
+    /** View publishes the right two-finger (camera) pointer(s). */
     public synchronized void setEditCam(int count, float ax, float ay, float bx, float by) {
         edCamCount = count; edCamAx = ax; edCamAy = ay; edCamBx = bx; edCamBy = by;
     }
