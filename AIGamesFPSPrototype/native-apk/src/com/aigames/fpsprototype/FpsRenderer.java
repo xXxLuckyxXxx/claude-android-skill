@@ -6337,8 +6337,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         "    vec3 base=tex*uColor;" +
-        "    col=(base*(uAmbient*vec3(0.14,0.16,0.21)+uSunInt*df*vec3(1.30,1.17,0.95)+fl*vec3(0.22,0.29,0.42))" +   // deeper ambient + punchier warm key = more contrast, less washed out
-        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.18,0.22,0.30))*ao;" +
+        // Shaded facades used to wash out to pale lavender: the only light on a sun-less face was the ambient +
+        // sky-fill + rim terms, and all three were strongly blue, so they cancelled the material's own hue. Keep
+        // the warm sun key, but make the non-sun light near-neutral (a whisper of cool) so a shaded brick/plaster
+        // wall stays a DARKER version of itself instead of a washed-out different-looking material. Rim is halved
+        // too — at the grazing angles of the overhead build view it was haloing the far walls bright.
+        "    col=(base*(uAmbient*vec3(0.165,0.17,0.185)+uSunInt*df*vec3(1.30,1.17,0.95)+fl*vec3(0.26,0.27,0.30))" +
+        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
