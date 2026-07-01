@@ -255,7 +255,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int selObj = -1;                         // selected editObjs index, -1 = none
     private int armedCat = -1, armedKind = -1;       // palette item armed for placement (-1 = none)
     // orbit edit camera
-    private float edCamYaw = 0.7f, edCamPitch = 0.85f, edCamDist = 26f, edCamPivotX = 0f, edCamPivotZ = 9f;
+    private float edCamYaw = 0.7f, edCamPitch = 0.85f, edCamDist = 26f, edCamPivotX = 0f, edCamPivotY = 0f, edCamPivotZ = 9f;
+    private int edFloor = 0;   // interior view: which storey you're looking at / placing on (0 = lowest)
     // gesture state, split by zone like the gameplay controls (left = move, right = look):
     // left-half single finger = pan; right-half two fingers = twist (angle) + pinch (zoom) + vertical
     // midpoint drift (tilt/pitch) all read off the same two fingers, like Google Maps' 2-finger navigation.
@@ -1961,13 +1962,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float s = o[5] <= 0f ? 1f : o[5];
         edCamPivotX = o[2]; edCamPivotZ = o[3];
         edCamYaw = o[4] * 0.017453292f;                    // face the house's own orientation
-        edCamPitch = 1.48f;                                 // almost straight down
-        edCamDist = Math.max(hp[0], hp[1]) * s * 1.1f + 3f;
+        edCamPitch = 1.28f;                                 // steep bird's-eye (not dead-straight, so furniture reads in 3D)
+        edCamDist = Math.max(hp[0], hp[1]) * s * 0.85f + 2.5f;   // close enough that the furniture is clearly visible
+        edSetFloor(0);                                      // always start on the lowest storey
         selObj = -1; armedCat = -1; armedKind = -1; edPaletteOpen = false; edCatTab = 0;
-        edSetToast("Innenraum: Moebel antippen und bearbeiten");
+        edSetToast("Innenraum - Etage " + (edFloor + 1) + ": Moebel antippen und bearbeiten");
+    }
+    /** Storeys of an editor house (from its preset height). */
+    private int edHouseFloors(float[] o) {
+        float[] hp = HOUSE_PRESETS[Math.max(0, Math.min((int) o[1], HOUSE_PRESETS.length - 1))];
+        float h = hp[2] * (o[5] <= 0f ? 1f : o[5]);
+        return h >= 5.5f ? 2 : 1;
+    }
+    private float edFloorH(float[] o) {
+        float[] hp = HOUSE_PRESETS[Math.max(0, Math.min((int) o[1], HOUSE_PRESETS.length - 1))];
+        float h = hp[2] * (o[5] <= 0f ? 1f : o[5]);
+        return h / edHouseFloors(o);
+    }
+    /** World Y of the current interior floor (for placing furniture at storey height). */
+    private float edCurrentFloorY() {
+        if (edInsideHouse < 0 || edInsideHouse >= editObjs.size()) return 0f;
+        return edFloor * edFloorH(editObjs.get(edInsideHouse));
+    }
+    /** Switch which storey the interior view looks at / places on; raises the camera to that floor. */
+    private void edSetFloor(int f) {
+        if (edInsideHouse < 0 || edInsideHouse >= editObjs.size()) return;
+        float[] o = editObjs.get(edInsideHouse);
+        int floors = edHouseFloors(o); float floorH = edFloorH(o);
+        edFloor = f < 0 ? 0 : (f >= floors ? floors - 1 : f);
+        edCamPivotY = edFloor * floorH + floorH * 0.5f;    // look at the middle of the chosen storey
     }
     private void edLeaveHouse() {
-        edInsideHouse = -1;
+        edInsideHouse = -1; edFloor = 0; edCamPivotY = 0f;
         edCamPivotX = edSavePivotX; edCamPivotZ = edSavePivotZ; edCamYaw = edSaveYaw; edCamPitch = edSavePitch; edCamDist = edSaveDist;
         selObj = -1; armedCat = -1; armedKind = -1;
     }
@@ -2026,9 +2052,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         float cp = (float) Math.cos(edCamPitch), sp = (float) Math.sin(edCamPitch);
         float ex = edCamPivotX + edCamDist * cp * (float) Math.sin(edCamYaw);
-        float ey = Math.max(1.5f, edCamDist * sp);
+        float ey = Math.max(1.5f, edCamPivotY + edCamDist * sp);
         float ez = edCamPivotZ + edCamDist * cp * (float) Math.cos(edCamYaw);
-        Matrix.setLookAtM(view, 0, ex, ey, ez, edCamPivotX, 0f, edCamPivotZ, 0f, 1f, 0f);
+        Matrix.setLookAtM(view, 0, ex, ey, ez, edCamPivotX, edCamPivotY, edCamPivotZ, 0f, 1f, 0f);
         mul4(edVP, proj, view);
 
         input.getEditPan(edPanArr);
@@ -2216,12 +2242,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int cat = (int) o[0], kind = (int) o[1]; float x = o[2], z = o[3], yaw = o[4], s = o[5] <= 0f ? 1f : o[5];
             float ca = cosD(yaw), sa = sinD(yaw);
             if (cat == 0) {
+                float fy = o.length > 6 ? o[6] : 0f;              // storey height for furniture placed on an upper floor
                 float[][] rec = (kind >= 0 && kind < FURN.length) ? FURN[kind] : FURN[0];
                 for (float[] p : rec) {
                     if (p[7] == 0f) continue;                     // only solid pieces collide
                     float dx = p[0] * s, dz = p[2] * s;
                     float wx = x + dx * ca + dz * sa, wz = z - dx * sa + dz * ca;
-                    ov.add(new float[]{wx, p[1] * s, wz, p[3] * s, p[4] * s, p[5] * s, 0.5f, 0.5f, 0.5f, yaw, 1f});
+                    ov.add(new float[]{wx, p[1] * s + fy, wz, p[3] * s, p[4] * s, p[5] * s, 0.5f, 0.5f, 0.5f, yaw, 1f});
                 }
             } else if (cat == 2) {
                 float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
@@ -2279,11 +2306,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  Stays armed afterward so repeated taps stamp down more of the same kind (e.g. a row of trees). */
     private void edPlaceAt(float sx, float sy) {
         if (armedCat < 0) return;
-        if (!screenRay(sx, sy, width, height, edVP, edRO, edRD) || !rayPlaneY(edRO, edRD, 0f, edHit)) {
+        float floorY = edCurrentFloorY();                 // inside a house on an upper storey: place at that height
+        if (!screenRay(sx, sy, width, height, edVP, edRO, edRD) || !rayPlaneY(edRO, edRD, floorY, edHit)) {
             edSetToast("Kein Bodenpunkt getroffen — Kamera kippen"); return;
         }
         float sc = armedCat == 1 ? (armedKind == 0 ? 1.1f : (armedKind == 1 ? 0.7f : 0.6f)) : 1f;
-        float[] o = new float[]{armedCat, armedKind, edHit[0], edHit[2], 0f, sc};
+        float[] o = (armedCat == 0 && floorY > 0.01f)
+                  ? new float[]{armedCat, armedKind, edHit[0], edHit[2], 0f, sc, floorY}   // furniture carries its storey height
+                  : new float[]{armedCat, armedKind, edHit[0], edHit[2], 0f, sc};
         editObjs.add(o);
         edSnapObj(editObjs.size() - 1);
         edPushUndo("ADD", editObjs.size() - 1, null);
@@ -2328,7 +2358,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (float[] o : editObjs) {
             int cat = (int) o[0], kind = (int) o[1];
             String x = fr(o[2]), z = fr(o[3]), yaw = fr(o[4]); float sc = o[5] <= 0f ? 1f : o[5]; String s = fr(sc);
-            if (cat == 0) sb.append("FU ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append('\n');
+            if (cat == 0) sb.append("FU ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append(' ').append(fr(o.length > 6 ? o[6] : 0f)).append('\n');
             else if (cat == 1) sb.append("T ").append(x).append(' ').append(z).append(' ').append(s).append(' ').append(kind).append(' ').append(yaw).append('\n');
             else if (cat == 3) sb.append("EH ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append(' ').append(o.length > 6 ? (int) o[6] : 0).append('\n');
             else {
@@ -2365,13 +2395,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (float[] o : editObjs) {
             if ((int) o[0] != 0) continue;
             int kind = (int) o[1]; float x = o[2], z = o[3], yaw = o[4], s = o[5] <= 0f ? 1f : o[5];
+            float fy = o.length > 6 ? o[6] : 0f;   // storey height for upper-floor furniture
             float ca = cosD(yaw), sa = sinD(yaw);
             float[][] rec = (kind >= 0 && kind < FURN.length) ? FURN[kind] : FURN[0];
             for (float[] p : rec) {
                 float dx = p[0] * s, dz = p[2] * s;
                 float wx = x + dx * ca + dz * sa, wz = z - dx * sa + dz * ca;
                 Matrix.setIdentityM(model, 0);
-                Matrix.translateM(model, 0, wx, p[1] * s, wz);
+                Matrix.translateM(model, 0, wx, p[1] * s + fy, wz);
                 if (yaw != 0f) Matrix.rotateM(model, 0, yaw, 0f, 1f, 0f);
                 Matrix.scaleM(model, 0, p[3] * s, p[4] * s, p[5] * s);
                 float[] col = INT_COLS[(int) p[6]];
@@ -2469,6 +2500,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edSwatch(toggleCx - toggleW * 0.5f + 18f * us, toggleCy, 8f * us, edCatTab);
 
         float stickTopY = toggleCy + toggleH * 0.5f + 12f * us;   // move-stick may start below the OBJEKTE toggle...
+
+        // --- interior view: floor stepper (always start on the lowest storey; step up/down yourself) ---
+        if (edInsideHouse >= 0 && edInsideHouse < editObjs.size()) {
+            int floors = edHouseFloors(editObjs.get(edInsideHouse));
+            float fbY = toggleCy + toggleH * 0.5f + 40f * us, fbH = 56f * us, fbW = 74f * us;
+            float fcx = toggleCx - toggleW * 0.5f + fbW * 0.5f;
+            if (edBtn(fcx, fbY, fbW, fbH, "-", 30f, false, tapped, px, py)) { edSetFloor(edFloor - 1); tapped = false; }
+            drawTextCenteredShadow("ETAGE " + (edFloor + 1) + "/" + floors, fcx + fbW * 0.5f + 74f * us, fbY, 21f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+            if (edBtn(fcx + fbW + 148f * us, fbY, fbW, fbH, "+", 30f, false, tapped, px, py)) { edSetFloor(edFloor + 1); tapped = false; }
+            stickTopY = Math.max(stickTopY, fbY + fbH * 0.5f + 12f * us);
+        }
 
         if (edPaletteOpen) {
             String[] cats = {"Moebel", "Pflanzen", "Props", "Haeuser"};
@@ -4929,8 +4971,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     roadList.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pfDef(t, 5, 3.4f),
                                              pfDef(t, 6, 1f), pfDef(t, 7, 1f), pfDef(t, 8, 1f)});
                 } else if (t[0].equals("FU") && t.length >= 4) {
-                    // FU kind x z [yawDeg] [scale]  -> a placed furniture piece (visual + collision; see FURN recipes)
-                    furns.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pfDef(t, 4, 0f), pfDef(t, 5, 1f)});
+                    // FU kind x z [yawDeg] [scale] [storeyY]  -> a placed furniture piece (visual + collision)
+                    furns.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pfDef(t, 4, 0f), pfDef(t, 5, 1f), pfDef(t, 6, 0f)});
                 } else if (t[0].equals("T") && t.length >= 3) {
                     // T x z [scale] [kind: 0 tree · 1 bush · 2 flower]  -> a placed plant
                     trees.add(new float[]{pf(t[1]), pf(t[2]), pfDef(t, 3, 1f), pfDef(t, 4, 0f)});
@@ -4953,7 +4995,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // the file's furniture + plants as the EDITABLE overlay (so an in-game save round-trips + re-edits).
             if (hs.isEmpty() && roadList.isEmpty()) {
                 buildWorldInto(L, doors, houses);                  // procedural scenery (keeps its own trees/furniture)
-                for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
+                for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4], fu.length > 5 ? fu[5] : 0f});
                 for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
                 for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4], eh.length > 5 ? eh[5] : 0f});
                 for (float[] p : props) L.add(p);                  // arbitrary boxes stay as (non-editable) base scenery
@@ -4966,7 +5008,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             this.roadSegs = roadList.isEmpty() ? null : roadList.toArray(new float[0][]);
             this.hasCustomRoads = this.roadSegs != null;
             this.baseLevelText = sceneSb.toString();
-            for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
+            for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4], fu.length > 5 ? fu[5] : 0f});
             for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
             for (float[] eh : ehouses) editObjs.add(new float[]{3f, eh[0], eh[1], eh[2], eh[3], eh[4], eh.length > 5 ? eh[5] : 0f});
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
