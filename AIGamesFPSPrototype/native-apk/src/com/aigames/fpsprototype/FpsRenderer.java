@@ -237,8 +237,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int highScore = 0;
     private float playerHP = MAX_HP;
 
-    // Game state machine: HUB (between runs, spend cash) / PLAYING / SUMMARY (run-over recap) / EDIT (in-game editor).
-    private static final int ST_HUB = 0, ST_PLAYING = 1, ST_SUMMARY = 2, ST_EDIT = 3;
+    // Game state machine: HUB (between runs, spend cash) / PLAYING / SUMMARY (run-over recap) / EDIT (in-game
+    // editor) / SANDBOX (peaceful first-person build+roam: no enemies, no damage; own separate overlay).
+    private static final int ST_HUB = 0, ST_PLAYING = 1, ST_SUMMARY = 2, ST_EDIT = 3, ST_SANDBOX = 4;
     private int state = ST_HUB;
 
     // ===== in-game touch editor =====
@@ -254,6 +255,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float edSavePivotX, edSavePivotZ, edSaveYaw, edSavePitch, edSaveDist;   // town camera, restored on leaving
     private int selObj = -1;                         // selected editObjs index, -1 = none
     private int armedCat = -1, armedKind = -1;       // palette item armed for placement (-1 = none)
+    // ===== peaceful first-person SANDBOX mode (state ST_SANDBOX) =====
+    // Reuses the editor's editObjs store + rebuildOverlay/bake pipeline, but placement is driven from the
+    // FPS reticle ("in front of the player") and persisted to a SEPARATE sandbox.lvl. On enter we snapshot
+    // the authored/combat overlay into levelObjsBackup and load the sandbox overlay; on exit we restore it,
+    // so sandbox placements NEVER leak into combat and never touch level.lvl.
+    private final java.util.List<float[]> levelObjsBackup = new java.util.ArrayList<float[]>();
+    private int sbTool = 0;                            // selected sandbox tool (index into SB_TOOLS)
+    // sandbox tool set -> {editObjs cat, kind}. All reuse the editor's presets/builders.
+    private static final int[][] SB_TOOLS = {
+        {2,0}, {2,1}, {2,2}, {2,3},   // Kiste, Fass, Saeule, Kuebel (props)
+        {0,8}, {1,0}, {1,1}, {3,0},   // Lampe (furniture) · Baum, Busch (plants) · Haus
+    };
+    private static final String[] SB_TOOL_NAMES = {"KISTE", "FASS", "SAEULE", "KUEBEL", "LAMPE", "BAUM", "BUSCH", "HAUS"};
     // orbit edit camera
     private float edCamYaw = 0.7f, edCamPitch = 0.85f, edCamDist = 26f, edCamPivotX = 0f, edCamPivotY = 0f, edCamPivotZ = 9f;
     private int edFloor = 0;   // interior view: which storey you're looking at / placing on (0 = lowest)
@@ -766,7 +780,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         drawOverlayFurniture();                                // editor-placed furniture (drawn every frame, all states)
-        if (state == ST_EDIT) drawEditGizmos();                // selection markers + placement reticle (3D)
+        if (state == ST_EDIT || state == ST_SANDBOX) drawEditGizmos();   // selection ring around the picked object (3D)
 
         drawDoors();
         drawEnemies();
@@ -780,6 +794,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (state == ST_PLAYING) drawHud();
         else if (state == ST_SUMMARY) drawSummary();
         else if (state == ST_EDIT) drawEditorHud();
+        else if (state == ST_SANDBOX) drawSandboxHud();
         else drawHub();
     }
 
@@ -1630,7 +1645,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void updateCamera(float dt) {
         if (state == ST_EDIT) { updateEditor(dt); return; }
-        if (state != ST_PLAYING) {
+        if (state != ST_PLAYING && state != ST_SANDBOX) {
             // Frozen (hub / summary): hold the camera and just show the arena from the current pose.
             float cp = (float) Math.cos(pitch);
             Matrix.setLookAtM(view, 0, px, py, pz,
@@ -1638,9 +1653,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     0f, 1f, 0f);
             return;
         }
-        if (input.consumeHubMenu()) { abortToHub(); return; }   // MENU button: bail to the hub (run does NOT count)
-        if (input.consumeAimToggle()) aimOn = !aimOn;
-        if (input.consumeSwitch()) cycleWeapon();
+        if (input.consumeHubMenu()) { if (state == ST_SANDBOX) sandboxExit(); else abortToHub(); return; }   // MENU/EXIT: bail to the hub (a run does NOT count)
+        if (state == ST_PLAYING) {
+            if (input.consumeAimToggle()) aimOn = !aimOn;
+            if (input.consumeSwitch()) cycleWeapon();
+        }
 
         float sens = LOOK_SENS * (1f - 0.45f * aim);     // steadier aim down sights
         input.consumeLook(lookTmp);
@@ -1649,9 +1666,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float limit = 1.48f;
         pitch = clamp(pitch, -limit, limit);
 
-        boolean fired = false;
-        if (input.consumeFire()) { fire(); fired = true; }
-        if (!fired && W_AUTO[curWeapon] && input.isFireHeld()) fire();
+        if (state == ST_PLAYING) {
+            boolean fired = false;
+            if (input.consumeFire()) { fire(); fired = true; }
+            if (!fired && W_AUTO[curWeapon] && input.isFireHeld()) fire();
+        }
 
         // --- horizontal movement; sprint when the stick is pushed fully forward ---
         float mx = input.moveX(), my = input.moveY();
@@ -2465,6 +2484,67 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawTextCenteredShadow(label, cx, cy, tsize, active ? 1f : 0.90f, active ? 1f : 0.94f, 1f, 1f);
         return hit;
     }
+    /** SANDBOX 2D overlay: a top toolbar (pick a kind + place/move/rotate/delete), a top-right EXIT, a centre
+     *  reticle (where "place in front" lands) and the move-stick base. Look/move stay the gameplay FPS controls;
+     *  the touch view routes only this top strip to menu-taps (see FpsGLSurfaceView / InputState.sandboxMode). */
+    private void drawSandboxHud() {
+        menuPreamble();
+        if (edToastT > 0f) edToastT -= 0.02f;
+        boolean tapped = input.consumeMenuTap(tap);
+        float tx = tap[0], ty = tap[1];
+
+        drawRectPx(width * 0.5f, 78f * us, width, 156f * us, 0.05f, 0.06f, 0.09f, 0.42f);   // strip backdrop
+
+        // tool row — which kind PLATZIEREN drops
+        float bw = 150f * us, bh = 56f * us, gap = 6f * us, bx = 16f * us + bw * 0.5f, y1 = 46f * us;
+        for (int i = 0; i < SB_TOOLS.length; i++) {
+            if (edBtn(bx, y1, bw, bh, SB_TOOL_NAMES[i], 20f, sbTool == i, tapped, tx, ty)) { sbTool = i; if (sfx != null) sfx.swap(); tapped = false; }
+            bx += bw + gap;
+        }
+        // EXIT (top-right)
+        float exW = 150f * us, exH = 60f * us, exX = width - 20f * us - exW * 0.5f, exY = 48f * us;
+        boolean exHit = tapped && hitRect(exX, exY, exW, exH, tx, ty);
+        drawRoundRect(exX, exY, exW, exH, exH * 0.5f, 0.62f, 0.20f, 0.22f, 0.96f);
+        drawTextCentered("EXIT", exX, exY, 26f, 1f, 0.94f, 0.92f, 1f);
+        if (exHit) { sandboxExit(); return; }
+
+        // action row — operate on the current selection (auto-selected on place)
+        boolean has = selObj >= 0 && selObj < editObjs.size();
+        float aw = 210f * us, ah = 56f * us, agap = 10f * us, ax = 16f * us + aw * 0.5f, y2 = 112f * us;
+        String[] acts = {"PLATZIEREN", "BEWEGEN", "DREHEN", "LOESCHEN"};
+        for (int i = 0; i < 4; i++) {
+            boolean enabled = (i == 0) || has;
+            boolean hit = edBtn(ax, y2, aw, ah, acts[i], 20f, false, tapped && enabled, tx, ty);
+            if (!enabled) drawRoundRect(ax, y2, aw, ah, Math.min(16f * us, ah * 0.32f), 0.04f, 0.05f, 0.07f, 0.55f);
+            if (hit) {
+                if (i == 0) edPlaceInFront(SB_TOOLS[sbTool][0], SB_TOOLS[sbTool][1]);
+                else if (i == 1) edMoveInFront();
+                else if (i == 2) { edRotate(15f); saveSandboxObjs(); }
+                else { edDelete(); saveSandboxObjs(); }
+                tapped = false;
+            }
+            ax += aw + agap;
+        }
+
+        // centre reticle (the aim point for "place in front")
+        drawCircle(width * 0.5f, height * 0.5f, 7f * us, 0f, 0f, 0f, 0.5f);
+        drawCircle(width * 0.5f, height * 0.5f, 4.5f * us, 0.9f, 0.97f, 1f, 0.95f);
+
+        // move-stick base (fixed bottom-left, matches the gameplay stick geometry)
+        float scx = Hud.moveCx(), scy = Hud.moveCy(height);
+        drawCircle(scx, scy, Hud.MOVE_RADIUS, 0.10f, 0.12f, 0.16f, 0.34f);
+        drawCircle(scx, scy, Hud.MOVE_RADIUS * 0.42f, 0.70f, 0.85f, 1f, 0.30f);
+
+        // hint / selection readout + a corner label. Recompute selection validity here: an action above
+        // (e.g. LOESCHEN) may have changed selObj/editObjs this same frame, so `has` is stale by now.
+        boolean selNow = selObj >= 0 && selObj < editObjs.size();
+        String hint = selNow ? ("Ausgewaehlt: " + edLabel((int) editObjs.get(selObj)[0], (int) editObjs.get(selObj)[1]))
+                             : "PLATZIEREN tippen — Objekt erscheint vor dir";
+        drawTextCentered(hint, width * 0.5f, height - 34f * us, 18f, 0.85f, 0.90f, 0.98f, 0.9f);
+        drawText("SANDBOX", 18f * us, height - 16f * us, 14f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.8f);
+        if (edToast != null && edToastT > 0f) drawTextCentered(edToast, width * 0.5f, 172f * us, 20f, 1f, 1f, 0.85f, Math.min(1f, edToastT));
+    }
+
     /** 2D editor UI + all tap dispatch (UI buttons first, then world select/place). */
     private void drawEditorHud() {
         menuPreamble();
@@ -2623,6 +2703,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (sprintAnim < 0.001f) sprintAnim = 0f; else if (sprintAnim > 0.999f) sprintAnim = 1f;
         input.setMenuMode(state == ST_HUB || state == ST_SUMMARY);
         input.setEditMode(state == ST_EDIT);
+        input.setSandboxMode(state == ST_SANDBOX);
     }
 
     private void restart() {
@@ -2661,6 +2742,112 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         saveMeta();                               // persist the rollback so nothing leaks if the app closes
         deathAnim = 0f; aimOn = false; aim = 0f; sprinting = false;
         state = ST_HUB; hubWasShown = false; hubTabShown = -1;
+    }
+
+    /** Enter the peaceful first-person SANDBOX from the hub: reset the pose, kill any wave scheduling, then
+     *  swap the editObjs overlay to the sandbox's own (backing up the authored/combat overlay) so nothing a
+     *  run relies on is touched and nothing placed here can leak into combat. */
+    private void sandboxEnter() {
+        restart();                                                     // pose px=0,pz=9,yaw=0, HP full, enAlive[] cleared
+        waveToSpawn = 0; waveRemaining = 0; waveBreak = 0f; waveBanner = 0f; bossPending = 0;   // undo restart()'s beginWave(1)
+        for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
+        playerHP = effMaxHp(); hurtFlash = 0f;
+        levelObjsBackup.clear();                                       // snapshot the authored/combat overlay …
+        for (float[] o : editObjs) levelObjsBackup.add(o.clone());
+        editObjs.clear(); edUndo.clear();                             // … then load the sandbox's own overlay
+        loadSandboxObjs();
+        selObj = -1; armedCat = -1; armedKind = -1; sbTool = 0;
+        aimOn = false; aim = 0f;
+        editDirty = true; edHouseMeshDirty = true;                    // rebake boxes = baseBoxes + sandbox overlay
+        state = ST_SANDBOX; hubWasShown = false; hubTabShown = -1;
+    }
+
+    /** Leave the sandbox back to the hub: persist the sandbox overlay to sandbox.lvl, then restore the
+     *  authored/combat overlay so a subsequent PLAY sees exactly the base + level.lvl world. */
+    private void sandboxExit() {
+        saveSandboxObjs();
+        editObjs.clear();
+        for (float[] o : levelObjsBackup) editObjs.add(o);
+        levelObjsBackup.clear(); edUndo.clear();
+        selObj = -1; armedCat = -1; armedKind = -1;
+        aimOn = false; aim = 0f;
+        editDirty = true; edHouseMeshDirty = true;                    // rebake boxes back to base + authored overlay
+        state = ST_HUB; hubWasShown = false; hubTabShown = -1;
+    }
+
+    // Placement distance in front of the player, by category (houses need more room than props/plants).
+    private float sbFrontDist(int cat) { return cat == 3 ? 6.0f : (cat == 1 ? 3.5f : 3.2f); }
+
+    /** SANDBOX "place in front": drop the given kind ~a few metres ahead of the player, facing them, and
+     *  auto-select it. Reuses the editor's add+snap+undo+dirty tail — only the ground ray is replaced by the
+     *  reticle-forward vector (player yaw is RADIANS; editObjs[4] is DEGREES, hence the conversion). */
+    private void edPlaceInFront(int cat, int kind) {
+        float d = sbFrontDist(cat);
+        float wx = px + (float) Math.sin(yaw) * d;
+        float wz = pz - (float) Math.cos(yaw) * d;
+        float yawDeg = (float) Math.toDegrees(yaw) + (cat == 3 ? 180f : 0f);   // houses: door faces the player
+        yawDeg = ((yawDeg % 360f) + 360f) % 360f;
+        float sc = cat == 1 ? (kind == 0 ? 1.1f : (kind == 1 ? 0.7f : 0.6f)) : 1f;   // matches edPlaceAt's per-kind default
+        editObjs.add(new float[]{cat, kind, wx, wz, yawDeg, sc});
+        edSnapObj(editObjs.size() - 1);
+        edPushUndo("ADD", editObjs.size() - 1, null);
+        selObj = editObjs.size() - 1;
+        editDirty = true; edHouseMeshDirty = true; if (sfx != null) sfx.swap();
+        saveSandboxObjs();
+        edSetToast(edLabel(cat, kind) + " platziert");
+    }
+
+    /** SANDBOX "move": re-drop the current selection in front of the player. */
+    private void edMoveInFront() {
+        if (selObj < 0 || selObj >= editObjs.size()) return;
+        float[] o = editObjs.get(selObj);
+        float d = sbFrontDist((int) o[0]);
+        edPushUndo("MOD", selObj, o);
+        o[2] = px + (float) Math.sin(yaw) * d;
+        o[3] = pz - (float) Math.cos(yaw) * d;
+        editDirty = true; edHouseMeshDirty = true;
+        edSnapObj(selObj);
+        if (sfx != null) sfx.swap();
+        saveSandboxObjs();
+    }
+
+    /** Persist the sandbox overlay to a SEPARATE <externalFiles>/sandbox.lvl (never level.lvl). Generic
+     *  "O cat kind x z yaw scale f6" grammar so every field round-trips exactly. Best-effort (silent). */
+    private void saveSandboxObjs() {
+        try {
+            if (appCtx == null) return;
+            java.io.File dir = appCtx.getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "sandbox.lvl"));
+            w.write("# AIGames sandbox overlay: O cat kind x z yaw scale f6\n");
+            for (float[] o : editObjs) {
+                float f6 = o.length > 6 ? o[6] : 0f, s = o[5] <= 0f ? 1f : o[5];
+                w.write("O " + (int) o[0] + ' ' + (int) o[1] + ' ' + fr(o[2]) + ' ' + fr(o[3]) + ' ' + fr(o[4]) + ' ' + fr(s) + ' ' + fr(f6) + '\n');
+            }
+            w.close();
+        } catch (Exception e) { /* best-effort persistence */ }
+    }
+
+    /** Reload the sandbox overlay from sandbox.lvl into editObjs (caller has already cleared it). Silent. */
+    private void loadSandboxObjs() {
+        java.io.BufferedReader br = null;
+        try {
+            if (appCtx == null) return;
+            java.io.File dir = appCtx.getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.File f = new java.io.File(dir, "sandbox.lvl");
+            if (!f.exists()) return;
+            br = new java.io.BufferedReader(new java.io.FileReader(f));
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.length() == 0 || line.charAt(0) == '#') continue;
+                String[] t = line.split("\\s+");
+                if (!t[0].equals("O") || t.length < 7) continue;
+                editObjs.add(new float[]{pf(t[1]), pf(t[2]), pf(t[3]), pf(t[4]), pf(t[5]), pf(t[6]), t.length > 7 ? pf(t[7]) : 0f});
+            }
+        } catch (Exception e) { /* best-effort */ }
+        finally { if (br != null) try { br.close(); } catch (Exception e) {} }
     }
 
     // --- shooting & weapons ---
@@ -3625,6 +3812,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawRoundRect(ebX, ebY, ebW, ebH, ebH * 0.5f, 0.15f, 0.30f, 0.50f, 0.96f);
         drawRoundRect(ebX, ebY - ebH * 0.5f + 2.6f * us, ebW - 2f * ebH * 0.5f, 2.6f * us, 1.3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
         drawTextCentered("BAUEN", ebX, ebY, 30f, 0.92f, 0.97f, 1f, 1f);
+        // SANDBOX entry (bottom-right, mirrors BAUEN): peaceful first-person build + roam, no enemies.
+        float sbW = 236f * us, sbH = 76f * us, sbX = width - 22f * us - sbW * 0.5f, sbY = playY;
+        if (tapped && hitRect(sbX, sbY, sbW, sbH, tap[0], tap[1])) { sandboxEnter(); return; }
+        drawRoundRect(sbX, sbY, sbW, sbH, sbH * 0.5f, 0.34f, 0.20f, 0.48f, 0.96f);
+        drawRoundRect(sbX, sbY - sbH * 0.5f + 2.6f * us, sbW - sbH, 2.6f * us, 1.3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
+        drawTextCentered("SANDBOX", sbX, sbY, 30f, 0.96f, 0.93f, 1f, 1f);
         drawText("BUILD " + buildNumber, 18f * us, height - 16f * us, 13f, 0.45f, 0.5f, 0.58f, 0.65f);
         if (highScore > 0) drawTextRight("BEST SCORE  " + highScore, width - 18f * us, height - 16f * us, 14f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.7f);
 
