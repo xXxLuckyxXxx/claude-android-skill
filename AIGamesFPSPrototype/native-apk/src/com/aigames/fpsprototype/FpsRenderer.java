@@ -2003,12 +2003,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // --- editor actions ---
-    private void edArm(int cat, int kind) { armedCat = cat; armedKind = kind; selObj = -1; edGrabbed = false; }
+    /** Tapping the already-armed palette item again un-arms it (second way out of placement mode). */
+    private void edArm(int cat, int kind) {
+        if (armedCat == cat && armedKind == kind) { armedCat = -1; armedKind = -1; return; }
+        armedCat = cat; armedKind = kind; selObj = -1; edGrabbed = false;
+    }
 
-    private void edPlaceAtReticle() {
+    /** Place the armed item directly at the tapped screen point's ground hit — one tap, no separate confirm.
+     *  Stays armed afterward so repeated taps stamp down more of the same kind (e.g. a row of trees). */
+    private void edPlaceAt(float sx, float sy) {
         if (armedCat < 0) return;
-        if (!screenRay(width * 0.5f, height * 0.5f, width, height, edVP, edRO, edRD) || !rayPlaneY(edRO, edRD, 0f, edHit)) {
-            edSetToast("Ziel nicht auf dem Boden — Kamera kippen"); return;
+        if (!screenRay(sx, sy, width, height, edVP, edRO, edRD) || !rayPlaneY(edRO, edRD, 0f, edHit)) {
+            edSetToast("Kein Bodenpunkt getroffen — Kamera kippen"); return;
         }
         float sc = armedCat == 1 ? (armedKind == 0 ? 1.1f : (armedKind == 1 ? 0.7f : 0.6f)) : 1f;
         float[] o = new float[]{armedCat, armedKind, edHit[0], edHit[2], 0f, sc};
@@ -2016,7 +2022,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edSnapObj(editObjs.size() - 1);
         edPushUndo("ADD", editObjs.size() - 1, null);
         editDirty = true; if (sfx != null) sfx.swap();
-        edSetToast("Platziert: " + edLabel(armedCat, armedKind));
+        edSetToast(edLabel(armedCat, armedKind) + " platziert");
     }
     private void edRotate(float deg) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[4] = ((o[4] + deg) % 360f + 360f) % 360f; editDirty = true; }
     private void edScale(float f) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[5] = clamp((o[5] <= 0f ? 1f : o[5]) * f, 0.3f, 4f); editDirty = true; }
@@ -2121,22 +2127,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edBoxLocal(hx, 0, cx, cz, yaw, y, t, t, hz * 2f + t, r, g, b);
         edBoxLocal(-hx, 0, cx, cz, yaw, y, t, t, hz * 2f + t, r, g, b);
     }
-    /** Selection footprint (cyan) + placement ghost (green), drawn in the 3D world. */
+    /** Selection footprint, pulsing cyan outline top + bottom, drawn in the 3D world. */
     private void drawEditGizmos() {
+        if (selObj < 0 || selObj >= editObjs.size()) return;
         GLES20.glUseProgram(prog3);
         GLES20.glUniform1f(uWorldUV, 0f);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         float[] b = new float[6];
-        if (selObj >= 0 && selObj < editObjs.size()) {
-            float[] o = editObjs.get(selObj); edObjBounds(o, b);
-            edGroundRect(o[2], o[3], b[3], b[5], o[4], 0.08f, 0.06f, 0.30f, 0.95f, 1f);
-            edGroundRect(o[2], o[3], b[3], b[5], o[4], b[1] * 2f + 0.05f, 0.05f, 0.30f, 0.95f, 1f);
-        }
-        if (armedCat >= 0 && screenRay(width * 0.5f, height * 0.5f, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
-            float[] g = {armedCat, armedKind, edHit[0], edHit[2], 0f, armedCat == 1 && armedKind > 0 ? 0.7f : 1f};
-            edObjBounds(g, b);
-            edGroundRect(edHit[0], edHit[2], b[3], b[5], 0f, 0.08f, 0.06f, 0.35f, 1f, 0.55f);
-        }
+        float pulse = 0.7f + 0.3f * pulse01(3.2f, 0f);
+        float[] o = editObjs.get(selObj); edObjBounds(o, b);
+        edGroundRect(o[2], o[3], b[3], b[5], o[4], 0.08f, 0.06f, AC_CYAN[0] * pulse, AC_CYAN[1] * pulse, AC_CYAN[2] * pulse);
+        edGroundRect(o[2], o[3], b[3], b[5], o[4], b[1] * 2f + 0.05f, 0.05f, AC_CYAN[0] * pulse, AC_CYAN[1] * pulse, AC_CYAN[2] * pulse);
     }
 
     private int[][] edCatKinds(int t) {
@@ -2144,64 +2145,106 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (t == 1) return new int[][]{{1,0},{1,1},{1,2}};
         return new int[][]{{2,0},{2,1},{2,2},{2,3},{2,4}};
     }
+    /** A small filled swatch (no font glyph needed) so a category/kind reads at a glance. */
+    private void edSwatch(float cx, float cy, float r, int cat) {
+        float[] c = cat == 0 ? new float[]{0.60f, 0.42f, 0.26f} : cat == 1 ? new float[]{0.36f, 0.68f, 0.34f} : new float[]{0.62f, 0.66f, 0.72f};
+        drawCircle(cx, cy, r, 0f, 0f, 0f, 0.35f);
+        drawCircle(cx, cy - r * 0.12f, r * 0.86f, c[0], c[1], c[2], 1f);
+    }
+    /** Glossy pill button (drawButton) when active/armed, a flatter bevelled card otherwise — matches the hub's look. */
     private boolean edBtn(float cx, float cy, float w, float h, String label, float tsize, boolean active, boolean tapped, float px, float py) {
         boolean hit = tapped && hitRect(cx, cy, w, h, px, py);
-        drawRoundRect(cx, cy, w, h, Math.min(14f * us, h * 0.3f), active ? 0.15f : 0.11f, active ? 0.33f : 0.13f, active ? 0.46f : 0.185f, 0.95f);
-        if (active) drawRoundRect(cx, cy - h * 0.5f + 2.4f * us, w - 8f * us, 2.4f * us, 1.2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.75f);
-        drawTextCentered(label, cx, cy, tsize, 0.92f, 0.96f, 1f, 1f);
+        float rad = Math.min(16f * us, h * 0.32f);
+        if (active) {
+            drawGlow(cx, cy, w, h, rad, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
+            drawButton(cx, cy, w, h, rad, 0.14f, 0.40f, 0.56f, 0.97f, false);
+        } else {
+            drawCard(cx, cy, w, h, rad, 0.105f, 0.125f, 0.175f, 0.94f);
+        }
+        drawTextCenteredShadow(label, cx, cy, tsize, active ? 1f : 0.90f, active ? 1f : 0.94f, 1f, 1f);
         return hit;
     }
-    /** 2D editor UI + all tap dispatch (UI buttons first, then world select). */
+    /** 2D editor UI + all tap dispatch (UI buttons first, then world select/place). */
     private void drawEditorHud() {
         menuPreamble();
         boolean tapped = input.consumeMenuTap(edTap);
         float px = edTap[0], py = edTap[1];
-        float topY = 42f * us, bh = 60f * us;
-        drawRectPx(width * 0.5f, topY, width, 88f * us, 0.06f, 0.08f, 0.14f, 0.94f);
-        if (edBtn(130f * us, topY, 210f * us, bh, "FERTIG", 28f, false, tapped, px, py)) { edExit(); return; }
-        drawTextCentered("EDITOR", width * 0.5f, topY, 26f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
-        float rx = width - 130f * us;
-        if (edBtn(rx, topY, 230f * us, bh, "SPEICHERN", 26f, false, tapped, px, py)) { saveLevel(true); tapped = false; }
-        if (edBtn(rx - 270f * us, topY, 220f * us, bh, edSnap ? "RASTER AN" : "RASTER AUS", 22f, edSnap, tapped, px, py)) { edSnap = !edSnap; tapped = false; }
-        if (edBtn(rx - 510f * us, topY, 190f * us, bh, "UNDO", 26f, false, tapped, px, py)) { edUndoPop(); tapped = false; }
 
+        // --- top bar: dark band + soft glow line + accent, like the hub header ---
+        float topY = 42f * us, bh = 60f * us, hbH = 88f * us;
+        drawRectPx(width * 0.5f, topY, width, hbH, 0.055f, 0.075f, 0.135f, 0.96f);
+        for (int i = 0; i < 4; i++)
+            drawRectPx(width * 0.5f, hbH + (4f + i * 6f) * us, width, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.05f - i * 0.01f);
+        drawRectPx(width * 0.5f, hbH, width, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f);
+        float fertigW = Math.min(210f * us, width * 0.22f);
+        if (edBtn(20f * us + fertigW * 0.5f, topY, fertigW, bh, "FERTIG", 27f, false, tapped, px, py)) { edExit(); return; }
+        drawTextCenteredShadow("EDITOR", width * 0.5f, topY, 25f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+        // Right-side group sized as a fixed FRACTION of width (never fixed px) so it can never collide with
+        // FERTIG on a narrow/low-res screen — three equal buttons filling a 58%-of-width budget.
+        float rGap = 10f * us, rBudget = width * 0.58f, wBtn = (rBudget - 2f * rGap) / 3f;
+        float rCx = width - 20f * us - wBtn * 0.5f;
+        if (edBtn(rCx, topY, wBtn, bh, "SPEICHERN", 23f, false, tapped, px, py)) { saveLevel(true); tapped = false; }
+        rCx -= wBtn + rGap;
+        if (edBtn(rCx, topY, wBtn, bh, edSnap ? "RASTER AN" : "RASTER AUS", 20f, edSnap, tapped, px, py)) { edSnap = !edSnap; tapped = false; }
+        rCx -= wBtn + rGap;
+        if (edBtn(rCx, topY, wBtn, bh, "UNDO", 23f, false, tapped, px, py)) { edUndoPop(); tapped = false; }
+
+        // --- palette: one translucent card behind the category tabs + kind list ---
         String[] cats = {"Moebel", "Pflanzen", "Props"};
-        float catY = topY + 88f * us, catW = 150f * us, catH = 54f * us, catX = 100f * us;
-        for (int i = 0; i < 3; i++) if (edBtn(catX, catY + i * (catH + 8f * us), catW, catH, cats[i], 22f, edCatTab == i, tapped, px, py)) { edCatTab = i; tapped = false; }
+        float catY0 = topY + hbH, catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
         int[][] kinds = edCatKinds(edCatTab);
-        float kx = catX + 178f * us, kw = 210f * us, kh = 50f * us;
+        float kx = catX + catW * 0.5f + 14f * us + 210f * us * 0.5f, kw = 210f * us, kh = 50f * us, kGap = 6f * us;
+        float palTop = catY0, palBot = catY0 + Math.max(3 * (catH + catGap), kinds.length * (kh + kGap)) - Math.max(catGap, kGap);
+        float palCx = (catX - catW * 0.5f + kx + kw * 0.5f) * 0.5f, palCy = (palTop + palBot) * 0.5f;
+        drawCard(palCx, palCy, (kx + kw * 0.5f) - (catX - catW * 0.5f) + 20f * us, palBot - palTop + 24f * us, 18f * us, 0.075f, 0.09f, 0.145f, 0.90f);
+        for (int i = 0; i < 3; i++) {
+            float cy = palTop + i * (catH + catGap) + catH * 0.5f;
+            if (edBtn(catX, cy, catW, catH, cats[i], 22f, edCatTab == i, tapped, px, py)) { edCatTab = i; tapped = false; }
+            edSwatch(catX - catW * 0.5f + 20f * us, cy, 9f * us, i);
+        }
         for (int i = 0; i < kinds.length; i++) {
-            float cy = catY + i * (kh + 6f * us);
+            float cy = palTop + i * (kh + kGap) + kh * 0.5f;
             boolean armedThis = armedCat == kinds[i][0] && armedKind == kinds[i][1];
             if (edBtn(kx, cy, kw, kh, edLabel(kinds[i][0], kinds[i][1]), 22f, armedThis, tapped, px, py)) { edArm(kinds[i][0], kinds[i][1]); tapped = false; }
         }
 
+        // --- placement mode: tap anywhere in the world to drop it; one "Fertig" button to stop ---
         if (armedCat >= 0) {
-            drawRectPx(width * 0.5f, height * 0.5f, 3f * us, 36f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);
-            drawRectPx(width * 0.5f, height * 0.5f, 36f * us, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);
-            drawTextCentered("Kamera drehen (1 Finger), dann SETZEN", width * 0.5f, height * 0.5f - 44f * us, 22f, 0.9f, 0.95f, 1f, 0.9f);
-            float pby = height - 58f * us;
-            if (edBtn(width * 0.5f - 140f * us, pby, 230f * us, 76f * us, "X Abbruch", 26f, false, tapped, px, py)) { armedCat = -1; armedKind = -1; tapped = false; }
-            if (edBtn(width * 0.5f + 140f * us, pby, 230f * us, 76f * us, "SETZEN", 28f, true, tapped, px, py)) { edPlaceAtReticle(); tapped = false; }
+            drawChip(width * 0.5f, height - 46f * us, measureText("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), 24f) + 46f * us, 54f * us, 0.07f, 0.10f, 0.16f, 0.92f);
+            drawTextCentered("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), width * 0.5f, height - 46f * us, 24f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+            float doneW = Math.min(230f * us, width * 0.24f);
+            if (edBtn(width - 20f * us - doneW * 0.5f, height - 46f * us, doneW, 74f * us, "FERTIG", 27f, true, tapped, px, py)) { armedCat = -1; armedKind = -1; tapped = false; }
         } else if (selObj >= 0 && selObj < editObjs.size()) {
             float[] o = editObjs.get(selObj);
-            drawTextCentered("Gewaehlt: " + edLabel((int) o[0], (int) o[1]) + "   Groesse " + (Math.round((o[5] <= 0f ? 1f : o[5]) * 10f) / 10f), width * 0.5f, height - 148f * us, 24f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
-            float ty = height - 58f * us, bw = 120f * us, bhh = 76f * us, gap = 8f * us, x = 96f * us;
-            if (edBtn(x, ty, bw, bhh, "< -15", 24f, false, tapped, px, py)) { edRotate(-15f); tapped = false; } x += bw + gap;
-            if (edBtn(x, ty, bw, bhh, "+15 >", 24f, false, tapped, px, py)) { edRotate(15f); tapped = false; } x += bw + gap;
+            String info = edLabel((int) o[0], (int) o[1]) + "  x" + (Math.round((o[5] <= 0f ? 1f : o[5]) * 10f) / 10f);
+            drawChip(width * 0.5f, height - 150f * us, measureText(info, 24f) + 46f * us, 46f * us, 0.10f, 0.09f, 0.05f, 0.92f);
+            drawTextCentered(info, width * 0.5f, height - 150f * us, 24f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
+            // 7 buttons in a row, budgeted as a FRACTION of width so they can never overflow the screen.
+            float ty = height - 58f * us, bhh = 76f * us, gap = 8f * us;
+            float budget = Math.min(120f * us * 7f + gap * 6f, width * 0.94f);
+            float bw = (budget - gap * 6f) / 7f;
+            float x = width * 0.5f - budget * 0.5f + bw * 0.5f;
+            drawCard(width * 0.5f, ty, budget + 16f * us, bhh + 16f * us, 20f * us, 0.075f, 0.09f, 0.145f, 0.88f);
+            if (edBtn(x, ty, bw, bhh, "-15", 24f, false, tapped, px, py)) { edRotate(-15f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "+15", 24f, false, tapped, px, py)) { edRotate(15f); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "90", 24f, false, tapped, px, py)) { edRotate(90f); tapped = false; } x += bw + gap;
-            if (edBtn(x, ty, bw, bhh, "kleiner", 22f, false, tapped, px, py)) { edScale(0.9f); tapped = false; } x += bw + gap;
-            if (edBtn(x, ty, bw, bhh, "groesser", 21f, false, tapped, px, py)) { edScale(1.1f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "kleiner", 21f, false, tapped, px, py)) { edScale(0.9f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "groesser", 20f, false, tapped, px, py)) { edScale(1.1f); tapped = false; } x += bw + gap;
             if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
-            if (edBtn(x, ty, bw, bhh, "Loeschen", 21f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "Loeschen", 20f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
+        } else {
+            drawTextCenteredShadow("Objekt antippen zum Bearbeiten  -  1 Finger dreht die Kamera  -  2 Finger zoomen", width * 0.5f, height - 30f * us, 20f, 0.75f, 0.8f, 0.9f, 0.85f);
         }
 
-        if (tapped && armedCat < 0) selObj = edPickAt(px, py);   // world tap: select / deselect
+        if (tapped) {
+            if (armedCat >= 0) edPlaceAt(px, py);          // world tap while armed: place directly where tapped
+            else selObj = edPickAt(px, py);                // otherwise: select / deselect
+        }
 
         if (edToastT > 0f && edToast != null) {
             float a = Math.min(1f, edToastT);
-            drawRectPx(width * 0.5f, height * 0.32f, measureText(edToast, 26f) + 44f * us, 52f * us, 0.05f, 0.07f, 0.12f, 0.85f * a);
-            drawTextCentered(edToast, width * 0.5f, height * 0.32f, 26f, 1f, 1f, 1f, a);
+            drawChip(width * 0.5f, height * 0.30f, measureText(edToast, 26f) + 46f * us, 54f * us, 0.06f, 0.16f, 0.10f, 0.90f * a);
+            drawTextCentered(edToast, width * 0.5f, height * 0.30f, 26f, 1f, 1f, 1f, a);
         }
     }
 
