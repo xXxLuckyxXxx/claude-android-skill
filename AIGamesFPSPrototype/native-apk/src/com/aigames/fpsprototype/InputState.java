@@ -94,4 +94,24 @@ public class InputState {
         menuTapRequested = false;
         return true;
     }
+
+    // ===================== in-game editor: rich multi-touch channel =====================
+    // In edit mode the view forwards the live pointer set (up to 2) every frame so the renderer can
+    // drive an orbit camera, pinch-zoom, and drag-to-move. Discrete taps still come via requestMenuTap.
+    private boolean editMode;
+    private int edCount;                         // active pointers this frame: 0, 1, or 2
+    private float edAx, edAy, edBx, edBy;        // screen px of pointer A (first) and B (second)
+
+    public synchronized void setEditMode(boolean v) { editMode = v; }
+    public synchronized boolean isEditMode() { return editMode; }
+
+    /** View publishes the current pointer set (px). */
+    public synchronized void setEditPointers(int count, float ax, float ay, float bx, float by) {
+        edCount = count; edAx = ax; edAy = ay; edBx = bx; edBy = by;
+    }
+
+    /** Renderer reads the pointer set: out = {count, ax, ay, bx, by}. */
+    public synchronized void getEditPointers(float[] out) {
+        out[0] = edCount; out[1] = edAx; out[2] = edAy; out[3] = edBx; out[4] = edBy;
+    }
 }

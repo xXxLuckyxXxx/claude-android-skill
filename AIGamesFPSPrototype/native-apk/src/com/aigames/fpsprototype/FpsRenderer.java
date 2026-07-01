@@ -228,9 +228,51 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int highScore = 0;
     private float playerHP = MAX_HP;
 
-    // Game state machine: HUB (between runs, spend cash) / PLAYING / SUMMARY (run-over recap).
-    private static final int ST_HUB = 0, ST_PLAYING = 1, ST_SUMMARY = 2;
+    // Game state machine: HUB (between runs, spend cash) / PLAYING / SUMMARY (run-over recap) / EDIT (in-game editor).
+    private static final int ST_HUB = 0, ST_PLAYING = 1, ST_SUMMARY = 2, ST_EDIT = 3;
     private int state = ST_HUB;
+
+    // ===== in-game touch editor =====
+    // Editable overlay objects, each float[]{cat, kind, x, z, yaw(deg), scale}. cat: 0 furniture · 1 plant · 2 prop.
+    private final java.util.List<float[]> editObjs = new java.util.ArrayList<float[]>();
+    private float[][] baseBoxes;                    // frozen base collision/render boxes (houses + accessories)
+    private String baseLevelText = "";              // scenery lines (H/R/F/SET) re-emitted verbatim on save
+    private boolean editDirty = true;               // rebuild overlay (boxes + plant mesh) on the GL thread
+    private FloatBuffer overlayTrees; private int overlayTreeVerts;
+    private int selObj = -1;                         // selected editObjs index, -1 = none
+    private int armedCat = -1, armedKind = -1;       // palette item armed for placement (-1 = none)
+    // orbit edit camera
+    private float edCamYaw = 0.7f, edCamPitch = 0.85f, edCamDist = 26f, edCamPivotX = 0f, edCamPivotZ = 9f;
+    // gesture state (previous frame's pointer set)
+    private final float[] edPtr = new float[5];
+    private int edPrevCount = 0;
+    private float edPrevAx, edPrevAy, edPrevBx, edPrevBy, edPrevGap;
+    private boolean edGrabbed; private float edGrabOffX, edGrabOffZ;
+    private int edPaletteScroll = 0;
+    private int edCatTab = 0;                         // palette category: 0 furniture · 1 plants · 2 props
+    private android.content.Context appCtx;           // for getExternalFilesDir on save
+    private boolean edSnap = true;
+    private final float ED_SNAP_POS = 0.5f, ED_SNAP_YAW = 15f;
+    private String edToast = null; private float edToastT = 0f;
+    // undo stack: each entry {String op, Integer index, float[] before}
+    private final java.util.List<Object[]> edUndo = new java.util.ArrayList<Object[]>();
+    // scratch
+    private final float[] edVP = new float[16], edRO = new float[3], edRD = new float[3], edHit = new float[3], edTap = new float[2];
+    // prop presets {w,h,d, r,g,b}
+    private static final float[][] PROP_PRESETS = {
+        {1.2f,1.2f,1.2f, 0.55f,0.40f,0.24f},   // 0 Kiste (crate)
+        {0.8f,1.05f,0.8f, 0.42f,0.30f,0.22f},  // 1 Fass (barrel)
+        {0.8f,3.0f,0.8f, 0.68f,0.66f,0.62f},   // 2 Säule (pillar, stone)
+        {1.0f,0.6f,1.0f, 0.62f,0.42f,0.34f},   // 3 Topf/Kübel (planter)
+        {1.6f,0.5f,0.7f, 0.5f,0.35f,0.22f},    // 4 Bank-Kiste (low box)
+    };
+    private static final String[] PROP_NAMES = {"Kiste", "Fass", "Saeule", "Kuebel", "Kiste flach"};
+    // palette rows: {cat, kind}. Labels resolved in edLabel().
+    private static final int[][] ED_PALETTE = {
+        {0,0},{0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},{0,8},   // furniture kinds 0..8
+        {1,0},{1,1},{1,2},                                        // tree / bush / flower
+        {2,0},{2,1},{2,2},{2,3},{2,4},                            // props
+    };
     private float deathAnim = 0f;      // >0 = playing the death sequence before the summary
     private boolean newBest = false;   // this run beat the high score
     // player-toggleable options (settings panel)
@@ -331,7 +373,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // World geometry — cover crates/pillars first, then building wall/roof boxes.
     // Each: posX, posY, posZ, scaleX, scaleY, scaleZ, r, g, b  (posY is the centre).
     private static final int COVER_BOXES = 4;        // first N cast a ground-shadow blob
-    private final float[][] boxes;
+    private float[][] boxes;               // base + editor overlay (rebuilt when the overlay changes)
     private int numCover = COVER_BOXES;              // boxes that cast a shadow (props); set by the level loader
 
     // Interactive doors. doorData[i] = cx, cy, cz, hw, hh, ht, axis(0=spansX,1=spansZ), hingeSign, r,g,b.
@@ -363,6 +405,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     public FpsRenderer(InputState input, int buildNumber, Context ctx) {
         this.input = input;
         this.buildNumber = buildNumber;
+        this.appCtx = ctx.getApplicationContext();
         this.prefs = ctx.getSharedPreferences("aigames_fps", Context.MODE_PRIVATE);
         this.highScore = prefs.getInt("highscore", 0);
         this.sfx = new Sfx(ctx);
@@ -377,6 +420,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (customFurniture != null)                        // level-authored furniture (editor furniture tool)
             for (float[] fu : customFurniture) addFurniture(bl, (int) fu[0], fu[1], fu[2], fu[3], fu[4]);
         this.boxes = bl.toArray(new float[0][]);
+        this.baseBoxes = this.boxes;                        // frozen base; editor overlay = base + editObjs colliders
         this.doorData = dl.toArray(new float[0][]);
         this.houseRects = hl;
         this.doorOpen = new float[doorData.length];
@@ -582,10 +626,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
         }
 
+        if (editDirty) rebuildOverlay();                       // editor: rebake overlay colliders + plant mesh (GL thread)
+
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
         Matrix.setIdentityM(model, 0);
         drawWorld(vegetation, vegVerts, 0f, 1f, 1f, 1f);
         if (placedTrees != null) drawWorld(placedTrees, placedTreeVerts, 0f, 1f, 1f, 1f);   // level-placed trees (same atlas)
+        if (overlayTrees != null) { Matrix.setIdentityM(model, 0); drawWorld(overlayTrees, overlayTreeVerts, 0f, 1f, 1f, 1f); }   // editor-placed plants
 
         drawShadows();
 
@@ -641,6 +688,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, woodTex);
             for (float[] gp : interiorGroups) drawWorldRange(interiorMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
         }
+        drawOverlayFurniture();                                // editor-placed furniture (drawn every frame, all states)
+        if (state == ST_EDIT) drawEditGizmos();                // selection markers + placement reticle (3D)
 
         drawDoors();
         drawEnemies();
@@ -653,6 +702,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         if (state == ST_PLAYING) drawHud();
         else if (state == ST_SUMMARY) drawSummary();
+        else if (state == ST_EDIT) drawEditorHud();
         else drawHub();
     }
 
@@ -1497,6 +1547,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void updateCamera(float dt) {
+        if (state == ST_EDIT) { updateEditor(dt); return; }
         if (state != ST_PLAYING) {
             // Frozen (hub / summary): hold the camera and just show the arena from the current pose.
             float cp = (float) Math.cos(pitch);
@@ -1692,6 +1743,468 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
+    // ===================== in-game editor: touch picking math (pure, JVM-testable) =====================
+    // NB: android.opengl.Matrix.multiplyMM/multiplyMV are *native* (no JVM impl), so the picking path uses
+    // these pure-Java column-major helpers instead — cheap (called on tap/drag) and unit-testable off-device.
+
+    /** out(4x4) = a x b, column-major (same convention as Matrix.multiplyMM). out must not alias a or b. */
+    static void mul4(float[] out, float[] a, float[] b) {
+        for (int c = 0; c < 4; c++)
+            for (int r = 0; r < 4; r++) {
+                float s = 0f;
+                for (int k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+                out[c * 4 + r] = s;
+            }
+    }
+
+    /** out(4) = m(4x4) x v(4), column-major. */
+    static void mulMatVec4(float[] out, float[] m, float[] v) {
+        for (int r = 0; r < 4; r++)
+            out[r] = m[0 * 4 + r] * v[0] + m[1 * 4 + r] * v[1] + m[2 * 4 + r] * v[2] + m[3 * 4 + r] * v[3];
+    }
+
+    /** Pure-Java 4x4 inverse (Mesa gluInvertMatrix), column-major. Returns false if singular.
+     *  Used instead of Matrix.invertM because android.jar's Matrix is a compile-only stub off-device. */
+    static boolean invert4(float[] out, float[] m) {
+        float[] inv = new float[16];
+        inv[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+        inv[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+        inv[8]  =  m[4]*m[9]*m[15]  - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+        inv[12] = -m[4]*m[9]*m[14]  + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+        inv[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+        inv[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+        inv[9]  = -m[0]*m[9]*m[15]  + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+        inv[13] =  m[0]*m[9]*m[14]  - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+        inv[2]  =  m[1]*m[6]*m[15]  - m[1]*m[7]*m[14]  - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7]  - m[13]*m[3]*m[6];
+        inv[6]  = -m[0]*m[6]*m[15]  + m[0]*m[7]*m[14]  + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7]  + m[12]*m[3]*m[6];
+        inv[10] =  m[0]*m[5]*m[15]  - m[0]*m[7]*m[13]  - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7]  - m[12]*m[3]*m[5];
+        inv[14] = -m[0]*m[5]*m[14]  + m[0]*m[6]*m[13]  + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6]  + m[12]*m[2]*m[5];
+        inv[3]  = -m[1]*m[6]*m[11]  + m[1]*m[7]*m[10]  + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7]   + m[9]*m[3]*m[6];
+        inv[7]  =  m[0]*m[6]*m[11]  - m[0]*m[7]*m[10]  - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7]   - m[8]*m[3]*m[6];
+        inv[11] = -m[0]*m[5]*m[11]  + m[0]*m[7]*m[9]   + m[4]*m[1]*m[11] - m[4]*m[3]*m[9]  - m[8]*m[1]*m[7]   + m[8]*m[3]*m[5];
+        inv[15] =  m[0]*m[5]*m[10]  - m[0]*m[6]*m[9]   - m[4]*m[1]*m[10] + m[4]*m[2]*m[9]  + m[8]*m[1]*m[6]   - m[8]*m[2]*m[5];
+        float det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+        if (det == 0f) return false;
+        float idet = 1f / det;
+        for (int i = 0; i < 16; i++) out[i] = inv[i] * idet;
+        return true;
+    }
+
+    /** Two-point unprojection: world-space ray for a touch at (px,py) in a vw x vh viewport, given vp = proj*view.
+     *  Writes ray origin -> O[0..2] and a normalised direction -> D[0..2]. Returns false if vp isn't invertible. */
+    static boolean screenRay(float px, float py, int vw, int vh, float[] vp, float[] O, float[] D) {
+        float[] inv = new float[16];
+        if (!invert4(inv, vp)) return false;
+        float ndcX = 2f * px / vw - 1f;
+        float ndcY = 1f - 2f * py / vh;                          // Android touch is top-left, GL NDC is bottom-left
+        float[] near = new float[4], far = new float[4];
+        mulMatVec4(near, inv, new float[]{ndcX, ndcY, -1f, 1f});
+        mulMatVec4(far,  inv, new float[]{ndcX, ndcY,  1f, 1f});
+        if (Math.abs(near[3]) < 1e-9f || Math.abs(far[3]) < 1e-9f) return false;
+        float nx = near[0] / near[3], ny = near[1] / near[3], nz = near[2] / near[3];   // perspective divide (both points)
+        float fx = far[0]  / far[3],  fy = far[1]  / far[3],  fz = far[2]  / far[3];
+        float dx = fx - nx, dy = fy - ny, dz = fz - nz, len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 1e-9f) return false;
+        O[0] = nx; O[1] = ny; O[2] = nz;
+        D[0] = dx / len; D[1] = dy / len; D[2] = dz / len;
+        return true;
+    }
+
+    /** Intersect ray (O,D) with the horizontal plane y = planeY. Writes the hit -> hit[0..2]; false if parallel/behind. */
+    static boolean rayPlaneY(float[] O, float[] D, float planeY, float[] hit) {
+        float denom = D[1];
+        if (Math.abs(denom) < 1e-6f) return false;               // parallel to the ground / looking at the horizon
+        float t = (planeY - O[1]) / denom;
+        if (t < 0f) return false;                                // plane is behind the camera
+        hit[0] = O[0] + t * D[0]; hit[1] = planeY; hit[2] = O[2] + t * D[2];
+        return true;
+    }
+
+    /** Ray vs a box centred at (cx,cy,cz) with half-extents (hx,hy,hz) and yawDeg about Y.
+     *  Returns the entry distance (>=0) or -1 for a miss. Slab test in the box's local frame. */
+    static float rayBox(float[] O, float[] D, float cx, float cy, float cz, float hx, float hy, float hz, float yawDeg) {
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float ox = O[0] - cx, oz = O[2] - cz;
+        float lox = ox * ca - oz * sa, loz = ox * sa + oz * ca;  // world -> box-local (Ry(-yaw)), same convention as obbPush
+        float ldx = D[0] * ca - D[2] * sa, ldz = D[0] * sa + D[2] * ca;
+        float[] lo = {lox, O[1] - cy, loz}, ld = {ldx, D[1], ldz}, h = {hx, hy, hz};
+        float tmin = -1e30f, tmax = 1e30f;
+        for (int i = 0; i < 3; i++) {
+            if (Math.abs(ld[i]) < 1e-8f) {
+                if (lo[i] < -h[i] || lo[i] > h[i]) return -1f;   // parallel to this slab and outside it
+            } else {
+                float invd = 1f / ld[i];
+                float t1 = (-h[i] - lo[i]) * invd, t2 = (h[i] - lo[i]) * invd;
+                if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                if (t1 > tmin) tmin = t1;
+                if (t2 < tmax) tmax = t2;
+            }
+        }
+        if (tmax >= Math.max(tmin, 0f)) return Math.max(tmin, 0f);
+        return -1f;
+    }
+
+    // ===================== in-game editor: logic =====================
+    static float cosD(float deg) { return (float) Math.cos(Math.toRadians(deg)); }
+    static float sinD(float deg) { return (float) Math.sin(Math.toRadians(deg)); }
+
+    private void edEnter() {
+        state = ST_EDIT;
+        selObj = -1; armedCat = -1; armedKind = -1; edGrabbed = false; edPrevCount = 0;
+        edCamPivotX = px; edCamPivotZ = pz; edCamYaw = yaw; edCamPitch = 0.85f; edCamDist = 26f;
+        editDirty = true;
+        edSetToast("Editor: links Palette, dann SETZEN. Objekt antippen zum Bearbeiten.");
+    }
+    private void edExit() {
+        saveLevel(true);
+        state = ST_HUB; hubWasShown = false;
+    }
+    private void edSetToast(String m) { edToast = m; edToastT = 1.8f; }
+
+    /** Per-frame editor logic: orbit/pinch/pan camera + drag-move the selected object. Taps handled in the HUD pass. */
+    private void updateEditor(float dt) {
+        if (edToastT > 0f) edToastT -= dt;
+        float cp = (float) Math.cos(edCamPitch), sp = (float) Math.sin(edCamPitch);
+        float ex = edCamPivotX + edCamDist * cp * (float) Math.sin(edCamYaw);
+        float ey = Math.max(1.5f, edCamDist * sp);
+        float ez = edCamPivotZ + edCamDist * cp * (float) Math.cos(edCamYaw);
+        Matrix.setLookAtM(view, 0, ex, ey, ez, edCamPivotX, 0f, edCamPivotZ, 0f, 1f, 0f);
+        mul4(edVP, proj, view);
+
+        input.getEditPointers(edPtr);
+        int count = (int) edPtr[0];
+        float ax = edPtr[1], ay = edPtr[2], bx = edPtr[3], by = edPtr[4];
+
+        if (count == 2) {
+            float gap = (float) Math.hypot(bx - ax, by - ay);
+            float mx = (ax + bx) * 0.5f, my = (ay + by) * 0.5f;
+            if (edPrevCount == 2) {
+                if (edPrevGap > 2f && gap > 2f) edCamDist = clamp(edCamDist * edPrevGap / gap, 4f, 90f);
+                if (screenRay(edPrevAx, edPrevAy, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                    float phx = edHit[0], phz = edHit[2];
+                    if (screenRay(mx, my, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                        edCamPivotX = clamp(edCamPivotX + (phx - edHit[0]), -60f, 60f);
+                        edCamPivotZ = clamp(edCamPivotZ + (phz - edHit[2]), -60f, 60f);
+                    }
+                }
+            }
+            edPrevGap = gap; edPrevAx = mx; edPrevAy = my;   // reuse prevA as the previous midpoint for pan
+            edGrabbed = false;
+        } else if (count == 1) {
+            if (selObj >= 0 && armedCat < 0) {
+                float[] o = editObjs.get(selObj);
+                if (!edGrabbed || edPrevCount != 1) {
+                    if (screenRay(ax, ay, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                        edGrabOffX = o[2] - edHit[0]; edGrabOffZ = o[3] - edHit[2];
+                        edGrabbed = true;
+                        edPushUndo("MOD", selObj, o);       // one snapshot per drag
+                    }
+                } else if (screenRay(ax, ay, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                    o[2] = edHit[0] + edGrabOffX; o[3] = edHit[2] + edGrabOffZ; editDirty = true;
+                }
+            } else {                                          // orbit (nothing selected, or placing)
+                if (edPrevCount == 1) {
+                    edCamYaw -= (ax - edPrevAx) * 0.005f;
+                    edCamPitch = clamp(edCamPitch - (ay - edPrevAy) * 0.005f, 0.18f, 1.45f);
+                }
+                edGrabbed = false;
+            }
+            edPrevAx = ax; edPrevAy = ay;
+        } else {                                              // no fingers: commit a finished drag
+            if (edGrabbed && selObj >= 0) { edSnapObj(selObj); editDirty = true; }
+            edGrabbed = false;
+        }
+        edPrevCount = count;
+    }
+
+    private void edSnapObj(int i) {
+        if (!edSnap || i < 0 || i >= editObjs.size()) return;
+        float[] o = editObjs.get(i);
+        o[2] = Math.round(o[2] / ED_SNAP_POS) * ED_SNAP_POS;
+        o[3] = Math.round(o[3] / ED_SNAP_POS) * ED_SNAP_POS;
+        o[4] = Math.round(o[4] / ED_SNAP_YAW) * ED_SNAP_YAW;
+    }
+
+    /** World-space AABB of an editObj -> out={cx,cy,cz,hx,hy,hz} (yaw applied separately in picking). */
+    private void edObjBounds(float[] o, float[] out) {
+        int cat = (int) o[0], kind = (int) o[1]; float s = o[5] <= 0f ? 1f : o[5];
+        float hx, hy, hz, cy;
+        if (cat == 0) {
+            float fx = 0.12f, fz = 0.12f, top = 0.2f;
+            float[][] rec = (kind >= 0 && kind < FURN.length) ? FURN[kind] : FURN[0];
+            for (float[] p : rec) { fx = Math.max(fx, Math.abs(p[0]) + p[3] * 0.5f); fz = Math.max(fz, Math.abs(p[2]) + p[5] * 0.5f); top = Math.max(top, p[1] + p[4] * 0.5f); }
+            hx = fx * s; hz = fz * s; hy = top * s * 0.5f; cy = top * s * 0.5f;
+        } else if (cat == 2) {
+            float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
+            hx = pr[0] * 0.5f * s; hz = pr[2] * 0.5f * s; hy = pr[1] * 0.5f * s; cy = pr[1] * 0.5f * s;
+        } else {
+            float h = kind == 0 ? 2.4f : (kind == 1 ? 0.9f : 0.5f), rad = kind == 0 ? 0.9f : (kind == 1 ? 0.7f : 0.4f);
+            hx = rad * s; hz = rad * s; hy = h * s * 0.5f; cy = h * s * 0.5f;
+        }
+        out[0] = o[2]; out[1] = cy; out[2] = o[3]; out[3] = hx; out[4] = hy; out[5] = hz;
+    }
+
+    /** Ray-pick the nearest editObj at screen (px,py); returns its index or -1. */
+    private int edPickAt(float px2, float py2) {
+        if (!screenRay(px2, py2, width, height, edVP, edRO, edRD)) return -1;
+        int best = -1; float bestT = 1e30f; float[] b = new float[6];
+        for (int i = 0; i < editObjs.size(); i++) {
+            float[] o = editObjs.get(i);
+            edObjBounds(o, b);
+            float t = rayBox(edRO, edRD, b[0], b[1], b[2], b[3] + 0.2f, b[4] + 0.2f, b[5] + 0.2f, o[4]);
+            if (t >= 0f && t < bestT) { bestT = t; best = i; }
+        }
+        return best;
+    }
+
+    private void rebuildOverlay() {
+        if (baseBoxes == null) baseBoxes = boxes;                 // first call: snapshot the base
+        java.util.List<float[]> ov = new java.util.ArrayList<float[]>();
+        for (float[] o : editObjs) {
+            int cat = (int) o[0], kind = (int) o[1]; float x = o[2], z = o[3], yaw = o[4], s = o[5] <= 0f ? 1f : o[5];
+            float ca = cosD(yaw), sa = sinD(yaw);
+            if (cat == 0) {
+                float[][] rec = (kind >= 0 && kind < FURN.length) ? FURN[kind] : FURN[0];
+                for (float[] p : rec) {
+                    if (p[7] == 0f) continue;                     // only solid pieces collide
+                    float dx = p[0] * s, dz = p[2] * s;
+                    float wx = x + dx * ca + dz * sa, wz = z - dx * sa + dz * ca;
+                    ov.add(new float[]{wx, p[1] * s, wz, p[3] * s, p[4] * s, p[5] * s, 0.5f, 0.5f, 0.5f, yaw, 1f});
+                }
+            } else if (cat == 2) {
+                float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
+                ov.add(new float[]{x, pr[1] * 0.5f * s, z, pr[0] * s, pr[1] * s, pr[2] * s, pr[3], pr[4], pr[5], yaw});
+            }
+        }
+        float[][] merged = new float[baseBoxes.length + ov.size()][];
+        System.arraycopy(baseBoxes, 0, merged, 0, baseBoxes.length);
+        for (int i = 0; i < ov.size(); i++) merged[baseBoxes.length + i] = ov.get(i);
+        boxes = merged;
+        makeOverlayTrees();
+        editDirty = false;
+    }
+
+    private void makeOverlayTrees() {
+        int cnt = 0; for (float[] o : editObjs) if ((int) o[0] == 1) cnt++;
+        if (cnt == 0) { overlayTrees = null; overlayTreeVerts = 0; return; }
+        float[] d = new float[cnt * 6000 + 256]; int oo = 0; Random r = new Random(707);
+        int[] fc = {4, 5, 6, 7, 8, 9, 10}; float uStem = cell(3), uCtr = cell(11);
+        for (float[] o : editObjs) {
+            if ((int) o[0] != 1) continue;
+            int kind = (int) o[1]; float x = o[2], z = o[3], s = o[5] <= 0f ? 1f : o[5]; float by = terrainH(x, z);
+            if (oo > d.length - 6100) break;
+            if (kind == 1) oo = vBush(d, oo, x, by, z, r.nextInt(6), r, fc);
+            else if (kind == 2) oo = vFlower(d, oo, x, by, z, 1 + r.nextInt(4), r, uStem, uCtr, fc);
+            else oo = vTree(d, oo, x, by, z, Math.max(0.4f, s), true, r);
+        }
+        overlayTreeVerts = oo / 8;
+        overlayTrees = makeBuffer(java.util.Arrays.copyOf(d, oo));
+    }
+
+    // --- editor actions ---
+    private void edArm(int cat, int kind) { armedCat = cat; armedKind = kind; selObj = -1; edGrabbed = false; }
+
+    private void edPlaceAtReticle() {
+        if (armedCat < 0) return;
+        if (!screenRay(width * 0.5f, height * 0.5f, width, height, edVP, edRO, edRD) || !rayPlaneY(edRO, edRD, 0f, edHit)) {
+            edSetToast("Ziel nicht auf dem Boden — Kamera kippen"); return;
+        }
+        float sc = armedCat == 1 ? (armedKind == 0 ? 1.1f : (armedKind == 1 ? 0.7f : 0.6f)) : 1f;
+        float[] o = new float[]{armedCat, armedKind, edHit[0], edHit[2], 0f, sc};
+        editObjs.add(o);
+        edSnapObj(editObjs.size() - 1);
+        edPushUndo("ADD", editObjs.size() - 1, null);
+        editDirty = true; if (sfx != null) sfx.swap();
+        edSetToast("Platziert: " + edLabel(armedCat, armedKind));
+    }
+    private void edRotate(float deg) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[4] = ((o[4] + deg) % 360f + 360f) % 360f; editDirty = true; }
+    private void edScale(float f) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[5] = clamp((o[5] <= 0f ? 1f : o[5]) * f, 0.3f, 4f); editDirty = true; }
+    private void edDelete() { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("DEL", selObj, o); editObjs.remove(selObj); selObj = -1; editDirty = true; if (sfx != null) sfx.swap(); }
+    private void edDuplicate() {
+        if (selObj < 0) return; float[] o = editObjs.get(selObj);
+        float[] c = o.clone(); c[2] += 1.5f; c[3] += 1.5f;
+        editObjs.add(c); selObj = editObjs.size() - 1; edSnapObj(selObj);
+        edPushUndo("ADD", selObj, null); editDirty = true; if (sfx != null) sfx.swap();
+    }
+    private void edPushUndo(String op, int idx, float[] before) {
+        edUndo.add(new Object[]{op, Integer.valueOf(idx), before == null ? null : before.clone()});
+        while (edUndo.size() > 48) edUndo.remove(0);
+    }
+    private void edUndoPop() {
+        if (edUndo.isEmpty()) { edSetToast("Nichts rueckgaengig"); return; }
+        Object[] e = edUndo.remove(edUndo.size() - 1);
+        String op = (String) e[0]; int idx = ((Integer) e[1]).intValue(); float[] before = (float[]) e[2];
+        if (op.equals("ADD")) { if (idx >= 0 && idx < editObjs.size()) editObjs.remove(idx); selObj = -1; }
+        else if (op.equals("DEL")) { if (before != null) { idx = Math.min(idx, editObjs.size()); editObjs.add(idx, before); selObj = idx; } }
+        else if (op.equals("MOD")) { if (before != null && idx >= 0 && idx < editObjs.size()) editObjs.set(idx, before); selObj = idx; }
+        editDirty = true; edSetToast("Rueckgaengig");
+    }
+
+    private static String edLabel(int cat, int kind) {
+        if (cat == 0) return kind >= 0 && kind < ED_FURN_NAMES.length ? ED_FURN_NAMES[kind] : "Moebel";
+        if (cat == 1) return kind == 1 ? "Busch" : (kind == 2 ? "Blume" : "Baum");
+        return kind >= 0 && kind < PROP_NAMES.length ? PROP_NAMES[kind] : "Prop";
+    }
+    private static final String[] ED_FURN_NAMES = {"Bett", "Schrank", "Tisch", "Stuhl", "Sofa", "Regal", "Pflanze", "Teppich", "Lampe"};
+
+    /** Serialize the editable overlay as FU/T/B lines, appended to the kept scenery text; write level.lvl. */
+    private String edSerialize() {
+        StringBuilder sb = new StringBuilder();
+        if (baseLevelText != null && baseLevelText.length() > 0) sb.append(baseLevelText).append("\n");
+        for (float[] o : editObjs) {
+            int cat = (int) o[0], kind = (int) o[1];
+            String x = fr(o[2]), z = fr(o[3]), yaw = fr(o[4]); float sc = o[5] <= 0f ? 1f : o[5]; String s = fr(sc);
+            if (cat == 0) sb.append("FU ").append(kind).append(' ').append(x).append(' ').append(z).append(' ').append(yaw).append(' ').append(s).append('\n');
+            else if (cat == 1) sb.append("T ").append(x).append(' ').append(z).append(' ').append(s).append(' ').append(kind).append(' ').append(yaw).append('\n');
+            else {
+                float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
+                sb.append("B ").append(x).append(' ').append(z).append(' ').append(fr(pr[0] * sc)).append(' ').append(fr(pr[1] * sc)).append(' ').append(fr(pr[2] * sc))
+                  .append(' ').append(fr(pr[3])).append(' ').append(fr(pr[4])).append(' ').append(fr(pr[5])).append(' ').append(yaw).append('\n');
+            }
+        }
+        return sb.toString();
+    }
+    private static String fr(float v) { return Float.toString(Math.round(v * 1000f) / 1000f); }
+
+    private void saveLevel(boolean toast) {
+        try {
+            java.io.File dir = appCtx.getExternalFilesDir(null);
+            if (dir == null) { if (toast) edSetToast("Speichern fehlgeschlagen (kein Speicher)"); return; }
+            java.io.File f = new java.io.File(dir, "level.lvl");
+            java.io.FileWriter w = new java.io.FileWriter(f);
+            w.write("# AIGames in-game editor save\n");
+            w.write(edSerialize());
+            w.close();
+            if (toast) edSetToast("Gespeichert (" + editObjs.size() + " Objekte)");
+        } catch (Exception e) { if (toast) edSetToast("Speichern fehlgeschlagen"); }
+    }
+
+    // ===================== in-game editor: rendering =====================
+    /** Draw every editor-placed furniture piece as tinted cubes (matches the baked interior look). */
+    private void drawOverlayFurniture() {
+        boolean any = false; for (float[] o : editObjs) if ((int) o[0] == 0) { any = true; break; }
+        if (!any) return;
+        GLES20.glUseProgram(prog3);
+        GLES20.glUniform1f(uWorldUV, 0f);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, woodTex);
+        for (float[] o : editObjs) {
+            if ((int) o[0] != 0) continue;
+            int kind = (int) o[1]; float x = o[2], z = o[3], yaw = o[4], s = o[5] <= 0f ? 1f : o[5];
+            float ca = cosD(yaw), sa = sinD(yaw);
+            float[][] rec = (kind >= 0 && kind < FURN.length) ? FURN[kind] : FURN[0];
+            for (float[] p : rec) {
+                float dx = p[0] * s, dz = p[2] * s;
+                float wx = x + dx * ca + dz * sa, wz = z - dx * sa + dz * ca;
+                Matrix.setIdentityM(model, 0);
+                Matrix.translateM(model, 0, wx, p[1] * s, wz);
+                if (yaw != 0f) Matrix.rotateM(model, 0, yaw, 0f, 1f, 0f);
+                Matrix.scaleM(model, 0, p[3] * s, p[4] * s, p[5] * s);
+                float[] col = INT_COLS[(int) p[6]];
+                drawWorld(cube, 36, 0f, col[0], col[1], col[2]);
+            }
+        }
+    }
+
+    private void edBoxLocal(float lx, float lz, float ox, float oz, float yaw, float y, float sx, float sy, float sz, float r, float g, float b) {
+        float ca = cosD(yaw), sa = sinD(yaw);
+        float wx = ox + lx * ca + lz * sa, wz = oz - lx * sa + lz * ca;
+        Matrix.setIdentityM(model, 0);
+        Matrix.translateM(model, 0, wx, y, wz);
+        if (yaw != 0f) Matrix.rotateM(model, 0, yaw, 0f, 1f, 0f);
+        Matrix.scaleM(model, 0, sx, sy, sz);
+        drawWorld(cube, 36, 0f, r, g, b);
+    }
+    private void edGroundRect(float cx, float cz, float hx, float hz, float yaw, float y, float t, float r, float g, float b) {
+        edBoxLocal(0, hz, cx, cz, yaw, y, hx * 2f + t, t, t, r, g, b);
+        edBoxLocal(0, -hz, cx, cz, yaw, y, hx * 2f + t, t, t, r, g, b);
+        edBoxLocal(hx, 0, cx, cz, yaw, y, t, t, hz * 2f + t, r, g, b);
+        edBoxLocal(-hx, 0, cx, cz, yaw, y, t, t, hz * 2f + t, r, g, b);
+    }
+    /** Selection footprint (cyan) + placement ghost (green), drawn in the 3D world. */
+    private void drawEditGizmos() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glUniform1f(uWorldUV, 0f);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        float[] b = new float[6];
+        if (selObj >= 0 && selObj < editObjs.size()) {
+            float[] o = editObjs.get(selObj); edObjBounds(o, b);
+            edGroundRect(o[2], o[3], b[3], b[5], o[4], 0.08f, 0.06f, 0.30f, 0.95f, 1f);
+            edGroundRect(o[2], o[3], b[3], b[5], o[4], b[1] * 2f + 0.05f, 0.05f, 0.30f, 0.95f, 1f);
+        }
+        if (armedCat >= 0 && screenRay(width * 0.5f, height * 0.5f, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+            float[] g = {armedCat, armedKind, edHit[0], edHit[2], 0f, armedCat == 1 && armedKind > 0 ? 0.7f : 1f};
+            edObjBounds(g, b);
+            edGroundRect(edHit[0], edHit[2], b[3], b[5], 0f, 0.08f, 0.06f, 0.35f, 1f, 0.55f);
+        }
+    }
+
+    private int[][] edCatKinds(int t) {
+        if (t == 0) return new int[][]{{0,0},{0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},{0,8}};
+        if (t == 1) return new int[][]{{1,0},{1,1},{1,2}};
+        return new int[][]{{2,0},{2,1},{2,2},{2,3},{2,4}};
+    }
+    private boolean edBtn(float cx, float cy, float w, float h, String label, float tsize, boolean active, boolean tapped, float px, float py) {
+        boolean hit = tapped && hitRect(cx, cy, w, h, px, py);
+        drawRoundRect(cx, cy, w, h, Math.min(14f * us, h * 0.3f), active ? 0.15f : 0.11f, active ? 0.33f : 0.13f, active ? 0.46f : 0.185f, 0.95f);
+        if (active) drawRoundRect(cx, cy - h * 0.5f + 2.4f * us, w - 8f * us, 2.4f * us, 1.2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.75f);
+        drawTextCentered(label, cx, cy, tsize, 0.92f, 0.96f, 1f, 1f);
+        return hit;
+    }
+    /** 2D editor UI + all tap dispatch (UI buttons first, then world select). */
+    private void drawEditorHud() {
+        menuPreamble();
+        boolean tapped = input.consumeMenuTap(edTap);
+        float px = edTap[0], py = edTap[1];
+        float topY = 42f * us, bh = 60f * us;
+        drawRectPx(width * 0.5f, topY, width, 88f * us, 0.06f, 0.08f, 0.14f, 0.94f);
+        if (edBtn(130f * us, topY, 210f * us, bh, "FERTIG", 28f, false, tapped, px, py)) { edExit(); return; }
+        drawTextCentered("EDITOR", width * 0.5f, topY, 26f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+        float rx = width - 130f * us;
+        if (edBtn(rx, topY, 230f * us, bh, "SPEICHERN", 26f, false, tapped, px, py)) { saveLevel(true); tapped = false; }
+        if (edBtn(rx - 270f * us, topY, 220f * us, bh, edSnap ? "RASTER AN" : "RASTER AUS", 22f, edSnap, tapped, px, py)) { edSnap = !edSnap; tapped = false; }
+        if (edBtn(rx - 510f * us, topY, 190f * us, bh, "UNDO", 26f, false, tapped, px, py)) { edUndoPop(); tapped = false; }
+
+        String[] cats = {"Moebel", "Pflanzen", "Props"};
+        float catY = topY + 88f * us, catW = 150f * us, catH = 54f * us, catX = 100f * us;
+        for (int i = 0; i < 3; i++) if (edBtn(catX, catY + i * (catH + 8f * us), catW, catH, cats[i], 22f, edCatTab == i, tapped, px, py)) { edCatTab = i; tapped = false; }
+        int[][] kinds = edCatKinds(edCatTab);
+        float kx = catX + 178f * us, kw = 210f * us, kh = 50f * us;
+        for (int i = 0; i < kinds.length; i++) {
+            float cy = catY + i * (kh + 6f * us);
+            boolean armedThis = armedCat == kinds[i][0] && armedKind == kinds[i][1];
+            if (edBtn(kx, cy, kw, kh, edLabel(kinds[i][0], kinds[i][1]), 22f, armedThis, tapped, px, py)) { edArm(kinds[i][0], kinds[i][1]); tapped = false; }
+        }
+
+        if (armedCat >= 0) {
+            drawRectPx(width * 0.5f, height * 0.5f, 3f * us, 36f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);
+            drawRectPx(width * 0.5f, height * 0.5f, 36f * us, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);
+            drawTextCentered("Kamera drehen (1 Finger), dann SETZEN", width * 0.5f, height * 0.5f - 44f * us, 22f, 0.9f, 0.95f, 1f, 0.9f);
+            float pby = height - 58f * us;
+            if (edBtn(width * 0.5f - 140f * us, pby, 230f * us, 76f * us, "X Abbruch", 26f, false, tapped, px, py)) { armedCat = -1; armedKind = -1; tapped = false; }
+            if (edBtn(width * 0.5f + 140f * us, pby, 230f * us, 76f * us, "SETZEN", 28f, true, tapped, px, py)) { edPlaceAtReticle(); tapped = false; }
+        } else if (selObj >= 0 && selObj < editObjs.size()) {
+            float[] o = editObjs.get(selObj);
+            drawTextCentered("Gewaehlt: " + edLabel((int) o[0], (int) o[1]) + "   Groesse " + (Math.round((o[5] <= 0f ? 1f : o[5]) * 10f) / 10f), width * 0.5f, height - 148f * us, 24f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
+            float ty = height - 58f * us, bw = 120f * us, bhh = 76f * us, gap = 8f * us, x = 96f * us;
+            if (edBtn(x, ty, bw, bhh, "< -15", 24f, false, tapped, px, py)) { edRotate(-15f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "+15 >", 24f, false, tapped, px, py)) { edRotate(15f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "90", 24f, false, tapped, px, py)) { edRotate(90f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "kleiner", 22f, false, tapped, px, py)) { edScale(0.9f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "groesser", 21f, false, tapped, px, py)) { edScale(1.1f); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "Kopie", 22f, false, tapped, px, py)) { edDuplicate(); tapped = false; } x += bw + gap;
+            if (edBtn(x, ty, bw, bhh, "Loeschen", 21f, false, tapped, px, py)) { edDelete(); tapped = false; } x += bw + gap;
+        }
+
+        if (tapped && armedCat < 0) selObj = edPickAt(px, py);   // world tap: select / deselect
+
+        if (edToastT > 0f && edToast != null) {
+            float a = Math.min(1f, edToastT);
+            drawRectPx(width * 0.5f, height * 0.32f, measureText(edToast, 26f) + 44f * us, 52f * us, 0.05f, 0.07f, 0.12f, 0.85f * a);
+            drawTextCentered(edToast, width * 0.5f, height * 0.32f, 26f, 1f, 1f, 1f, a);
+        }
+    }
+
     private void tickTimers(float dt) {
         if (muzzleTimer > 0f) muzzleTimer -= dt;
         if (hitTimer > 0f) hitTimer -= dt;
@@ -1710,7 +2223,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float saRate = sprinting ? 4f : 10f;
         sprintAnim += ((sprinting ? 1f : 0f) - sprintAnim) * Math.min(1f, dt * saRate);
         if (sprintAnim < 0.001f) sprintAnim = 0f; else if (sprintAnim > 0.999f) sprintAnim = 1f;
-        input.setMenuMode(state != ST_PLAYING);
+        input.setMenuMode(state == ST_HUB || state == ST_SUMMARY);
+        input.setEditMode(state == ST_EDIT);
     }
 
     private void restart() {
@@ -2679,6 +3193,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawButton(cx, playY, playW, playH, playRad, 0.22f, 0.80f, 0.38f, 1f, true);
         drawSheen(cx, playY, playW, playH, playRad, 3.0f, 0f, 0.22f);
         drawTextCenteredShadow("PLAY", cx, playY, 48f, 1f, 1f, 1f, 1f);
+        // BAUEN / EDITOR entry (bottom-left, aligned with PLAY)
+        float ebW = 236f * us, ebH = 76f * us, ebX = 22f * us + ebW * 0.5f, ebY = playY;
+        if (tapped && hitRect(ebX, ebY, ebW, ebH, tap[0], tap[1])) { edEnter(); return; }
+        drawRoundRect(ebX, ebY, ebW, ebH, ebH * 0.5f, 0.15f, 0.30f, 0.50f, 0.96f);
+        drawRoundRect(ebX, ebY - ebH * 0.5f + 2.6f * us, ebW - 2f * ebH * 0.5f, 2.6f * us, 1.3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
+        drawTextCentered("BAUEN", ebX, ebY, 30f, 0.92f, 0.97f, 1f, 1f);
         drawText("BUILD " + buildNumber, 18f * us, height - 16f * us, 13f, 0.45f, 0.5f, 0.58f, 0.65f);
         if (highScore > 0) drawTextRight("BEST SCORE  " + highScore, width - 18f * us, height - 16f * us, 14f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.7f);
 
@@ -3983,10 +4503,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             java.util.List<float[]> roadList = new java.util.ArrayList<float[]>();
             java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
             java.util.List<float[]> furns = new java.util.ArrayList<float[]>();
+            StringBuilder sceneSb = new StringBuilder();        // scenery lines kept verbatim on save (all but FU/T)
+            StringBuilder rawSb = new StringBuilder();          // the whole file (for the H/R custom-level path)
             br = new java.io.BufferedReader(new java.io.FileReader(f));
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
+                if (line.length() > 0) { rawSb.append(line).append('\n');
+                    if (!line.startsWith("FU ") && !line.startsWith("T ")) sceneSb.append(line).append('\n'); }
                 if (line.length() == 0 || line.charAt(0) == '#') continue;
                 String[] t = line.split("\\s+");
                 if (t[0].equals("SET") && t.length >= 2) {
@@ -4036,11 +4560,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     }
                 }
             }
+            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty() && furns.isEmpty()) return false;
+            // No houses/roads = an "overlay" save on top of the procedural town: build that base, then load
+            // the file's furniture + plants as the EDITABLE overlay (so an in-game save round-trips + re-edits).
+            if (hs.isEmpty() && roadList.isEmpty()) {
+                buildWorldInto(L, doors, houses);                  // procedural scenery (keeps its own trees/furniture)
+                for (float[] fu : furns) editObjs.add(new float[]{0f, fu[0], fu[1], fu[2], fu[3], fu[4]});
+                for (float[] t : trees) editObjs.add(new float[]{1f, (t.length > 3 ? t[3] : 0f), t[0], t[1], (t.length > 4 ? t[4] : 0f), (t.length > 2 ? t[2] : 1f)});
+                for (float[] p : props) L.add(p);                  // arbitrary boxes stay as (non-editable) base scenery
+                this.baseLevelText = sceneSb.toString();
+                return true;
+            }
+            // A full custom level (has houses/roads): build it as before; FU/T/B bake into the base.
             this.roadSegs = roadList.isEmpty() ? null : roadList.toArray(new float[0][]);
             this.hasCustomRoads = this.roadSegs != null;
             this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
             this.customFurniture = furns.isEmpty() ? null : furns;
-            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty() && furns.isEmpty()) return false;
+            this.baseLevelText = rawSb.toString();
             for (float[] p : props) L.add(p);                       // props first -> they get the shadow blobs
             numCover = Math.min(COVER_BOXES, props.size());
             for (float[] hh : hs) {

@@ -33,8 +33,16 @@ public class FpsGLSurfaceView extends GLSurfaceView {
         setRenderMode(RENDERMODE_CONTINUOUSLY);
     }
 
+    // --- editor touch tracking ---
+    private int edTapId = -1;
+    private float edDownX, edDownY;
+    private long edDownTime;
+    private boolean edMoved;
+    private static final float EDIT_TAP_SLOP = 26f;   // px travel under which a press counts as a tap
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        if (input.isEditMode()) { handleEditTouch(e); return true; }
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
@@ -83,6 +91,54 @@ public class FpsGLSurfaceView extends GLSurfaceView {
             }
         }
         return true;
+    }
+
+    /** Editor mode: publish the live pointer set (up to 2) every event, and turn a clean short press into a tap. */
+    private void handleEditTouch(MotionEvent e) {
+        int action = e.getActionMasked();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+                edTapId = e.getPointerId(0);
+                edDownX = e.getX(0); edDownY = e.getY(0);
+                edDownTime = e.getEventTime(); edMoved = false;
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                edMoved = true;   // a second finger arrived -> this is a camera gesture, not a tap
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (edTapId != -1) {
+                    int idx = e.findPointerIndex(edTapId);
+                    if (idx >= 0) {
+                        float dx = e.getX(idx) - edDownX, dy = e.getY(idx) - edDownY;
+                        if (dx * dx + dy * dy > EDIT_TAP_SLOP * EDIT_TAP_SLOP) edMoved = true;
+                    }
+                }
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+                edMoved = true;   // finger count dropping mid-gesture -> not a tap
+                break;
+            case MotionEvent.ACTION_UP:
+                if (edTapId != -1 && !edMoved && (e.getEventTime() - edDownTime) < 260) {
+                    input.requestMenuTap(edDownX, edDownY);   // a clean tap: routed to UI / select
+                }
+                edTapId = -1;
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                edTapId = -1; edMoved = true;
+                break;
+        }
+        // publish the live pointer set (excluding a pointer that is lifting this event)
+        int leavingIdx = (action == MotionEvent.ACTION_POINTER_UP) ? e.getActionIndex() : -1;
+        boolean allUp = (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL);
+        float ax = 0, ay = 0, bx = 0, by = 0; int n = 0;
+        if (!allUp) {
+            for (int i = 0; i < e.getPointerCount() && n < 2; i++) {
+                if (i == leavingIdx) continue;
+                if (n == 0) { ax = e.getX(i); ay = e.getY(i); } else { bx = e.getX(i); by = e.getY(i); }
+                n++;
+            }
+        }
+        input.setEditPointers(n, ax, ay, bx, by);
     }
 
     private void releasePointer(int pid) {
