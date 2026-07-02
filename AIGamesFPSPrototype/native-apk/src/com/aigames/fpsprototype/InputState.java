@@ -166,6 +166,12 @@ public class InputState {
     public synchronized void setEditMode(boolean v) { editMode = v; }
     public synchronized boolean isEditMode() { return editMode; }
 
+    // Peaceful first-person SANDBOX build mode: gameplay move/look stay active, but the view routes only the
+    // top toolbar strip to menu-taps (published by the renderer, read by the view).
+    private boolean sandboxMode;
+    public synchronized void setSandboxMode(boolean v) { sandboxMode = v; }
+    public synchronized boolean isSandboxMode() { return sandboxMode; }
+
     // The renderer publishes the vertical band (screen px) that is clear of editor UI (top bar/palette
     // above, action bar/hint below); the view only lets a finger become the move stick inside this band,
     // so a press on a button is never swallowed by the stick.

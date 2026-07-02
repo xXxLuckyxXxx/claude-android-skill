@@ -60,6 +60,10 @@ public class FpsGLSurfaceView extends GLSurfaceView {
                     break;
                 }
                 int idx = e.getActionIndex();
+                if (input.isSandboxMode() && e.getY(idx) < getHeight() * 0.20f) {   // sandbox: top toolbar strip -> menu tap
+                    input.requestMenuTap(e.getX(idx), e.getY(idx));
+                    break;
+                }
                 assign(e.getPointerId(idx), e.getX(idx), e.getY(idx));
                 break;
             }
@@ -227,6 +231,13 @@ public class FpsGLSurfaceView extends GLSurfaceView {
 
     private void assign(int pid, float x, float y) {
         int w = getWidth(), h = getHeight();
+
+        if (input.isSandboxMode()) {            // sandbox: no combat buttons — just move (left half) / look (right half)
+            boolean lh = x < w * 0.5f;
+            if (lh && movePointerId == -1) { movePointerId = pid; updateMove(x, y); }
+            else if (!lh && lookPointerId == -1) { lookPointerId = pid; lookLastX = x; lookLastY = y; }
+            return;
+        }
 
         // Menu button (top-right): one tap returns to the hub/main menu (aborts the run).
         float mdx = x - Hud.menuCx(w), mdy = y - Hud.menuCy(h);
