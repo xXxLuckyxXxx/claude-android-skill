@@ -122,6 +122,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float SHADOW_AZI = (float) Math.toDegrees(Math.atan2(LDX, LDZ));  // sun ground azimuth -> cast-shadow direction
 
     private final float[] shotO = new float[3], shotD = new float[3];   // scratch for yaw-aware hitscan
+    private float gunFlashAdd = 0f;   // warm light the muzzle flash throws onto the viewmodel this frame
     private final InputState input;
     private final int buildNumber;
     private final SharedPreferences prefs;
@@ -560,13 +561,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         terrainTex = uploadTexture(makeTerrainBitmap());
 
         cityGround = makeBuffer(makeFlatQuad(35f, 0.02f));
-        // The city-ground bitmap is authored at 1536px (not a power of two). GLES2 core only supports NPOT
-        // textures with CLAMP + no mipmaps, but uploadTexture generates mipmaps + REPEAT — on strict drivers
-        // (e.g. Mali-400) the texture is incomplete and samples BLACK. Rescale to POT before upload.
-        Bitmap cityRaw = makeCityBitmap();
-        Bitmap cityPot = Bitmap.createScaledBitmap(cityRaw, 2048, 2048, true);
-        if (cityPot != cityRaw) cityRaw.recycle();
-        cityTex = uploadTexture(cityPot);
+        // Authored natively at 2048 (POT): safe for mipmaps+REPEAT on strict GLES2 drivers, and every kerb
+        // line / dash / joint stays pixel-crisp (the old 1536 bitmap needed a blurring POT rescale here).
+        cityTex = uploadTexture(makeCityBitmap());
         roadTex = uploadTexture(makeRoadBitmap());
         if (hasCustomRoads) roadMesh = makeBuffer(makeRoadMesh());   // custom streets replace the default grid
 
@@ -685,17 +682,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
+        // Weather ground grade: rain DARKENS the ground (wet albedo -- asphalt hardest, grass less, blue kept
+        // higher so it reads cool-wet not muddy); snow FROSTS everything toward white. Both crossfade with
+        // the weather (wRain/wSnow) and are zero on clear days and in the editor.
+        float wetG = 1f - 0.30f * wRain, wetGB = 1f - 0.22f * wRain;
+        float wetA = 1f - 0.42f * wRain, wetAB = 1f - 0.33f * wRain;
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, terrainTex);
         Matrix.setIdentityM(model, 0);
-        drawWorld(terrain, terrainVerts, 0f, ground[0], ground[1], ground[2]);
+        drawWorld(terrain, terrainVerts, 0f,
+                ground[0] * wetG + (1.05f - ground[0]) * 0.55f * wSnow,
+                ground[1] * wetG + (1.05f - ground[1]) * 0.55f * wSnow,
+                ground[2] * wetGB + (1.05f - ground[2]) * 0.55f * wSnow);
 
         if (hasCustomRoads) {                                  // level-defined streets replace the default grid
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roadTex);
-            if (roadGroups != null) for (float[] gp : roadGroups) drawWorldRange(roadMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
-            else drawWorld(roadMesh, roadVerts, 0f, 1f, 1f, 1f);
+            if (roadGroups != null) for (float[] gp : roadGroups) drawWorldRange(roadMesh, (int) gp[0], (int) gp[1], 0f,
+                    gp[2] * wetA + (0.90f - gp[2]) * 0.30f * wSnow,
+                    gp[3] * wetA + (0.90f - gp[3]) * 0.30f * wSnow,
+                    gp[4] * wetAB + (0.90f - gp[4]) * 0.30f * wSnow);
+            else drawWorld(roadMesh, roadVerts, 0f, wetA, wetA, wetAB);
         } else {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cityTex);   // streets + sidewalks over the flat core
-            drawWorld(cityGround, 6, 0f, 1f, 1f, 1f);
+            drawWorld(cityGround, 6, 0f, wetA - 0.03f * wSnow, wetA - 0.03f * wSnow, wetAB - 0.03f * wSnow);
         }
 
         if (editDirty) rebuildOverlay();                       // editor: rebake overlay colliders + plant mesh (GL thread)
@@ -727,20 +735,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // Plaster (mat 0) carries its own pastel colour; deepen it a touch so light facades read richer,
             // not washed-out next to the textured brick/stone walls. Brick/stone/timber stay white x texture.
             float cr = mat == 0 ? b[6] * 0.87f : 1f, cg = mat == 0 ? b[7] * 0.87f : 1f, cb = mat == 0 ? b[8] * 0.87f : 1f;
+            if (mat == 4) { cr *= wetA; cg *= wetA; cb *= wetAB; }   // gravel paths darken in the rain too
             drawWorld(cube, 36, 0f, cr * boost, cg * boost, cb * boost);
         }
         GLES20.glUniform1f(uWorldUV, 0f);                      // restore mesh UVs for roofs/windows/bands/interiors
 
         Matrix.setIdentityM(model, 0);                         // pitched roofs + windows (baked, world-space)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);    // neutral-grey shingle; per-house colour via uColor
+        float sf = 0.75f * wSnow;                              // snow dusts the rooftops white during the SCHNEE phase
         if (roofGroups != null) {
-            for (float[] gp : roofGroups) drawWorldRange(roofMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+            for (float[] gp : roofGroups) drawWorldRange(roofMesh, (int) gp[0], (int) gp[1], 0f,
+                    gp[2] + (1.25f - gp[2]) * sf, gp[3] + (1.30f - gp[3]) * sf, gp[4] + (1.40f - gp[4]) * sf);
         } else {
-            drawWorld(roofMesh, roofVerts, 0f, 0.69f, 0.31f, 0.16f);
+            drawWorld(roofMesh, roofVerts, 0f, 0.69f + 0.56f * sf, 0.31f + 0.99f * sf, 0.16f + 1.24f * sf);
         }
+        // Cozy inhabited rooms: the dark interior behind every pane glows warm amber exactly when the sky
+        // turns grey (rain/fog/snow) -- tungsten ratio, crossfading with the weather.
+        float cozy = 1f + 0.55f * wOvercast;
         if (revealVerts > 0) {                                 // dark recessed interior behind each pane, drawn first so it shows through the glass
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winBackTex);
-            drawWorld(revealMesh, revealVerts, 0f, 1f, 1f, 1f);
+            drawWorld(revealMesh, revealVerts, 0f, cozy, cozy * 0.93f, cozy * 0.80f);
         }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
         GLES20.glEnable(GLES20.GL_BLEND);                       // glass panes: reflective + slightly see-through
@@ -768,11 +782,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (!edDraggingHouse) {
             if (ovRoofGroups != null && edInsideHouse < 0) {   // hide the roof while looking inside a house from above
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, roofTex);
-                for (float[] gp : ovRoofGroups) drawWorldRange(ovRoofMesh, (int) gp[0], (int) gp[1], 0f, gp[2], gp[3], gp[4]);
+                for (float[] gp : ovRoofGroups) drawWorldRange(ovRoofMesh, (int) gp[0], (int) gp[1], 0f,
+                        gp[2] + (1.25f - gp[2]) * sf, gp[3] + (1.30f - gp[3]) * sf, gp[4] + (1.40f - gp[4]) * sf);
             }
             if (ovRevealVerts > 0) {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winBackTex);
-                drawWorld(ovRevealMesh, ovRevealVerts, 0f, 1f, 1f, 1f);
+                drawWorld(ovRevealMesh, ovRevealVerts, 0f, cozy, cozy * 0.93f, cozy * 0.80f);
             }
             if (ovWinGroups != null) {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);
@@ -1011,7 +1026,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void spawnDeathBurst(float ex, float ez, float scale, int outfit) {
         float[] o = OUTFITS[outfit];
         float groundY = terrainH(ex, ez);
-        int count = Math.round(26 * scale);
+        int count = Math.round(34 * scale);
         for (int n = 0; n < count; n++) {
             int i = pNext;
             pNext = (pNext + 1) % MAX_PARTICLES;
@@ -1022,10 +1037,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             pZ[i] = ez + oz;
             pVX[i] = ox * 5f + (rng.nextFloat() - 0.5f) * 2.2f;       // burst outward
             pVZ[i] = oz * 5f + (rng.nextFloat() - 0.5f) * 2.2f;
-            pVY[i] = 2.4f + rng.nextFloat() * 3.6f;                   // pop up
-            int c = rng.nextInt(3);
+            pVY[i] = 2.9f + rng.nextFloat() * 4.0f;                   // pop up (taller launch = juicier burst)
+            int c = rng.nextInt(4);
             if (c == 0)      { pR[i] = o[0]; pG[i] = o[1]; pB[i] = o[2]; }   // shirt
             else if (c == 1) { pR[i] = o[3]; pG[i] = o[4]; pB[i] = o[5]; }   // pants
+            else if (c == 3) { pR[i] = 1f; pG[i] = 0.90f; pB[i] = 0.45f; }   // hot ember garnish
             else             { pR[i] = 0.97f; pG[i] = 0.83f; pB[i] = 0.30f; } // yellow head
             pSize[i] = (0.05f + rng.nextFloat() * 0.045f) * scale;
             pMaxLife[i] = 0.55f + rng.nextFloat() * 0.45f;
@@ -1051,6 +1067,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             pSize[i] = 0.035f + rng.nextFloat() * 0.03f;
             pMaxLife[i] = 0.22f + rng.nextFloat() * 0.2f;
             pLife[i] = pMaxLife[i];
+            if (n < 2) {                                             // two brief white-hot flecks give the impact its snap
+                pR[i] = 1f; pG[i] = 0.97f; pB[i] = 0.82f;
+                pMaxLife[i] = 0.12f; pLife[i] = 0.12f;
+            }
         }
     }
 
@@ -1139,17 +1159,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDepthMask(false);                             // flakes/streaks don't occlude pickups or each other
         int active = (int) (MAX_WX * inten);
         float br = 0.7f + 0.6f * inten;
+        if (rainy) {                                           // rain: additive translucent streaks (glint on dark
+            GLES20.glEnable(GLES20.GL_BLEND);                  //  facades, melt into the bright sky -- like real rain)
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
+        }
         for (int i = 0; i < active; i++) {
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, wxX[i], wxY[i], wxZ[i]);
             if (rainy) {
-                Matrix.scaleM(model, 0, 0.015f, 0.5f, 0.015f);
-                drawWorld(cube, 36, 3f, 0.60f * br, 0.70f * br, 0.95f * br);     // cool rain streak
+                // tilt each streak to match its actual motion vector (wind 1.6,1.0 vs fall 17 -> 6.3 deg)
+                Matrix.rotateM(model, 0, 6.3f, 0.53f, 0f, -0.848f);
+                float len = 0.35f + 0.05f * wxP[i];            // per-drop length jitter (wxP holds 0..6.28)
+                Matrix.scaleM(model, 0, 0.012f, len, 0.012f);
+                drawWorld(cube, 36, 4f, 0.14f * br, 0.16f * br, 0.20f * br);     // flat emissive, adds ~0.2 luminance
             } else {
                 Matrix.scaleM(model, 0, 0.07f, 0.07f, 0.07f);
                 drawWorld(cube, 36, 3f, 0.95f * br, 0.96f * br, 1.0f * br);      // white snowflake
             }
         }
+        if (rainy) GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glDepthMask(true);
     }
 
@@ -1162,8 +1190,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float s = pSize[i] * (0.35f + 0.65f * lf);        // shrink as it dies
             Matrix.setIdentityM(model, 0);
             Matrix.translateM(model, 0, pX[i], pY[i], pZ[i]);
+            Matrix.rotateM(model, 0, pLife[i] * 430f + i * 61f, 0.42f, 1f, 0.31f);   // tumble as it flies
             Matrix.scaleM(model, 0, s, s, s);
-            float boost = lf > 0.8f ? 1.6f : 1f;              // brief bright pop on spawn
+            float boost = 1f + 1.5f * Math.max(0f, (lf - 0.65f) / 0.35f);   // smooth spawn flash (was a hard step)
             drawWorld(cube, 36, 3f, pR[i] * boost, pG[i] * boost, pB[i] * boost);
         }
     }
@@ -1284,6 +1313,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, paR, paG, paB); // leg R
             enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, shR, shG, shB); // arm L
             enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, shR, shG, shB); // arm R
+            // two-tone limbs: dark boots + skin-tone hands, welded to the same pivots/swing so they track
+            // the walk cycle, colours derived from the blended shirt/pants/head values so hurt-flash and
+            // the red attack telegraph propagate automatically.
+            enemyLimb(-0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f,  sw * 26f, paR * 0.42f, paG * 0.38f, paB * 0.34f); // boot L
+            enemyLimb( 0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f, -sw * 26f, paR * 0.42f, paG * 0.38f, paB * 0.34f); // boot R
+            enemyLimb(-0.33f, 1.30f, 0f, 0.545f, 0.135f, 0.11f, 0.17f, -sw * 22f, hdR, hdG, hdB); // hand L
+            enemyLimb( 0.33f, 1.30f, 0f, 0.545f, 0.135f, 0.11f, 0.17f,  sw * 22f, hdR, hdG, hdB); // hand R
         }
     }
 
@@ -1511,6 +1547,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.rotateM(gunBase, 0, -8f * (1f - a) + 24f * s, 0f, 1f, 0f);
         Matrix.rotateM(gunBase, 0, 26f * s, 0f, 0f, 1f);       // cant across the body when sprinting
 
+        // While the muzzle flash burns, the whole viewmodel catches a warm light kiss that decays with it
+        // (clamped: the shotgun starts its timer at 1.6x MUZZLE_TIME).
+        gunFlashAdd = muzzleTimer > 0f ? 0.28f * Math.min(1f, muzzleTimer / MUZZLE_TIME) : 0f;
+
         float mz;
         if (curWeapon == 0) mz = drawPistol();
         else if (curWeapon == 1) mz = drawRifle();
@@ -1630,7 +1670,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.scaleM(partM, 0, s, s, s);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        submit(cube, 36, mvp, tmpA, 4f, 2.8f * k, 2.3f * k, 1.3f * k);
+        submit(cube, 36, mvp, tmpA, 4f, 3.4f * k, 3.0f * k, 2.0f * k);   // white-hot core (mode 4 clamps safely)
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE);
         GLES20.glDepthMask(false);
@@ -1640,7 +1680,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.scaleM(partM, 0, gs, gs, gs);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        submit(sphere, sphereVerts, mvp, tmpA, 4f, 0.9f * k, 0.6f * k, 0.25f * k);
+        submit(sphere, sphereVerts, mvp, tmpA, 4f, 1.15f * k, 0.72f * k, 0.30f * k);
+        // rotating 4-point star inside the additive block: the classic flickering muzzle-gas flash
+        for (int fl = 0; fl < 2; fl++) {
+            Matrix.setIdentityM(partM, 0);
+            Matrix.translateM(partM, 0, 0f, 0.02f, mz);
+            Matrix.rotateM(partM, 0, fl * 90f + 45f + (timeAcc * 700f) % 90f, 0f, 0f, 1f);
+            Matrix.scaleM(partM, 0, (0.30f + 0.18f * k) * scaleMul, 0.016f * scaleMul, 0.016f * scaleMul);
+            Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
+            Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
+            submit(cube, 36, mvp, tmpA, 4f, 1.9f * k, 1.4f * k, 0.55f * k);
+        }
         GLES20.glDepthMask(true);
         GLES20.glDisable(GLES20.GL_BLEND);
     }
@@ -1652,7 +1702,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        submit(cube, 36, mvp, tmpA, 3f, r, g, b);
+        submit(cube, 36, mvp, tmpA, 3f, r + gunFlashAdd, g + gunFlashAdd * 0.70f, b + gunFlashAdd * 0.35f);
     }
 
     /** Like gunPart but pitched about its X axis (for raked grips, angled/curved magazines, stocks). */
@@ -1664,7 +1714,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.scaleM(partM, 0, sx, sy, sz);
         Matrix.multiplyMM(tmpA, 0, gunBase, 0, partM, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmpA, 0);
-        submit(cube, 36, mvp, tmpA, 3f, r, g, b);
+        submit(cube, 36, mvp, tmpA, 3f, r + gunFlashAdd, g + gunFlashAdd * 0.70f, b + gunFlashAdd * 0.35f);
     }
 
     private void updateCamera(float dt) {
@@ -3376,7 +3426,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float cx = ox + LDX * s * 0.5f, cz = oz + LDZ * s * 0.5f;   // centre the oval midway between base and tip
         float halfLen = baseR + 0.28f * oy;                     // stretched along the sun azimuth (longer for taller objects)
         float halfWid = baseR * 0.9f;                           // a touch narrower across -> reads as a cast shadow, not a pool
-        float alpha = 0.6f / (1f + s * 0.18f);
+        // 0.45 base: the smoothstep penumbra shader has a denser core than the old linear tent. Overcast melts
+        // the directional shadow toward faint contact-AO (no sun = no hard shadow), and fog fades shadows with
+        // the same curve their casters fade, so they stop popping through the haze.
+        float alpha = 0.45f / (1f + s * 0.18f);
+        alpha *= 1f - 0.55f * wOvercast;
+        float dCam = (float) Math.sqrt((cx - px) * (cx - px) + (cz - pz) * (cz - pz));
+        alpha *= 1f - Math.max(0f, Math.min(0.82f, (dCam - effFogStart) / Math.max(effFogEnd - effFogStart, 0.001f)));
         Matrix.setIdentityM(model, 0);
         Matrix.translateM(model, 0, cx, groundY + 0.02f, cz);
         Matrix.rotateM(model, 0, SHADOW_AZI, 0f, 1f, 0f);       // local +Z runs along the sun azimuth
@@ -5076,8 +5132,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float trunkH = (1.1f + r.nextFloat() * 0.6f) * scale, tw = 0.18f * scale;
         o = vBox(d, o, x, by + trunkH * 0.5f, z, tw, trunkH, tw, uTrunk);
         o = vBox(d, o, x, by + trunkH * 0.88f, z, tw * 0.78f, trunkH * 0.5f, tw * 0.78f, uTrunk);
+        o = vBox(d, o, x, by + 0.07f, z, tw * 1.8f, 0.14f, tw * 1.8f, uTrunk);   // root collar grounds the trunk
         float cy = by + trunkH + 0.30f * scale, crad = (0.9f + r.nextFloat() * 0.5f) * scale;
         if (detail) {
+            // dark under-canopy mass FIRST so the lighter core/lobes overdraw its top -- only the shaded
+            // underside/skirt stays visible, which makes the blob foliage read as a volume
+            o = vBox(d, o, x, cy - crad * 0.60f, z, crad * 1.15f, crad * 0.45f, crad * 1.15f, cell(0));
             o = vBox(d, o, x, cy, z, crad * 1.4f, crad * 1.3f, crad * 1.4f, gA);     // crown core
             int lobes = 10 + r.nextInt(5);
             for (int l = 0; l < lobes; l++) {
@@ -5086,6 +5146,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 o = vBox(d, o, x + (float) Math.cos(la) * lr, ly, z + (float) Math.sin(la) * lr, s, s, s, r.nextBoolean() ? gA : gB);
             }
         } else {                                                                     // distant: a few big lobes
+            o = vBox(d, o, x, cy - crad * 0.55f, z, crad * 1.35f, crad * 0.5f, crad * 1.35f, cell(0));   // shaded underside
             o = vBox(d, o, x, cy, z, crad * 1.7f, crad * 1.5f, crad * 1.7f, gA);
             o = vBox(d, o, x + crad * 0.5f, cy + crad * 0.3f, z, crad * 1.1f, crad * 1.1f, crad * 1.1f, gB);
             o = vBox(d, o, x - crad * 0.4f, cy + crad * 0.2f, z + crad * 0.4f, crad * 1.1f, crad * 1.1f, crad * 1.1f, gA);
@@ -5162,44 +5223,93 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static Bitmap makeRoadBitmap() {
-        int N = 128;
+        int N = 512;                                        // was 128 across a full 3.4 m carriageway (smeared grey)
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         c.drawColor(0xFF4A4D50);                            // asphalt
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(91);
-        for (int k = 0; k < 700; k++) {                     // grain
+        for (int k = 0; k < 11000; k++) {                   // fine grain
             int v = rnd.nextInt(26), s = 0x42 + v;
             p.setColor((0x44 << 24) | (s << 16) | (s << 8) | s);
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
+        for (int k = 0; k < 2600; k++) {                    // coarse aggregate: light stone flecks
+            int s = 0x52 + rnd.nextInt(0x2E);
+            p.setColor((0x30 << 24) | (s << 16) | (s << 8) | (s + 4));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 0.8f + rnd.nextFloat() * 1.6f, p);
+        }
+        p.setColor(0x28000000);                             // dark pores between the aggregate
+        for (int k = 0; k < 900; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 0.7f + rnd.nextFloat() * 1.4f, p);
         p.setColor(0xFFB9B2A6);                              // light kerb borders along both long edges (U)
         c.drawRect(0, 0, N * 0.09f, N, p);
         c.drawRect(N * 0.91f, 0, N, N, p);
+        p.setColor(0x30000000);                              // kerb joints at exact N/8 pitch (wraps in V)
+        for (float y = 0; y < N; y += N / 8f) { c.drawRect(0, y, N * 0.09f, y + 2f, p); c.drawRect(N * 0.91f, y, N, y + 2f, p); }
         p.setColor(0xFFE8C23A);                              // dashed yellow centre line (tiles along V)
         for (float y = 0; y < N; y += N / 4f) c.drawRect(N * 0.47f, y, N * 0.53f, y + N / 8f, p);
+        // wheel-track wear: three nested translucent full-height bands per track = a soft profile that tiles
+        // perfectly in V. Lane centres sit at u 0.30/0.70, tracks at 0.195/0.405/0.595/0.805. Drawn after the
+        // paint so the dashes weather too.
+        for (float t : new float[]{0.195f, 0.405f, 0.595f, 0.805f})
+            for (int L = 0; L < 3; L++) {
+                float w = N * (0.045f - 0.012f * L);
+                p.setColor(0x12000000);
+                c.drawRect(t * N - w, 0, t * N + w, N, p);
+            }
+        Paint tar = new Paint(Paint.ANTI_ALIAS_FLAG);        // meandering tar crack lines, wrap-drawn in V
+        tar.setStyle(Paint.Style.STROKE); tar.setStrokeWidth(N / 200f); tar.setColor(0x9C232527);
+        for (int k = 0; k < 7; k++) {
+            float x = N * (0.12f + 0.76f * rnd.nextFloat()), y = rnd.nextInt(N);
+            for (int s = 0; s < 4; s++) {
+                float x2 = x + (rnd.nextFloat() - 0.5f) * N * 0.06f, y2 = y + N * 0.05f + rnd.nextFloat() * N * 0.06f;
+                for (int off = -N; off <= N; off += N) c.drawLine(x, y + off, x2, y2 + off, tar);
+                x = x2; y = y2;
+            }
+        }
         return b;
     }
 
     /** Top-down city ground: concrete blocks, asphalt streets with sidewalk borders + lane dashes. */
     private static Bitmap makeCityBitmap() {
-        int N = 1536;
+        int N = 2048;                                      // authored natively at POT: crisp kerbs/dashes, no resample
         float half = 35f;
         Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
         c.drawColor(0xFF3C6E24);                           // lawn / grass base
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(31);
-        for (int k = 0; k < 420; k++) {                    // mottled green so the lawn isn't flat
+        for (int k = 0; k < 750; k++) {                    // mottled green so the lawn isn't flat
             int g = rnd.nextInt(3);
             int col = g == 0 ? 0x2E6B1F : (g == 1 ? 0x4A8E2A : 0x356016);
             p.setColor(0x66000000 | col);
-            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 9 + rnd.nextInt(48), p);
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 12 + rnd.nextInt(64), p);
         }
         for (float r : STREETS) {                          // sidewalk slabs (light concrete)
             cityBand(c, p, r, WALK_OUT, half, N, true, 0xFFB3B5A8);
             cityBand(c, p, r, WALK_OUT, half, N, false, 0xFFB3B5A8);
+        }
+        // Sidewalk expansion joints + per-slab tone drift (real pavements are ~1.4 m slab rows, not one flat
+        // band). Drawn BEFORE the kerb/asphalt loops, which repaint every intersection zone over them.
+        {
+            Random jr = new Random(77); float inner = ROAD_HALF + 0.12f;
+            for (float r : STREETS) for (int side = -1; side <= 1; side += 2) {
+                float p0 = (r + side * inner + half) / (2f * half) * N, p1 = (r + side * WALK_OUT + half) / (2f * half) * N;
+                float a = Math.min(p0, p1), b2 = Math.max(p0, p1);
+                for (int vert = 0; vert < 2; vert++)
+                    for (float t = -half; t < half; t += 1.4f) {
+                        float t0 = (t + half) / (2f * half) * N;
+                        int tone = jr.nextInt(3);
+                        if (tone != 1) {
+                            float t1 = (t + 1.4f + half) / (2f * half) * N;
+                            p.setColor(tone == 0 ? 0x12000000 : 0x10FFFFFF);
+                            if (vert == 1) c.drawRect(a, t0, b2, t1, p); else c.drawRect(t0, a, t1, b2, p);
+                        }
+                        p.setColor(0x38000000);            // the joint itself
+                        if (vert == 1) c.drawRect(a, t0, b2, t0 + 1.5f, p); else c.drawRect(t0, a, t0 + 1.5f, b2, p);
+                    }
+            }
         }
         for (float r : STREETS) {                          // dark kerb line at the sidewalk/road edge
             cityBand(c, p, r, ROAD_HALF + 0.12f, half, N, true, 0xFF82847A);
@@ -5222,10 +5332,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int col = bed[rnd.nextInt(bed.length)];
             for (int j = 0; j < 9; j++) {
                 p.setColor(0xCC000000 | col);
-                c.drawCircle(wx + rnd.nextInt(24) - 12, wy + rnd.nextInt(24) - 12, 2 + rnd.nextInt(3), p);
+                c.drawCircle(wx + rnd.nextInt(32) - 16, wy + rnd.nextInt(32) - 16, 3 + rnd.nextInt(4), p);
             }
         }
-        for (int k = 0; k < 4200; k++) {                   // fine grass grain
+        for (int k = 0; k < 7500; k++) {                   // fine grass grain
             int v = rnd.nextInt(40);
             p.setColor((0x22 << 24) | ((0x22 + v) << 16) | ((0x44 + v) << 8) | (0x18 + v / 2));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
@@ -5243,7 +5353,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static void cityDashes(Canvas c, Paint p, float center, float half, int N, boolean vertical) {
-        float cpx = (center + half) / (2f * half) * N, w = 3f, dash = N / 50f;
+        float cpx = (center + half) / (2f * half) * N, w = 4f, dash = N / 50f;
         for (float t = 0; t < N; t += dash * 2f) {
             if (vertical) c.drawRect(cpx - w, t, cpx + w, t + dash, p);
             else c.drawRect(t, cpx - w, t + dash, cpx + w, p);
@@ -5819,6 +5929,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float fcx = dcx + nnx * (t * 0.5f - 0.02f);
             L.add(new float[]{fcx, 0.015f, dcz, t + 0.06f, 0.03f, doorW + jb * 2f, 0.55f, 0.53f, 0.49f}); // flush low doorstep
         }
+        // wooden door canopy over non-shop entrances: a flat slab projecting over the doorway in a darkened
+        // door colour. Collision-safe: with the default 2.3 m door its underside sits at ~2.5 m, above the
+        // 1.8 m overhead-ignore band of collide(); the 1.95 gate skips only extreme low-door custom levels.
+        float canY = Math.min(doorH + 0.26f, h - 0.12f), canProj = 0.55f;
+        if (doorStyle != 3 && canY - 0.05f > 1.95f) {
+            if (axis == 0) L.add(new float[]{dcx, canY, dcz + nnz * (t * 0.5f + canProj * 0.5f), doorW + 0.5f, 0.09f, canProj, dr * 0.72f, dg * 0.72f, db * 0.72f, 0f});
+            else           L.add(new float[]{dcx + nnx * (t * 0.5f + canProj * 0.5f), canY, dcz, canProj, 0.09f, doorW + 0.5f, dr * 0.72f, dg * 0.72f, db * 0.72f, 0f});
+        }
         if (doorStyle == 3) {                              // striped shop awning over the storefront door
             float awY = Math.min(doorH + 0.22f, h - 0.15f), aw = doorW + 0.5f, proj = 0.85f;
             for (int s = 0; s < 3; s++) {
@@ -5835,6 +5953,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean chim = chimney < 0 ? (roofStyle != 0) : (chimney != 0);
         if (chim) {                                        // brick chimney poking clearly above the gable ridge
             L.add(new float[]{cx + w * 0.28f, h + 1.5f, cz - d * 0.28f, 0.34f, 2.2f, 0.34f, 0.55f, 0.30f, 0.22f, 0f, 0f, 1f}); // brick chimney
+            // crown slab + clay pot: the textbook chimney silhouette. Both sit 2.6 m+ above the roofline,
+            // far inside collide()'s overhead-ignore band -- zero collision change.
+            L.add(new float[]{cx + w * 0.28f, h + 2.66f, cz - d * 0.28f, 0.46f, 0.12f, 0.46f, 0.60f, 0.58f, 0.54f, 0f});
+            L.add(new float[]{cx + w * 0.28f, h + 2.81f, cz - d * 0.28f, 0.18f, 0.20f, 0.18f, 0.26f, 0.21f, 0.18f, 0f});
         }
         if (yaw != 0f) {                                   // spin every box + the door of THIS house about (cx,cz)
             for (int i = boxStart; i < L.size(); i++) rotateBoxAbout(L, i, cx, cz, yaw);
@@ -5911,7 +6033,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Baked pitched gable roof over every house (one draw call). */
     private float[] makeRoofMesh() {
-        float[] d = new float[houseRects.size() * 6 * 3 * 8 + 64];
+        // 6 tris + 3 box6 (ridge cap + 2 eave fascias) per house
+        float[] d = new float[houseRects.size() * (6 * 3 + 3 * 36) * 8 + 64];
         int o = 0, gi = 0;
         roofGroups = new float[houseRects.size()][];
         for (float[] hh : houseRects) {
@@ -5947,6 +6070,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = tri(d, o, R1, F2, F1, 0f, hd * inv, -rh * inv);
             o = tri(d, o, R2, E2, F2, 1f, 0f, 0f);
             o = tri(d, o, R1, F1, E1, -1f, 0f, 0f);
+            // roof-edge package: a slim ridge cap along the peak + fascia boards under the eave edges give
+            // the paper-thin roof planes visible thickness (silhouette reads from 3 m to the horizon)
+            o = box6(d, o, cx, ridgeY + 0.015f, cz, hw, 0.05f, 0.10f);
+            o = box6(d, o, cx, baseY - 0.045f, cz + hd - 0.02f, hw, 0.05f, 0.045f);
+            o = box6(d, o, cx, baseY - 0.045f, cz - hd + 0.02f, hw, 0.05f, 0.045f);
         } else {                                         // ridge along Z
             float hw = w * 0.5f + ov, hd = dd * 0.5f + ov;
             float[] R1 = {cx, ridgeY, cz - hd},     R2 = {cx, ridgeY, cz + hd};
@@ -5959,6 +6087,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = tri(d, o, R1, F2, F1, -hw * inv, rh * inv, 0f);
             o = tri(d, o, R2, E2, F2, 0f, 0f, 1f);
             o = tri(d, o, R1, F1, E1, 0f, 0f, -1f);
+            o = box6(d, o, cx, ridgeY + 0.015f, cz, 0.10f, 0.05f, hd);          // ridge cap
+            o = box6(d, o, cx + hw - 0.02f, baseY - 0.045f, cz, 0.045f, 0.05f, hd);   // eave fascias
+            o = box6(d, o, cx - hw + 0.02f, baseY - 0.045f, cz, 0.045f, 0.05f, hd);
         }
         return o;
     }
@@ -5973,7 +6104,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Baked window panes + sill ledges on every wall (one draw call each); skips the doorway. */
     private float[] makeWindowMesh() {
         float[] wd = new float[1200000];   // headroom for dense windows on a large custom village
-        float[] td = new float[1600000];
+        float[] td = new float[3200000];   // 4 trim boxes per window now (sill + lintel + 2 jambs)
         float[] rv = new float[1200000];   // dark recessed interior behind every pane
         int[] off = {0, 0, 0};
         Random rng = new Random(202);   // irregular per-house omission so no two facades match
@@ -6009,7 +6140,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Per-house foundation plinth, eave trim band and storey divider bands (baked, world-space, no collision).
      *  Each band is a perimeter ring hugging the four walls (never a solid slab) so house interiors stay clear. */
     private float[] makeBandMesh() {
-        float[] d = new float[houseRects.size() * 40 * 36 * 8 + 1024];
+        // 88 boxes/house: worst case ~45 band boxes (8-storey level house) + up to 40 corner quoins
+        float[] d = new float[houseRects.size() * 88 * 36 * 8 + 1024];
         int o = 0;
         java.util.List<float[]> bandG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
@@ -6036,6 +6168,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 for (int k = 1; k < storeys; k++) o = bandRing(d, o, cx, h * k / (float) storeys, cz, w, dd, 0.06f, 0.04f, ds, doorW);
                 float br = tr >= 0f ? tr : 0.86f, bg = tr >= 0f ? tg : 0.83f, bb = tr >= 0f ? tb : 0.77f;
                 bandG.add(new float[]{s, o / 8 - s, br, bg, bb});
+            }
+            {   // corner quoins: alternating proud blocks up all four corners break the bare wall seam
+                // (the classic European facade tell). Doors never reach a corner (doorW clamp keeps the
+                // gap >= 0.3 m inside the wall; quoins reach only 0.20 m in).
+                int s = o / 8;
+                float hw = w * 0.5f, hd = dd * 0.5f, y0 = Math.max(foundH, 0.05f) + 0.08f, top = h - 0.28f;
+                int nq = Math.min(10, (int) ((top - y0) / 0.42f));
+                for (int q = 0; q < nq; q++) {
+                    float qy = y0 + 0.21f + q * 0.42f, qs = (q % 2 == 0) ? 0.20f : 0.155f;   // toothed 0.05-proud / flush rhythm vs the 0.15 wall
+                    o = box6(d, o, cx - hw, qy, cz - hd, qs, 0.155f, qs);
+                    o = box6(d, o, cx + hw, qy, cz - hd, qs, 0.155f, qs);
+                    o = box6(d, o, cx - hw, qy, cz + hd, qs, 0.155f, qs);
+                    o = box6(d, o, cx + hw, qy, cz + hd, qs, 0.155f, qs);
+                }
+                if (o / 8 > s) bandG.add(new float[]{s, o / 8 - s,
+                        Math.min(1f, hh[17] * 1.3f + 0.12f), Math.min(1f, hh[18] * 1.3f + 0.12f), Math.min(1f, hh[19] * 1.3f + 0.12f)});
             }
             rotateVertSpanY(d, houseStart, o / 8 - houseStart, cx, cz, hh.length > 25 ? hh[25] : 0f);   // spin all bands with the house
         }
@@ -6323,11 +6471,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float t = -span * 0.5f + colGap * (ci + 0.5f);       // offset along the wall
                 if (doorWall && Math.abs(t) < 1.4f * Math.max(1f, wsc) && wy - winH * 0.5f < 2.45f) continue;   // no pane over/around the doorway
                 if (rng.nextFloat() < omit) continue;                // drop a few so it isn't stamped
+                if (off[1] > td.length - 5000) continue;             // trim scratch nearly full: skip gracefully (never overflow)
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
                 off[2] = windowQuad(rv, off[2], a, b, t, wy, winW * 0.86f, winH * 0.86f, axis, sign, 0.16f);  // dark room just behind the glass (occludes the wall -> looks like an opening)
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
-                if (axis == 0) off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
-                else           off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
+                float hy = wy + winH * 0.5f + 0.045f;                // head lintel just above it
+                if (axis == 0) {
+                    off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
+                    // complete the stone surround: lintel on top + jamb strips flanking the pane (they also
+                    // hide the proud pane's bare side edges at oblique view angles)
+                    off[1] = box6(td, off[1], a + t, hy, b + sign * 0.10f, winW * 0.5f + 0.09f, 0.045f, 0.10f);
+                    off[1] = box6(td, off[1], a + t - winW * 0.5f - 0.035f, wy, b + sign * 0.10f, 0.035f, winH * 0.5f + 0.02f, 0.10f);
+                    off[1] = box6(td, off[1], a + t + winW * 0.5f + 0.035f, wy, b + sign * 0.10f, 0.035f, winH * 0.5f + 0.02f, 0.10f);
+                } else {
+                    off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
+                    off[1] = box6(td, off[1], a + sign * 0.10f, hy, b + t, 0.10f, 0.045f, winW * 0.5f + 0.09f);
+                    off[1] = box6(td, off[1], a + sign * 0.10f, wy, b + t - winW * 0.5f - 0.035f, 0.10f, winH * 0.5f + 0.02f, 0.035f);
+                    off[1] = box6(td, off[1], a + sign * 0.10f, wy, b + t + winW * 0.5f + 0.035f, 0.10f, winH * 0.5f + 0.02f, 0.035f);
+                }
             }
         }
     }
@@ -6368,44 +6529,60 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private static Bitmap makeRoofBitmap() {
-        int N = 256;
+        int N = 512;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         c.drawColor(0xFFEDEDED);                                    // near-white grey base -> uColor sets the hue
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(77);
-        for (int k = 0; k < 1500; k++) {                            // neutral tile grain (no hue)
+        for (int k = 0; k < 5000; k++) {                            // neutral tile grain (no hue)
             int v = rnd.nextInt(40), s = 0xC4 + v;
             p.setColor((0x33 << 24) | (s << 16) | (s << 8) | s);
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
-        // Per-tile tone variation aligned to the tile grid: individual shingles read light/dark instead of
-        // one flat sheet (still neutral — uColor supplies the roof hue).
+        // Per-tile detail keyed on the WRAPPED cell (col and col+8 are the same tile split by the border):
+        // tone, curl shading and chips match on both halves, killing the tone seam at every 2 m boundary.
         for (int row = 0; row < 12; row++) {
             float y0 = row * N / 12f, off = (row % 2) * (N / 16f);
             for (int col = -1; col <= 8; col++) {
                 float x0 = col * N / 8f + off;
-                int v = rnd.nextInt(3);
-                if (v == 2) continue;                                // ~1/3 of tiles keep the base tone
-                p.setColor(v == 0 ? 0x18000000 : 0x12FFFFFF);
-                c.drawRect(x0 + 1.5f, y0 + 2.5f, x0 + N / 8f - 1.5f, y0 + N / 12f, p);
+                int wc = ((col % 8) + 8) % 8;
+                Random rt = new Random((row * 97L + wc) * 4241L + 77);
+                int v = rt.nextInt(3);
+                if (v != 2) {                                        // ~2/3 of tiles get a tone shift
+                    p.setColor(v == 0 ? 0x18000000 : 0x12FFFFFF);
+                    c.drawRect(x0 + 3f, y0 + 5f, x0 + N / 8f - 3f, y0 + N / 12f, p);
+                }
+                p.setColor(0x12000000);                              // barrel curl: soft dark bands at the tile flanks
+                c.drawRect(x0 + 2f, y0 + 5f, x0 + 6f, y0 + N / 12f, p);
+                c.drawRect(x0 + N / 8f - 6f, y0 + 5f, x0 + N / 8f - 2f, y0 + N / 12f, p);
+                if (rt.nextInt(4) == 0) {                            // chipped lower edge
+                    p.setColor(0x2E000000);
+                    float chx = x0 + 4 + rt.nextInt(18);
+                    c.drawRect(chx, y0 + N / 12f - 3f, chx + 3f + rt.nextInt(3), y0 + N / 12f, p);
+                }
             }
         }
         p.setColor(0x55000000);                                     // horizontal tile rows
-        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y, N, y + 2.5f, p); }
-        p.setColor(0x1C000000);                                     // soft shadow lip under each row (tiles overlap)
-        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y + 2.5f, N, y + 5.5f, p); }
+        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y, N, y + 5f, p); }
+        p.setColor(0x1A000000);                                     // soft shadow lip under each row (tiles overlap)
+        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y + 5f, N, y + 11f, p); }
         p.setColor(0x33000000);                                     // staggered vertical seams
         for (int row = 0; row < 12; row++) {
             float y = row * N / 12f, off = (row % 2) * (N / 16f);
-            for (int col = 0; col <= 8; col++) { float x = col * N / 8f + off; c.drawRect(x, y, x + 1.5f, y + N / 12f, p); }
+            for (int col = 0; col <= 8; col++) { float x = col * N / 8f + off; c.drawRect(x, y, x + 3f, y + N / 12f, p); }
+        }
+        p.setColor(0x12000000);                                     // rain streaks, each starting at a row line (wrap-safe)
+        for (int k = 0; k < 36; k++) {
+            float sy = rnd.nextInt(12) * N / 12f, sx = rnd.nextInt(N);
+            c.drawRect(sx, sy, sx + 2f, sy + N / 12f * 0.7f, p);
         }
         return b;
     }
 
     private static Bitmap makeWindowBitmap() {
-        int N = 128;
+        int N = 256;                                                // windows are focal points -- give the frame real depth
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         c.drawColor(0xFFF2F0EA);                                    // bright frame (tints lightly with the glass colour)
@@ -6415,17 +6592,34 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         p.setColor(0xFFD2DAE2); c.drawRect(gl, gt, gr, gb, p);      // light neutral glass (per-house uColor sets the hue)
         p.setColor(0x66FFFFFF); c.drawRect(gl, gt, gr, N * 0.5f, p);    // sky sheen across the upper panes
         p.setColor(0x22203040); c.drawRect(gl, N * 0.5f, gr, gb, p);    // faint depth on the lower panes (kept light)
-        p.setColor(0x33FFE2B0); c.drawRect(gl + gw * 0.30f, N * 0.62f, gr - gw * 0.30f, N * 0.74f, p);  // faint warm interior hint
-        p.setColor(0xFFF2F0EA);                                     // frame border + cross mullion (window bars stay solid)
-        c.drawRect(N * 0.5f - 3f, gt, N * 0.5f + 3f, gb, p);
-        c.drawRect(gl, N * 0.5f - 3f, gr, N * 0.5f + 3f, p);
-        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(5f); c.drawRect(gl, gt, gr, gb, p);
+        p.setColor(0x4AFFD9A0); c.drawRect(gl + gw * 0.30f, N * 0.62f, gr - gw * 0.30f, N * 0.74f, p);  // warm interior hint
+        p.setColor(0x40000000); c.drawRect(gl, gt, gr, gt + 7f, p);     // rebate shadow: frame overhangs the glass (light from above)
+        p.setColor(0x22000000); c.drawRect(gl, gt + 7f, gr, gt + 14f, p);
+        p.setColor(0x2E000000); c.drawRect(gl, gt, gl + 5f, gb, p);     // left rebate edge
+        p.setColor(0x18000000);                                     // corner AO, pulled inside the glass so the frame stays clean
+        c.drawCircle(gl + 6f, gt + 6f, 10f, p); c.drawCircle(gr - 6f, gt + 6f, 10f, p);
+        c.drawCircle(gl + 6f, gb - 6f, 10f, p); c.drawCircle(gr - 6f, gb - 6f, 10f, p);
+        // mullion bars sized to EXACTLY match the shader's opaque zone (vUV 0.47-0.53): no more glass sliver
+        // rendering opaque at the bar edges
+        p.setColor(0xFFF2F0EA);
+        c.drawRect(N * 0.47f, gt, N * 0.53f, gb, p);
+        c.drawRect(gl, N * 0.47f, gr, N * 0.53f, p);
+        p.setColor(0x28000000);                                     // mullion relief lines
+        c.drawRect(N * 0.47f - 1.5f, gt, N * 0.47f, gb, p); c.drawRect(N * 0.53f, gt, N * 0.53f + 1.5f, gb, p);
+        c.drawRect(gl, N * 0.47f - 1.5f, gr, N * 0.47f, p); c.drawRect(gl, N * 0.53f, gr, N * 0.53f + 1.5f, p);
+        p.setColor(0x2EFFFFFF); c.drawRect(gl - 4f, gb + 4f, gr + 4f, gb + 12f, p);   // lit sill ledge under the glass
+        p.setColor(0x30000000); c.drawRect(gl, gb, gr, gb + 2f, p);
+        p.setColor(0xFFF2F0EA);
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(10f); c.drawRect(gl, gt, gr, gb, p);
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(4f); p.setColor(0x36000000);
+        c.drawRect(m - 6f, m - 6f, N - m + 6f, N - m + 6f, p);      // wall-contact shadow around the whole frame
+        p.setStyle(Paint.Style.FILL);
         return b;
     }
 
     /** The dim room seen THROUGH the glass: a dark gradient with a faint warm glow + a furniture silhouette. */
     private static Bitmap makeWinBackBitmap() {
-        int N = 64;
+        int N = 128;                                               // a readable room instead of 64 px mush
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -6435,8 +6629,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             p.setColor(0xFF000000 | (rr << 16) | (gg << 8) | bbl);
             c.drawRect(0, y, N, y + 1, p);
         }
-        p.setColor(0x4DFFC880); c.drawCircle(N * 0.52f, N * 0.60f, N * 0.20f, p);   // faint warm lamp glow inside
+        p.setColor(0x30FFB25E); c.drawCircle(N * 0.52f, N * 0.60f, N * 0.30f, p);   // wide lamp halo
+        p.setColor(0x46FFC880); c.drawCircle(N * 0.52f, N * 0.60f, N * 0.20f, p);   // mid glow
+        p.setColor(0x7DFFD996); c.drawCircle(N * 0.52f, N * 0.60f, N * 0.11f, p);   // hot lamp core
+        p.setColor(0x1AFFFFFF); c.drawRect(0, N * 0.70f, N, N * 0.70f + 2f, p);     // wall/floor split line
         p.setColor(0xFF14171F); c.drawRect(N * 0.16f, N * 0.74f, N * 0.86f, N, p);   // dark furniture/sill silhouette
+        p.setColor(0xFF10141C); c.drawRect(N * 0.60f, N * 0.34f, N * 0.88f, N, p);   // second furniture mass (a wardrobe)
         return b;
     }
 
@@ -6444,92 +6642,161 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Light stucco/plaster facade so houses read as houses (tinted by the per-house colour). */
     private static Bitmap makeHouseBitmap() {
-        int N = 256;
+        int N = 512;                                                // the default facade deserves the finest grain
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
-        c.drawColor(0xFFC8C4BC);                                    // near-NEUTRAL mid plaster (was near-white) -- keeps each house's hue, just darker + textured
+        c.drawColor(0xFFC8C4BC);                                    // near-NEUTRAL mid plaster -- keeps each house's hue, just darker + textured
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(55);
-        for (int k = 0; k < 46; k++) {                              // strong low-frequency mottle (lighter AND darker patches) so walls aren't flat
+        for (int k = 0; k < 90; k++) {                              // low-frequency mottle, drawn 9x so it WRAPS
             boolean lite = rnd.nextBoolean(); int v = 12 + rnd.nextInt(30);
             int t = lite ? 0xC8 + v : 0xC8 - v;                     // neutral: shift brightness, not hue
             p.setColor((0x3C << 24) | (cl255(t) << 16) | (cl255(t - 3) << 8) | cl255(t - 10));
-            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 16 + rnd.nextInt(50), p);
+            float x = rnd.nextInt(N), y = rnd.nextInt(N), r = 32 + rnd.nextInt(100);
+            for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) c.drawCircle(x + dx * N, y + dy * N, r, p);
         }
-        for (int k = 0; k < 3000; k++) {                            // fine stucco speckle with real contrast
+        for (int k = 0; k < 12000; k++) {                           // fine stucco speckle with real contrast
             int v = rnd.nextInt(50) - 25;
             p.setColor((0x40 << 24) | (cl255(0xC4 + v) << 16) | (cl255(0xC0 + v) << 8) | cl255(0xB6 + v));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
+        Paint s = new Paint(Paint.ANTI_ALIAS_FLAG);                 // hairline settlement cracks with a lit lower lip
+        s.setStyle(Paint.Style.STROKE);
+        for (int cr = 0; cr < 4; cr++) {
+            float x = N * 0.12f + rnd.nextInt((int) (N * 0.76f)), y = N * 0.08f + rnd.nextInt((int) (N * 0.3f));
+            for (int seg = 0; seg < 26; seg++) {
+                float nx = clamp(x - 3 + rnd.nextInt(7), N * 0.06f, N * 0.94f);
+                float ny = clamp(y + 4 + rnd.nextInt(9), N * 0.06f, N * 0.94f);
+                s.setStrokeWidth(1.6f); s.setColor(0x30000000); c.drawLine(x, y, nx, ny, s);
+                s.setStrokeWidth(1f); s.setColor(0x16FFFFFF); c.drawLine(x + 1.2f, y + 1.2f, nx + 1.2f, ny + 1.2f, s);
+                x = nx; y = ny;
+            }
+        }
         p.setColor(0x24000000);                                     // horizontal coat lines (visible)
-        for (int row = 1; row < 6; row++) { float y = row * N / 6f; c.drawRect(0, y, N, y + 1.6f, p); }
-        p.setColor(0x1C000000);                                     // vertical weather streaks
-        for (int k = 0; k < 22; k++) { float x = rnd.nextInt(N); c.drawRect(x, 0, x + 1.8f, N, p); }
+        for (int row = 1; row < 6; row++) {
+            float y = row * N / 6f;
+            c.drawRect(0, y, N, y + 2.6f, p);
+        }
+        p.setColor(0x14FFFFFF);                                     // bevel light directly under each coat line
+        for (int row = 1; row < 6; row++) { float y = row * N / 6f; c.drawRect(0, y + 2.6f, N, y + 3.8f, p); }
+        p.setColor(0x16000000);                                     // vertical weather streaks
+        for (int k = 0; k < 34; k++) { float x = rnd.nextInt(N); c.drawRect(x, 0, x + 2.5f, N, p); }
+        p.setColor(0x0C000000);                                     // a few soft wide streaks
+        for (int k = 0; k < 8; k++) { float x = rnd.nextInt(N); c.drawRect(x, 0, x + 6f, N, p); }
         return b;
     }
 
     /** Red-brown running-bond brick (carries its own colour; drawn with white tint). */
     private static Bitmap makeBrickBitmap() {
-        int N = 256;
+        int N = 512;                                                // 256 px/m: room for mortar grain + per-brick pitting
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         c.drawColor(0xFFB9AE9C);                                    // mortar
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(91);
-        int rows = 12; float rh = (float) N / rows, gap = 2.2f, bw = N / 4f;
+        for (int k = 0; k < 5000; k++) {                            // sandy mortar grain
+            int m = rnd.nextInt(40) - 20;
+            p.setColor((0x34 << 24) | (cl255(0xB9 + m) << 16) | (cl255(0xAE + m) << 8) | cl255(0x9C + m));
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 2, y + 2, p);
+        }
+        int rows = 12; float rh = (float) N / rows, gap = 4.4f, bw = N / 4f;
         for (int row = 0; row < rows; row++) {
             float y0 = row * rh + gap, y1 = (row + 1) * rh - gap, off = (row % 2) * (bw * 0.5f);
             for (int col = -1; col <= 4; col++) {
                 float x0 = col * bw + off + gap, x1 = (col + 1) * bw + off - gap;
-                int v = rnd.nextInt(34);                            // per-brick tone variation
-                p.setColor(0xFF000000 | (cl255(0x9a - v + rnd.nextInt(18)) << 16) | (cl255(0x55 - v / 2) << 8) | cl255(0x42 - v / 2));
+                // Deterministic per-brick RNG keyed on the WRAPPED cell (col and col+4 are the same brick
+                // split by the tile border): both halves now roll identical tone -- no more visible tone
+                // discontinuity at every 2 m tiling boundary.
+                int wc = ((col % 4) + 4) % 4;
+                Random rb = new Random((row * 47L + wc) * 7919L + 91);
+                int v = rb.nextInt(34);
+                p.setColor(0xFF000000 | (cl255(0x9a - v + rb.nextInt(18)) << 16) | (cl255(0x55 - v / 2) << 8) | cl255(0x42 - v / 2));
                 c.drawRect(x0, y0, x1, y1, p);
-                if (rnd.nextInt(9) == 0) {                          // the odd over-fired dark header brick
+                if (rb.nextInt(9) == 0) {                           // the odd over-fired dark header brick
                     p.setColor(0x3C2A1812);
                     c.drawRect(x0, y0, x1, y1, p);
                 }
+                p.setColor(0x0CFFFFFF);                             // kiln-skin gradient: upper brick face catches light
+                c.drawRect(x0, y0, x1, y0 + (y1 - y0) * 0.4f, p);
+                int np = 5 + rb.nextInt(5);                         // per-brick pitting (strictly inside the brick)
+                for (int q = 0; q < np; q++) {
+                    p.setColor(0x26000000);
+                    c.drawCircle(x0 + 3 + rb.nextInt((int) (x1 - x0 - 6)), y0 + 3 + rb.nextInt((int) (y1 - y0 - 6)), 1f + rb.nextFloat() * 1.5f, p);
+                }
+                for (int q = 0; q < 2; q++) {
+                    p.setColor(0x1EFFFFFF);
+                    c.drawCircle(x0 + 3 + rb.nextInt((int) (x1 - x0 - 6)), y0 + 3 + rb.nextInt((int) (y1 - y0 - 6)), 1.3f, p);
+                }
                 p.setColor(0x2EFFFFFF);                             // lit top edge — bricks read as raised
-                c.drawRect(x0, y0, x1, y0 + 1.4f, p);
+                c.drawRect(x0, y0, x1, y0 + 2.8f, p);
                 p.setColor(0x30000000);                             // shadowed bottom edge into the mortar bed
-                c.drawRect(x0, y1 - 1.6f, x1, y1, p);
+                c.drawRect(x0, y1 - 3.2f, x1, y1, p);
             }
         }
         p.setColor(0x22000000);                                     // weathering speckle
-        for (int k = 0; k < 700; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N); c.drawRect(x, y, x + 2, y + 2, p); }
+        for (int k = 0; k < 2600; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N); c.drawRect(x, y, x + 2, y + 2, p); }
         return b;
     }
 
     /** Ashlar grey stone / rendered-concrete blocks (carries its own colour). */
     private static Bitmap makeStoneBitmap() {
-        int N = 256;
+        int N = 512;                                                // blocks are 66 cm in world -- give them real texels
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         c.drawColor(0xFF6E6E70);                                    // dark mortar
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Paint s2 = new Paint(Paint.ANTI_ALIAS_FLAG);
+        s2.setStyle(Paint.Style.STROKE);
         Random rnd = new Random(43);
-        int rows = 5; float rh = (float) N / rows, gap = 3.0f, bw = N / 3f;
+        int rows = 5; float rh = (float) N / rows, gap = 6.0f, bw = N / 3f;
         for (int row = 0; row < rows; row++) {
             float y0 = row * rh + gap, y1 = (row + 1) * rh - gap, off = (row % 2) * (bw * 0.5f);
             for (int col = -1; col <= 3; col++) {
                 float x0 = col * bw + off + gap, x1 = (col + 1) * bw + off - gap;
-                int s = 0x9c - rnd.nextInt(34) + rnd.nextInt(18);   // wider tone range block to block
+                // deterministic per-block RNG (col and col+3 are the same wrapped block): matching tones
+                // on both clipped halves kill the 2 m tiling seam
+                int wc = ((col % 3) + 3) % 3;
+                Random rb = new Random((row * 61L + wc) * 6151L + 43);
+                int s = 0x9c - rb.nextInt(34) + rb.nextInt(18);
                 p.setColor(0xFF000000 | (cl255(s) << 16) | (cl255(s - 2) << 8) | cl255(s - 6));
                 c.drawRect(x0, y0, x1, y1, p);
+                int veins = 1 + rb.nextInt(2);                      // crack veining, clamped inside the block
+                s2.setStrokeWidth(1.4f);
+                for (int vn = 0; vn < veins; vn++) {
+                    float vx = x0 + 8 + rb.nextInt((int) (x1 - x0 - 16)), vy = y0 + 6 + rb.nextInt((int) ((y1 - y0) * 0.4f));
+                    int segs = 5 + rb.nextInt(4);
+                    for (int sg = 0; sg < segs; sg++) {
+                        float nx2 = Math.min(x1 - 4, Math.max(x0 + 4, vx + 6 + rb.nextInt(10)));
+                        float ny2 = Math.min(y1 - 4, Math.max(y0 + 4, vy - 4 + rb.nextInt(12)));
+                        s2.setColor(0x2C000000); c.drawLine(vx, vy, nx2, ny2, s2);
+                        if (rb.nextBoolean()) { s2.setColor(0x12FFFFFF); c.drawLine(vx + 1, vy + 1, nx2 + 1, ny2 + 1, s2); }
+                        vx = nx2; vy = ny2;
+                    }
+                }
+                s2.setStrokeWidth(1.3f);                            // chisel dressing: short diagonal strokes
+                for (int ch = 0; ch < 10; ch++) {
+                    float chx = x0 + 4 + rb.nextInt(Math.max(1, (int) (x1 - x0 - 15))), chy = y0 + 4 + rb.nextInt(Math.max(1, (int) (y1 - y0 - 15)));
+                    s2.setColor(ch % 2 == 0 ? 0x14FFFFFF : 0x18000000);
+                    c.drawLine(chx, chy, chx + 7, chy + 7, s2);
+                }
                 p.setColor(0x26FFFFFF);                             // chiselled lit top edge
-                c.drawRect(x0, y0, x1, y0 + 2f, p);
+                c.drawRect(x0, y0, x1, y0 + 3.5f, p);
                 p.setColor(0x2E000000);                             // recessed shadowed bottom edge
-                c.drawRect(x0, y1 - 2.2f, x1, y1, p);
+                c.drawRect(x0, y1 - 4f, x1, y1, p);
             }
         }
+        p.setColor(0x30000000);                                     // recessed mortar core lines in the joints
+        for (int row = 0; row <= rows; row++) { float y = row * rh; c.drawRect(0, y - 1f, N, y + 1f, p); }
         p.setColor(0x18FFFFFF);                                     // aggregate highlight speckle
-        for (int k = 0; k < 900; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N); c.drawRect(x, y, x + 1.5f, y + 1.5f, p); }
+        for (int k = 0; k < 3200; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N); c.drawRect(x, y, x + 1.5f, y + 1.5f, p); }
         return b;
     }
 
     /** Warm horizontal timber siding for shops (carries its own colour). */
     private static Bitmap makeSidingBitmap() {
-        int N = 256;
+        int N = 512;
         Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         c.drawColor(0xFF9B6A3C);                                    // warm timber base
@@ -6541,13 +6808,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int v = rnd.nextInt(26);                                // per-plank tone
             p.setColor(0xFF000000 | (cl255(0x9b - v + rnd.nextInt(16)) << 16) | (cl255(0x6a - v / 2) << 8) | cl255(0x3c - v / 3));
             c.drawRect(0, y0, N, y1, p);
-            p.setColor(0x55000000); c.drawRect(0, y1 - 2f, N, y1, p);       // shadow line between boards
-            p.setColor(0x22FFFFFF); c.drawRect(0, y1, N, y1 + 1.5f, p);     // lit top edge of next board
+            // grain runs ALONG the board (the old pass drew it vertically ACROSS the planks); streaks that
+            // would cross the right border are split so the grain wraps exactly
+            for (int g = 0; g < 12; g++) {
+                float gy = y0 + 3 + rnd.nextInt(Math.max(1, (int) (ph - 6)));
+                float gx = rnd.nextInt(N); float len = 40 + rnd.nextInt(80);
+                p.setColor((g % 2 == 0) ? 0x1A000000 : 0x14FFFFFF);
+                if (gx + len <= N) c.drawRect(gx, gy, gx + len, gy + 1.5f, p);
+                else { c.drawRect(gx, gy, N, gy + 1.5f, p); c.drawRect(0, gy, gx + len - N, gy + 1.5f, p); }
+            }
+            for (float sx : new float[]{N * 0.125f, N * 0.375f, N * 0.625f, N * 0.875f}) {   // nail heads at stud spacing
+                p.setColor(0x44000000); c.drawCircle(sx, (y0 + y1) * 0.5f, 3f, p);
+                p.setColor(0x30FFFFFF); c.drawCircle(sx + 1f, (y0 + y1) * 0.5f + 1f, 1.5f, p);
+            }
+            p.setColor(0x55000000); c.drawRect(0, y1 - 4f, N, y1, p);       // shadow line between boards
+            p.setColor(0x26FFFFFF); c.drawRect(0, y1, N, y1 + 3f, p);       // lit top edge of next board
         }
-        p.setColor(0x1C000000);                                     // vertical grain streaks
-        for (int k = 0; k < 220; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N), len = 8 + rnd.nextInt(26); c.drawRect(x, y, x + 1.2f, y + len, p); }
-        p.setColor(0x36241505);                                     // the odd knot in a board
-        for (int k = 0; k < 12; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 2f + rnd.nextFloat() * 2.5f, p);
+        Paint s = new Paint(Paint.ANTI_ALIAS_FLAG);                 // ring knots with grain deflection
+        for (int k = 0; k < 12; k++) {
+            float kx = 12 + rnd.nextInt(N - 24), ky = 12 + rnd.nextInt(N - 24), kr = 3f + rnd.nextFloat() * 2f;
+            s.setStyle(Paint.Style.FILL); s.setColor(0x50241505); c.drawCircle(kx, ky, kr, s);
+            s.setStyle(Paint.Style.STROKE); s.setStrokeWidth(1.5f); s.setColor(0x28241505); c.drawCircle(kx, ky, kr + 3f, s);
+            s.setStyle(Paint.Style.FILL); s.setColor(0x16000000);
+            c.drawRect(kx - 7, ky - kr - 3.5f, kx + 7, ky - kr - 2f, s);
+            c.drawRect(kx - 7, ky + kr + 2f, kx + 7, ky + kr + 3.5f, s);
+        }
         return b;
     }
 
@@ -6571,6 +6856,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return b;
     }
 
+    /** Draw a circle 9 times at +-N offsets so blotches WRAP at the tile border (the grass tile repeats
+     *  every 4 m; clipped blotches used to print a faint 4 m grid of seam lines across the whole meadow). */
+    private static void wrapCircle(Canvas c, Paint p, int N, float x, float y, float r) {
+        for (int ox = -1; ox <= 1; ox++) for (int oy = -1; oy <= 1; oy++) c.drawCircle(x + ox * N, y + oy * N, r, p);
+    }
+
     private static Bitmap makeTerrainBitmap() {
         int N = 512;
         Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
@@ -6578,15 +6869,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         c.drawColor(0xFF3A4A2A);                        // base grass-green
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Random rnd = new Random(23);
-        for (int k = 0; k < 60; k++) {                  // soft dirt/grass blotches
+        for (int k = 0; k < 60; k++) {                  // soft dirt/grass blotches (wrap-drawn: no tile seams)
             int shade = rnd.nextInt(3);
             int col = shade == 0 ? 0x2F3D22 : (shade == 1 ? 0x4A5C30 : 0x5A4A30);
             p.setColor(0x55000000 | col);
-            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(70), p);
+            wrapCircle(c, p, N, rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(70));
         }
         for (int k = 0; k < 26; k++) {                  // sun-dried warm patches (meadow, not golf lawn)
             p.setColor(0x2C6E6430);
-            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 10 + rnd.nextInt(34), p);
+            wrapCircle(c, p, N, rnd.nextInt(N), rnd.nextInt(N), 10 + rnd.nextInt(34));
         }
         for (int k = 0; k < 5000; k++) {                // grass speckle
             int v = rnd.nextInt(70);
@@ -6601,6 +6892,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         p.setColor(0x66556055);                          // scattered pebbles
         for (int k = 0; k < 120; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 1 + rnd.nextInt(2), p);
+        Random r2 = new Random(47);
+        for (int k = 0; k < 22; k++) {                   // clover/weed clusters: the missing middle octave
+            float ccx = r2.nextInt(N), ccy = r2.nextInt(N); p.setColor(0x50274418);
+            for (int j = 0; j < 12; j++) wrapCircle(c, p, N, ccx + r2.nextInt(22) - 11, ccy + r2.nextInt(22) - 11, 1.5f + r2.nextFloat() * 1.5f);
+        }
+        for (int k = 0; k < 14; k++) {                   // sparse wildflower flecks (dark base dot + pale head)
+            float x = r2.nextInt(N), y = r2.nextInt(N);
+            p.setColor(0x66203618); wrapCircle(c, p, N, x, y + 1.5f, 2f);
+            p.setColor(r2.nextInt(3) == 0 ? 0x9AD8C24A : 0x8ADCD8C8);
+            wrapCircle(c, p, N, x, y, 1.3f);
+        }
         return bmp;
     }
 
@@ -6722,8 +7024,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // the warm sun key, but make the non-sun light near-neutral (a whisper of cool) so a shaded brick/plaster
         // wall stays a DARKER version of itself instead of a washed-out different-looking material. Rim is halved
         // too — at the grazing angles of the overhead build view it was haloing the far walls bright.
-        "    col=(base*(uAmbient*vec3(0.165,0.17,0.185)+uSunInt*df*vec3(1.30,1.17,0.95)+fl*vec3(0.26,0.27,0.30))" +
-        "        +sp*vec3(0.90,0.81,0.67)*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +   // specular carries the sun's warmth, not neutral white
+        // Hemispheric ambient: endpoints average EXACTLY to the old flat (0.165,0.17,0.185), so vertical
+        // walls are bit-identical -- only up-facing surfaces gain a sky tint and undersides a warm bounce.
+        "    vec3 hemi=mix(vec3(0.155,0.150,0.140),vec3(0.175,0.190,0.230),N.y*0.5+0.5);" +
+        // Overcast desaturation: uSunInt runs 1.0 (sun) .. 0.55 (rain); below full sun the warm key/spec
+        // colours slide toward neutral-grey so storms stop lighting facades golden. Luminance matched.
+        "    float sw=clamp((uSunInt-0.55)*2.222,0.0,1.0);" +
+        "    vec3 sunC=mix(vec3(1.08,1.11,1.16),vec3(1.30,1.17,0.95),sw);" +
+        "    vec3 spC=mix(vec3(0.55,0.58,0.64),vec3(0.90,0.81,0.67),sw);" +
+        "    col=(base*(uAmbient*hemi+uSunInt*df*sunC+fl*vec3(0.26,0.27,0.30))" +
+        "        +sp*spC*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
@@ -6744,14 +7054,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float fres=pow(1.0-max(dot(N2,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N2,H),0.0),80.0); float df=max(dot(N2,L),0.0);" +
         "    vec3 col2=tex*uColor*(0.45+0.55*df);" +
-        "    col2=mix(col2, vec3(0.80,0.88,1.0)*uSunInt, glass*(0.16+0.55*fres));" +   // panes mirror the sky (fresnel)
+        // Panes mirror the sky the player actually sees: vertically-graded blue on clear days (pale at the
+        // reflected horizon, deeper toward the zenith), sliding to the grey fog colour as weather rolls in.
+        "    float clr=clamp((uSunInt-0.55)*2.2,0.0,1.0);" +
+        "    vec3 R=reflect(-V,N2);" +
+        "    vec3 skyR=mix(vec3(0.86,0.90,0.97),vec3(0.55,0.68,0.94),clamp(R.y*1.3+0.25,0.0,1.0));" +
+        "    col2=mix(col2, mix(uFogColor,skyR,clr)*max(uSunInt,0.85), glass*(0.16+0.55*fres));" +
         "    col2+=sp*glass*vec3(1.1)*uSunInt;" +                                       // crisp glass highlight
         "    float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
-        "    col2=mix(col2,uFogColor,fog);" +
+        "    float sunAmt=pow(max(dot(normalize(vWorld-uCamPos),normalize(uLightDir)),0.0),3.0);" +
+        "    col2=mix(col2,uFogColor+vec3(0.12,0.05,0.0)*sunAmt*uSunInt,fog);" +
         "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)), mix(1.0,0.42,glass)); return;" +   // frame opaque, glass see-through (shows the dim room behind)
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
-        "  col=mix(col,uFogColor,fog);" +
+        // Sun-directional inscatter: fog warms toward the sun azimuth (matching the sky's halo) so distant
+        // houses fade into a horizon that agrees with where the sun is, from every camera direction.
+        "  float sunAmt=pow(max(dot(normalize(vWorld-uCamPos),normalize(uLightDir)),0.0),3.0);" +
+        "  col=mix(col,uFogColor+vec3(0.12,0.05,0.0)*sunAmt*uSunInt,fog);" +
         "  gl_FragColor=vec4(pow(grade(aces(col)),vec3(0.4545)),1.0);" +
         "}";
 
@@ -6779,6 +7098,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  float sd=max(dot(dir,sun),0.0);" +
         "  float halo=(pow(sd,5.0)*0.45 + pow(sd,180.0)*0.7)*(1.0-0.85*uOvercast);" +   // sun veiled by cloud
         "  col+=halo*vec3(1.0,0.86,0.58);" +
+        "  col+=vec3(0.09,0.045,0.0)*pow(sd,2.0)*pow(1.0-t,3.0)*(1.0-0.85*uOvercast);" +   // warm horizon on the sun side, matches the fog inscatter
         "  col=mix(col,vec3(1.05,1.0,0.92),smoothstep(0.9988,0.9994,sd)*(1.0-uOvercast));" +   // sun disc (hidden when overcast)
         "  float fade=smoothstep(0.05,0.25,h);" +
         "  if(fade>0.001){" +
@@ -6789,6 +7109,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    cov=max(cov,uOvercast*0.78*fade);" +                                       // heavy overcast fills the sky
         "    float shade=smoothstep(0.2,1.0,d);" +
         "    vec3 cloud=mix(vec3(0.72,0.75,0.82),vec3(1.0,1.0,1.0),shade);" +
+        // Seen from below, dense cumulus cores are the DARK part and thin fringes the bright part: pull the
+        // densest third toward a flat grey underside and add an analytic silver lining where cover is partial.
+        "    cloud=mix(cloud,vec3(0.63,0.66,0.73),smoothstep(0.70,1.25,d)*0.55*(1.0-0.5*uOvercast));" +
+        "    cloud+=vec3(0.09,0.075,0.05)*cov*(1.0-cov)*3.0*(1.0-0.8*uOvercast);" +
         "    cloud=mix(cloud,vec3(0.60,0.63,0.68),uOvercast*0.7)+halo*0.6*vec3(1.0,0.9,0.7);" +   // greyer storm cloud
         "    col=mix(col,cloud,cov*mix(0.92,0.98,uOvercast));" +
         "  }" +
@@ -6809,7 +7133,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final String FRAG_BLOB_SRC =
         "precision mediump float; varying float vR; uniform float uA;" +
-        "void main(){ gl_FragColor=vec4(0.0,0.0,0.0,(1.0-vR)*uA); }";
+        // flat-ish umbra core + smoothstep penumbra fringe (the old linear tent read as an airbrush smudge)
+        "void main(){ gl_FragColor=vec4(0.0,0.0,0.0,(1.0-smoothstep(0.40,1.0,vR))*uA); }";
 
     private static final String VERT2_SRC =
         "attribute vec2 aP; uniform vec2 uScale; uniform vec2 uOff;" +
