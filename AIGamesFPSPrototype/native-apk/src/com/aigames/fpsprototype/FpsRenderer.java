@@ -116,9 +116,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float MAX_HP = 100f;
     private static final float ARENA_LIMIT = 36f;
 
-    private static final float LDX = 0.358f, LDY = -0.894f, LDZ = 0.268f;
+    // Light-travel direction for cast shadows = -normalize(sunDir): shadows now fall exactly opposite the
+    // sun that lights the facades (they used to point ~24 deg off, which made buildings look pasted-on).
+    private static final float LDX = 0.389f, LDY = -0.611f, LDZ = 0.689f;
     private static final float SHADOW_AZI = (float) Math.toDegrees(Math.atan2(LDX, LDZ));  // sun ground azimuth -> cast-shadow direction
 
+    private final float[] shotO = new float[3], shotD = new float[3];   // scratch for yaw-aware hitscan
     private final InputState input;
     private final int buildNumber;
     private final SharedPreferences prefs;
@@ -193,7 +196,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private float px = 0f, py = 1.6f, pz = 9f;
     private float yaw = 0f, pitch = -0.08f;
-    private final float[] camFwd = new float[3], camRight = new float[3], camUp = new float[3];  // view basis for the sky
+    // View basis for the sky shader. Starts as a valid basis (not zeros): the sky is drawn from the very
+    // first hub frame, and normalize(0) in the shader is NaN -> undefined sky on some GPUs.
+    private final float[] camFwd = {0f, 0f, -1f}, camRight = {1f, 0f, 0f}, camUp = {0f, 1f, 0f};
     private float recoil = 0f;
     private long lastNanos;
     private float timeAcc = 0f;
@@ -555,7 +560,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         terrainTex = uploadTexture(makeTerrainBitmap());
 
         cityGround = makeBuffer(makeFlatQuad(35f, 0.02f));
-        cityTex = uploadTexture(makeCityBitmap());
+        // The city-ground bitmap is authored at 1536px (not a power of two). GLES2 core only supports NPOT
+        // textures with CLAMP + no mipmaps, but uploadTexture generates mipmaps + REPEAT — on strict drivers
+        // (e.g. Mali-400) the texture is incomplete and samples BLACK. Rescale to POT before upload.
+        Bitmap cityRaw = makeCityBitmap();
+        Bitmap cityPot = Bitmap.createScaledBitmap(cityRaw, 2048, 2048, true);
+        if (cityPot != cityRaw) cityRaw.recycle();
+        cityTex = uploadTexture(cityPot);
         roadTex = uploadTexture(makeRoadBitmap());
         if (hasCustomRoads) roadMesh = makeBuffer(makeRoadMesh());   // custom streets replace the default grid
 
@@ -579,6 +590,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         woodTex = uploadTexture(makeWoodBitmap());
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
 
+        // The GL context can be re-created mid-session (Home + return, screen off). If that happens while in
+        // the SANDBOX, the editObjs snapshot-swap must be unwound FIRST — otherwise the hub opens with the
+        // sandbox overlay still swapped in, and a later editor SPEICHERN would write sandbox objects into
+        // level.lvl (permanently replacing the authored overlay).
+        if (state == ST_SANDBOX) sandboxExit();
         restart();
         state = ST_HUB;                 // app opens in the hub (PLAY to begin a run)
         lastNanos = System.nanoTime();
@@ -829,7 +845,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // teleported to just around a corner near you — keeps the action coming, you never see it move.
             if (enBoss[i] == 0 && d > LEASH_DIST) {
                 float facing = -dx * sinYaw + dz * cosYaw;     // forward · (enemy - player); high = dead ahead
-                if (facing < d * 0.74f && spawnPointNear(spawnTmp)) { enX[i] = spawnTmp[0]; enZ[i] = spawnTmp[1]; continue; }
+                // 0.50 = only leash beyond ~60 deg off-axis: wide phones render ~57 deg half-FOV, so the old
+                // 42-deg cone could visibly teleport a zombie that was still on screen.
+                if (facing < d * 0.50f && spawnPointNear(spawnTmp)) { enX[i] = spawnTmp[0]; enZ[i] = spawnTmp[1]; continue; }
             }
             float reach = REACH_DIST * enScale[i];
             if (enWind[i] < 0f) { enWind[i] += dt; if (enWind[i] > 0f) enWind[i] = 0f; }   // post-whiff recovery
@@ -1227,6 +1245,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             boolean interior = b.length > 10 && b[10] != 0f;   // furniture collider: steer around it even if low
             if (!interior && b[1] + b[4] * 0.5f < 0.5f) continue;   // ignore anything you'd just step over
             if (b[1] - b[4] * 0.5f >= 1.8f) continue;     // overhead (door lintel / roof): enemy walks under
+            float yawB = b.length > 9 ? b[9] : 0f;
+            if (yawB != 0f) {                             // rotated wall/fence: test in the box's own frame
+                if (insideYawXZ(x, z, b[0], b[2], b[3] * 0.5f + r, b[5] * 0.5f + r, yawB)) return false;
+                continue;
+            }
             if (x > b[0] - b[3] * 0.5f - r && x < b[0] + b[3] * 0.5f + r
              && z > b[2] - b[5] * 0.5f - r && z < b[2] + b[5] * 0.5f + r) return false;
         }
@@ -1649,9 +1672,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (state != ST_PLAYING && state != ST_SANDBOX) {
             // Frozen (hub / summary): hold the camera and just show the arena from the current pose.
             float cp = (float) Math.cos(pitch);
-            Matrix.setLookAtM(view, 0, px, py, pz,
-                    px + cp * (float) Math.sin(yaw), py + (float) Math.sin(pitch), pz - cp * (float) Math.cos(yaw),
-                    0f, 1f, 0f);
+            float fdx = cp * (float) Math.sin(yaw), fdy = (float) Math.sin(pitch), fdz = -cp * (float) Math.cos(yaw);
+            Matrix.setLookAtM(view, 0, px, py, pz, px + fdx, py + fdy, pz + fdz, 0f, 1f, 0f);
+            setCamBasis(fdx, fdy, fdz);            // keep the sky's view basis in step with the frozen camera
             return;
         }
         if (input.consumeHubMenu()) { if (state == ST_SANDBOX) sandboxExit(); else abortToHub(); return; }   // MENU/EXIT: bail to the hub (a run does NOT count)
@@ -1699,6 +1722,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         } else if (wasGrounded && vy <= 0f && feetY - support <= 0.6f) {
             feetY = support; vy = 0f; grounded = true;     // stick to slopes / small steps when walking
         } else {
+            // Walking off a ledge consumes the ground jump: otherwise Double-Jump owners got TWO
+            // mid-air jumps after stepping off (vs one after a normal jump) — free extra height.
+            if (wasGrounded && jumpsUsed == 0) jumpsUsed = 1;
             grounded = false;
         }
         if (grounded) jumpsUsed = 0;                  // reset air-jumps on landing
@@ -1725,8 +1751,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float ldy = (float) Math.sin(effPitch);
         float ldz = -cosP * (float) Math.cos(vYaw);
         Matrix.setLookAtM(view, 0, px, eyeY, pz, px + ldx, eyeY + ldy, pz + ldz, 0f, 1f, 0f);
+        setCamBasis(ldx, ldy, ldz);
+    }
 
-        // Cache the camera basis (forward/right/up) so the sky shader can rebuild per-pixel view rays.
+    /** Cache the camera basis (forward/right/up) so the sky shader can rebuild per-pixel view rays.
+     *  Called from EVERY camera path (gameplay, frozen hub/summary, editor) — a stale or zero basis
+     *  renders the sky with the wrong orientation (or NaN via normalize(0) on a fresh launch). */
+    private void setCamBasis(float ldx, float ldy, float ldz) {
         camFwd[0] = ldx; camFwd[1] = ldy; camFwd[2] = ldz;
         float rl = (float) Math.sqrt(ldz * ldz + ldx * ldx);   // right = normalize(fwd x worldUp)
         if (rl < 1e-4f) rl = 1e-4f;
@@ -1749,8 +1780,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float boxTop = b[1] + b[4] * 0.5f;
             float rise = boxTop - feetY;
             if (rise <= 0.30f || rise > MANTLE_MAX) continue;
-            float ddx = Math.max(Math.max(b[0] - b[3] * 0.5f - px, px - (b[0] + b[3] * 0.5f)), 0f);
-            float ddz = Math.max(Math.max(b[2] - b[5] * 0.5f - pz, pz - (b[2] + b[5] * 0.5f)), 0f);
+            float dxw = px - b[0], dzw = pz - b[2];
+            float yawB = b.length > 9 ? b[9] : 0f;
+            if (yawB != 0f) {                            // rotated box: measure the gap in its own frame
+                double a = Math.toRadians(yawB);
+                float caB = (float) Math.cos(a), saB = (float) Math.sin(a);
+                float tx = dxw * caB - dzw * saB, tz = dxw * saB + dzw * caB;
+                dxw = tx; dzw = tz;
+            }
+            float ddx = Math.max(Math.abs(dxw) - b[3] * 0.5f, 0f);
+            float ddz = Math.max(Math.abs(dzw) - b[5] * 0.5f, 0f);
             float d = (float) Math.sqrt(ddx * ddx + ddz * ddz);
             if (d < 0.75f && boxTop > best) best = boxTop;
         }
@@ -1769,9 +1808,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float boxTop = b[1] + b[4] * 0.5f;
             if (boxTop > feetY + 0.05f) continue;        // can't rest on something above the feet
             float hx = b[3] * 0.5f + 0.30f, hz = b[5] * 0.5f + 0.30f;   // small ledge margin
-            if (px > b[0] - hx && px < b[0] + hx && pz > b[2] - hz && pz < b[2] + hz) {
-                if (boxTop > support) support = boxTop;
-            }
+            float yawB = b.length > 9 ? b[9] : 0f;
+            boolean over = yawB != 0f
+                    ? insideYawXZ(px, pz, b[0], b[2], hx, hz, yawB)     // rotated box: its REAL footprint
+                    : (px > b[0] - hx && px < b[0] + hx && pz > b[2] - hz && pz < b[2] + hz);
+            if (over && boxTop > support) support = boxTop;
         }
         return support;
     }
@@ -1828,6 +1869,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             z = clamp(z, -ARENA_LIMIT, ARENA_LIMIT);
         }
         io[0] = x; io[1] = z;
+    }
+
+    /** True if world point (wx,wz) lies inside the XZ footprint of a box centred at (bx,bz) with half-extents
+     *  (hx,hz) along its own axes, rotated yawDeg about Y — the containment twin of obbPush, used by every
+     *  footprint test that must respect rotated houses/fences (support, mantle, spawn, steering). */
+    private static boolean insideYawXZ(float wx, float wz, float bx, float bz, float hx, float hz, float yawDeg) {
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float dx = wx - bx, dz = wz - bz;
+        float lx = dx * ca - dz * sa, lz = dx * sa + dz * ca;    // world -> box-local (Ry(-yaw))
+        return lx > -hx && lx < hx && lz > -hz && lz < hz;
     }
 
     /** Resolve a point (io2[0]=x, io2[1]=z) out of an oriented box centred at (bx,bz), half-extents (hx,hz)
@@ -1986,6 +2038,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edCamDist = Math.max(hp[0], hp[1]) * s * 0.85f + 2.5f;   // close enough that the furniture is clearly visible
         edSetFloor(0);                                      // always start on the lowest storey
         selObj = -1; armedCat = -1; armedKind = -1; edPaletteOpen = false; edCatTab = 0;
+        editDirty = true;                                   // re-bake: hides this house's flat roof slab
         edSetToast("Innenraum - Etage " + (edFloor + 1) + ": Moebel antippen und bearbeiten");
     }
     /** Storeys of an editor house (from its preset height). */
@@ -2016,6 +2069,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edInsideHouse = -1; edFloor = 0; edCamPivotY = 0f;
         edCamPivotX = edSavePivotX; edCamPivotZ = edSavePivotZ; edCamYaw = edSaveYaw; edCamPitch = edSavePitch; edCamDist = edSaveDist;
         selObj = -1; armedCat = -1; armedKind = -1;
+        editDirty = true;                                   // re-bake: the house's roof slab is drawn again
     }
     /** Turn a house's auto-furnished (baked) interior into editable FU furniture pieces, once. Marks the house
      *  custom-furnished (field 6) so its baked furniture + ceiling stay off and a plain floor is drawn instead. */
@@ -2075,6 +2129,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float ey = Math.max(1.5f, edCamPivotY + edCamDist * sp);
         float ez = edCamPivotZ + edCamDist * cp * (float) Math.cos(edCamYaw);
         Matrix.setLookAtM(view, 0, ex, ey, ez, edCamPivotX, edCamPivotY, edCamPivotZ, 0f, 1f, 0f);
+        float fdx = edCamPivotX - ex, fdy = edCamPivotY - ey, fdz = edCamPivotZ - ez;
+        float fl = (float) Math.sqrt(fdx * fdx + fdy * fdy + fdz * fdz); if (fl < 1e-4f) fl = 1f;
+        setCamBasis(fdx / fl, fdy / fl, fdz / fl);   // sky follows the orbit camera (was stale gameplay basis)
         mul4(edVP, proj, view);
 
         input.getEditPan(edPanArr);
@@ -2096,12 +2153,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean grabbing = selObj >= 0 && armedCat < 0 && panActive && (edGrabbed || edRayHitsObj(selObj, panX, panY));
         if (grabbing) {
             float[] o = editObjs.get(selObj);
+            // Drag along the object's own floor plane: upper-storey furniture used to be dragged against the
+            // GROUND plane, which put the touch point far off the piece under the steep interior camera.
+            float dragY = ((int) o[0] == 0 && o.length > 6) ? o[6] : 0f;
             if (!edGrabbed) {
-                if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+                if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, dragY, edHit)) {
                     edGrabOffX = o[2] - edHit[0]; edGrabOffZ = o[3] - edHit[2];
                     edGrabbed = true; edGrabMoved = false;
                 }
-            } else if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, 0f, edHit)) {
+            } else if (screenRay(panX, panY, width, height, edVP, edRO, edRD) && rayPlaneY(edRO, edRD, dragY, edHit)) {
                 float nx = edHit[0] + edGrabOffX, nz = edHit[2] + edGrabOffZ;
                 if (!edGrabMoved && (Math.abs(nx - o[2]) > 0.03f || Math.abs(nz - o[3]) > 0.03f)) {
                     edPushUndo("MOD", selObj, o); edGrabMoved = true;   // one snapshot, only once it truly moves
@@ -2157,7 +2217,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float fx = 0.12f, fz = 0.12f, top = 0.2f;
             float[][] rec = (kind >= 0 && kind < FURN.length) ? FURN[kind] : FURN[0];
             for (float[] p : rec) { fx = Math.max(fx, Math.abs(p[0]) + p[3] * 0.5f); fz = Math.max(fz, Math.abs(p[2]) + p[5] * 0.5f); top = Math.max(top, p[1] + p[4] * 0.5f); }
-            hx = fx * s; hz = fz * s; hy = top * s * 0.5f; cy = top * s * 0.5f;
+            float fy = o.length > 6 ? o[6] : 0f;          // upper-floor furniture sits (and is picked) at its storey
+            hx = fx * s; hz = fz * s; hy = top * s * 0.5f; cy = top * s * 0.5f + fy;
         } else if (cat == 2) {
             float[] pr = PROP_PRESETS[Math.max(0, Math.min(kind, PROP_PRESETS.length - 1))];
             hx = pr[0] * 0.5f * s; hz = pr[2] * 0.5f * s; hy = pr[1] * 0.5f * s; cy = pr[1] * 0.5f * s;
@@ -2187,6 +2248,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int best = -1; float bestT = 1e30f; float[] b = new float[6];
         for (int i = 0; i < editObjs.size(); i++) {
             float[] o = editObjs.get(i);
+            // Inside a house, house shells are transparent to picking: the shell's bounds enclose all its
+            // furniture, so the top-down ray always hit the shell first and furniture was unselectable.
+            if (edInsideHouse >= 0 && (int) o[0] == 3) continue;
             edObjBounds(o, b);
             float t = rayBox(edRO, edRD, b[0], b[1], b[2], b[3] + 0.2f, b[4] + 0.2f, b[5] + 0.2f, o[4]);
             if (t >= 0f && t < bestT) { bestT = t; best = i; }
@@ -2258,7 +2322,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (edHouseMeshDirty) { bakeOverlayHouses(); edHouseMeshDirty = false; }
         java.util.List<float[]> ov = new java.util.ArrayList<float[]>();
         java.util.List<float[]> doorSink = new java.util.ArrayList<float[]>();   // placed-house door leaves (discarded -> open doorway)
-        for (float[] o : editObjs) {
+        for (int ei = 0; ei < editObjs.size(); ei++) {
+            float[] o = editObjs.get(ei);
             int cat = (int) o[0], kind = (int) o[1]; float x = o[2], z = o[3], yaw = o[4], s = o[5] <= 0f ? 1f : o[5];
             float ca = cosD(yaw), sa = sinD(yaw);
             if (cat == 0) {
@@ -2277,9 +2342,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 // Bake a placed house as a box-shell (walls with a door gap + roof slab + doorstep +
                 // chimney/awning) straight into the overlay; the discarded door leaf leaves a walk-in doorway.
                 float[] hp = HOUSE_PRESETS[Math.max(0, Math.min(kind, HOUSE_PRESETS.length - 1))];
+                int shellStart = ov.size();
                 addBuilding(ov, doorSink, x, z, hp[0] * s, hp[1] * s, hp[2] * s,
                             (int) hp[3], (int) hp[4], hp[5], hp[6], hp[7], (int) hp[8],
                             hp[9] * s, hp[10] * s, hp[11], hp[12], hp[13], (int) hp[14], (int) hp[15], yaw);
+                if (ei == edInsideHouse) {
+                    // Looking inside THIS house from above: its flat roof-slab box used to stay visible and
+                    // completely hid the interior (the "empty storey" the player actually saw WAS the slab).
+                    // Mark the slab render-skip: still collides as the ceiling, no longer drawn. The pitched
+                    // ovRoof mesh is already hidden by the draw loop while edInsideHouse >= 0.
+                    float slabY = hp[2] * s + 0.15f;
+                    for (int bi = shellStart; bi < ov.size(); bi++) {
+                        float[] bb = ov.get(bi);
+                        if (Math.abs(bb[1] - slabY) < 0.02f && Math.abs(bb[4] - 0.3f) < 0.02f) {
+                            if (bb.length < 12) { float[] nb = new float[12]; System.arraycopy(bb, 0, nb, 0, bb.length); ov.set(bi, nb); bb = nb; }
+                            bb[10] = 1f;
+                            break;
+                        }
+                    }
+                }
                 if (o.length > 6 && o[6] != 0f) {   // unpacked house: baked interior/ceiling off -> a plain thin (walkable) floor
                     float fw = Math.max(0.6f, hp[0] * s - 0.3f), fd = Math.max(0.6f, hp[1] * s - 0.3f);
                     ov.add(new float[]{x, 0.02f, z, fw, 0.04f, fd, 0.55f, 0.45f, 0.34f, yaw});
@@ -2300,12 +2381,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void makeOverlayTrees() {
         int cnt = 0; for (float[] o : editObjs) if ((int) o[0] == 1) cnt++;
         if (cnt == 0) { overlayTrees = null; overlayTreeVerts = 0; return; }
-        float[] d = new float[cnt * 6000 + 256]; int oo = 0; Random r = new Random(707);
+        // Budget = the true worst-case entry: a flowering bush is up to 25 vBoxes = 7200 floats (the old
+        // 6000/6100 budget was smaller -> a single such bush could overflow the array = GL-thread crash).
+        float[] d = new float[cnt * 7400 + 512]; int oo = 0; Random r = new Random(707);
         int[] fc = {4, 5, 6, 7, 8, 9, 10}; float uStem = cell(3), uCtr = cell(11);
         for (float[] o : editObjs) {
             if ((int) o[0] != 1) continue;
             int kind = (int) o[1]; float x = o[2], z = o[3], s = o[5] <= 0f ? 1f : o[5]; float by = terrainH(x, z);
-            if (oo > d.length - 6100) break;
+            if (oo > d.length - 7300) break;
             if (kind == 1) oo = vBush(d, oo, x, by, z, r.nextInt(6), r, fc);
             else if (kind == 2) oo = vFlower(d, oo, x, by, z, 1 + r.nextInt(4), r, uStem, uCtr, fc);
             else oo = vTree(d, oo, x, by, z, Math.max(0.4f, s), true, r);
@@ -2342,7 +2425,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
     private void edRotate(float deg) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[4] = ((o[4] + deg) % 360f + 360f) % 360f; editDirty = true; edHouseMeshDirty = true; }
     private void edScale(float f) { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("MOD", selObj, o); o[5] = clamp((o[5] <= 0f ? 1f : o[5]) * f, 0.3f, 4f); editDirty = true; edHouseMeshDirty = true; }
-    private void edDelete() { if (selObj < 0) return; float[] o = editObjs.get(selObj); edPushUndo("DEL", selObj, o); editObjs.remove(selObj); selObj = -1; editDirty = true; edHouseMeshDirty = true; if (sfx != null) sfx.swap(); }
+    private void edDelete() {
+        if (selObj < 0) return;
+        int del = selObj;
+        edPushUndo("DEL", del, editObjs.get(del));
+        // edInsideHouse is a raw index into editObjs: keep it valid across the removal (leave the interior
+        // view if its own house is deleted; shift it down if an earlier object is removed).
+        if (del == edInsideHouse) edLeaveHouse();
+        else if (del < edInsideHouse) edInsideHouse--;
+        editObjs.remove(del);
+        selObj = -1; editDirty = true; edHouseMeshDirty = true; if (sfx != null) sfx.swap();
+    }
     private void edDuplicate() {
         if (selObj < 0) return; float[] o = editObjs.get(selObj);
         float[] c = o.clone(); c[2] += 1.5f; c[3] += 1.5f;
@@ -2357,8 +2450,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (edUndo.isEmpty()) { edSetToast("Nichts rueckgaengig"); return; }
         Object[] e = edUndo.remove(edUndo.size() - 1);
         String op = (String) e[0]; int idx = ((Integer) e[1]).intValue(); float[] before = (float[]) e[2];
-        if (op.equals("ADD")) { if (idx >= 0 && idx < editObjs.size()) editObjs.remove(idx); selObj = -1; }
-        else if (op.equals("DEL")) { if (before != null) { idx = Math.min(idx, editObjs.size()); editObjs.add(idx, before); selObj = idx; } }
+        if (op.equals("ADD")) {
+            if (idx >= 0 && idx < editObjs.size()) {
+                if (idx == edInsideHouse) edLeaveHouse();            // keep edInsideHouse valid across the removal
+                else if (idx < edInsideHouse) edInsideHouse--;
+                editObjs.remove(idx);
+            }
+            selObj = -1;
+        }
+        else if (op.equals("DEL")) { if (before != null) { idx = Math.min(idx, editObjs.size()); editObjs.add(idx, before); if (idx <= edInsideHouse) edInsideHouse++; selObj = idx; } }
         else if (op.equals("MOD")) { if (before != null && idx >= 0 && idx < editObjs.size()) editObjs.set(idx, before); selObj = idx; }
         editDirty = true; edHouseMeshDirty = true; edSetToast("Rueckgaengig");
     }
@@ -2392,16 +2492,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static String fr(float v) { return Float.toString(Math.round(v * 1000f) / 1000f); }
 
     private void saveLevel(boolean toast) {
+        java.io.FileWriter w = null;
         try {
             java.io.File dir = appCtx.getExternalFilesDir(null);
             if (dir == null) { if (toast) edSetToast("Speichern fehlgeschlagen (kein Speicher)"); return; }
-            java.io.File f = new java.io.File(dir, "level.lvl");
-            java.io.FileWriter w = new java.io.FileWriter(f);
+            w = new java.io.FileWriter(new java.io.File(dir, "level.lvl"));
             w.write("# AIGames in-game editor save\n");
             w.write(edSerialize());
-            w.close();
             if (toast) edSetToast("Gespeichert (" + editObjs.size() + " Objekte)");
         } catch (Exception e) { if (toast) edSetToast("Speichern fehlgeschlagen"); }
+        finally { if (w != null) try { w.close(); } catch (Exception e2) { /* fd released regardless */ } }
     }
 
     // ===================== in-game editor: rendering =====================
@@ -2714,6 +2814,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void restart() {
+        // Drain gameplay input queued while the camera was frozen (hub/summary/death): the frozen branch
+        // consumes nothing, so look deltas + jump/fire flags accumulated and fired all at once on the first
+        // frame of the next run (a violent camera snap). Menu-tap channels stay untouched.
+        input.consumeLook(lookTmp);
+        input.consumeJump(); input.consumeFire(); input.consumeAimToggle(); input.consumeSwitch();
         score = 0; combo = 1; comboTimer = 0f;
         runCash = 0; runXp = 0; runKills = 0; levelsGainedThisRun = 0; jumpsUsed = 0;
         curWeapon = firstOwnedWeapon();
@@ -2837,18 +2942,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     /** Persist the sandbox overlay to a SEPARATE <externalFiles>/sandbox.lvl (never level.lvl). Generic
      *  "O cat kind x z yaw scale f6" grammar so every field round-trips exactly. Best-effort (silent). */
     private void saveSandboxObjs() {
+        java.io.FileWriter w = null;
         try {
             if (appCtx == null) return;
             java.io.File dir = appCtx.getExternalFilesDir(null);
             if (dir == null) return;
-            java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "sandbox.lvl"));
+            w = new java.io.FileWriter(new java.io.File(dir, "sandbox.lvl"));
             w.write("# AIGames sandbox overlay: O cat kind x z yaw scale f6\n");
             for (float[] o : editObjs) {
                 float f6 = o.length > 6 ? o[6] : 0f, s = o[5] <= 0f ? 1f : o[5];
                 w.write("O " + (int) o[0] + ' ' + (int) o[1] + ' ' + fr(o[2]) + ' ' + fr(o[3]) + ' ' + fr(o[4]) + ' ' + fr(s) + ' ' + fr(f6) + '\n');
             }
-            w.close();
         } catch (Exception e) { /* best-effort persistence */ }
+        finally { if (w != null) try { w.close(); } catch (Exception e2) { /* fd released regardless */ } }
     }
 
     /** Reload the sandbox overlay from sandbox.lvl into editObjs (caller has already cleared it). Silent. */
@@ -2914,18 +3020,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (int i = 0; i < MAX_ENEMIES; i++) {
                 if (!enAlive[i]) continue;
                 float sc = enScale[i];                    // bosses are bigger → bigger hit boxes
+                float base = terrainH(enX[i], enZ[i]);    // hit boxes stand where the enemy is DRAWN (not y=0)
                 float bt = rayBox(px, py, pz, dx, dy, dz,
-                        enX[i] - 0.45f * sc, 0f, enZ[i] - 0.45f * sc, enX[i] + 0.45f * sc, 1.24f * sc, enZ[i] + 0.45f * sc);
+                        enX[i] - 0.45f * sc, base, enZ[i] - 0.45f * sc, enX[i] + 0.45f * sc, base + 1.24f * sc, enZ[i] + 0.45f * sc);
                 if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
                 float ht = rayBox(px, py, pz, dx, dy, dz,
-                        enX[i] - 0.24f * sc, 1.26f * sc, enZ[i] - 0.24f * sc, enX[i] + 0.24f * sc, 1.78f * sc, enZ[i] + 0.24f * sc);
+                        enX[i] - 0.24f * sc, base + 1.26f * sc, enZ[i] - 0.24f * sc, enX[i] + 0.24f * sc, base + 1.78f * sc, enZ[i] + 0.24f * sc);
                 if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
             }
             for (int i = 0; i < boxes.length; i++) {
                 float[] b = boxes[i];
-                float t = rayBox(px, py, pz, dx, dy, dz,
-                        b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
-                        b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
+                float t;
+                if (b.length > 9 && b[9] != 0f) {         // rotated wall/fence: yaw-aware ray test (bullets used
+                    shotO[0] = px; shotO[1] = py; shotO[2] = pz;   //  to hit the invisible UNROTATED footprint)
+                    shotD[0] = dx; shotD[1] = dy; shotD[2] = dz;
+                    t = rayBox(shotO, shotD, b[0], b[1], b[2], b[3] * 0.5f, b[4] * 0.5f, b[5] * 0.5f, b[9]);
+                } else {
+                    t = rayBox(px, py, pz, dx, dy, dz,
+                            b[0] - b[3] * 0.5f, b[1] - b[4] * 0.5f, b[2] - b[5] * 0.5f,
+                            b[0] + b[3] * 0.5f, b[1] + b[4] * 0.5f, b[2] + b[5] * 0.5f);
+                }
                 if (t >= 0f && t < best) { best = t; type = 3; idx = i; }
             }
 
@@ -3236,10 +3350,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (dx * dx + dz * dz < cullSq) blob(t[0], terrainH(t[0], t[1]), 1.3f * t[2], t[1], 1.05f * t[2]);
         }
         for (float[] o : editObjs) {                              // editor-placed plants/props also cast a contact shadow
-            if ((int) o[0] == 1) {                                  // plant
+            if ((int) o[0] == 1) {                                  // plant: shadow sized by KIND (a bush got a full tree oval)
+                int pk = (int) o[1];
+                if (pk == 2) continue;                              // flowers are too small to cast a blob
                 float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
                 float dx = ox - px, dz = oz - pz;
-                if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), 1.3f * s, oz, 1.05f * s);
+                float sh = pk == 1 ? 0.5f * s : 1.3f * s, sr = pk == 1 ? 0.6f * s : 1.05f * s;
+                if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), sh, oz, sr);
             } else if ((int) o[0] == 2) {                           // prop
                 float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
                 float dx = ox - px, dz = oz - pz;
@@ -4633,12 +4750,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  skipping roads and building footprints. Baked into one mesh; sets vegVerts. */
     /** Level-placed trees baked into one mesh (reuses the village tree model + foliage atlas). */
     private float[] makePlacedTrees() {
-        float[] d = new float[treeList.length * 6000 + 256];
+        // 7400/entry covers the worst case (flowering bush = 7200 floats); the guard below is the crash
+        // stop the loop never had — a level whose FIRST plant rolled an oversized bush crashed on load.
+        float[] d = new float[treeList.length * 7400 + 512];
         int o = 0;
         Random r = new Random(303);
         int[] flowerCells = {4, 5, 6, 7, 8, 9, 10};
         float uStem = cell(3), uCtr = cell(11);
         for (float[] tr : treeList) {
+            if (o > d.length - 7300) break;
             int kind = tr.length > 3 ? (int) tr[3] : 0;        // 0 tree · 1 bush · 2 flower
             float by = terrainH(tr[0], tr[1]);
             if (kind == 1)      o = vBush(d, o, tr[0], by, tr[1], r.nextInt(6), r, flowerCells);
@@ -4726,6 +4846,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private boolean inBuildingXZ(float x, float z, float m) {
         for (int i = 0; i < boxes.length; i++) {
             float[] b = boxes[i];
+            float yawB = b.length > 9 ? b[9] : 0f;
+            if (yawB != 0f) {                             // rotated house/fence: test its real footprint
+                if (insideYawXZ(x, z, b[0], b[2], b[3] * 0.5f + m, b[5] * 0.5f + m, yawB)) return true;
+                continue;
+            }
             if (x > b[0] - b[3] * 0.5f - m && x < b[0] + b[3] * 0.5f + m
              && z > b[2] - b[5] * 0.5f - m && z < b[2] + b[5] * 0.5f + m) return true;
         }
@@ -5206,7 +5331,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     }
                 }
             }
-            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty() && furns.isEmpty()) return false;
+            // ehouses counts too: a level consisting ONLY of editor-placed houses used to be rejected here,
+            // silently discarding them and letting the next save overwrite the file (permanent data loss).
+            if (hs.isEmpty() && props.isEmpty() && roadList.isEmpty() && trees.isEmpty() && furns.isEmpty() && ehouses.isEmpty()) return false;
             // No houses/roads = an "overlay" save on top of the procedural town: build that base, then load
             // the file's furniture + plants as the EDITABLE overlay (so an in-game save round-trips + re-edits).
             if (hs.isEmpty() && roadList.isEmpty()) {
@@ -6253,8 +6380,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 2, y + 2, p);
         }
+        // Per-tile tone variation aligned to the tile grid: individual shingles read light/dark instead of
+        // one flat sheet (still neutral — uColor supplies the roof hue).
+        for (int row = 0; row < 12; row++) {
+            float y0 = row * N / 12f, off = (row % 2) * (N / 16f);
+            for (int col = -1; col <= 8; col++) {
+                float x0 = col * N / 8f + off;
+                int v = rnd.nextInt(3);
+                if (v == 2) continue;                                // ~1/3 of tiles keep the base tone
+                p.setColor(v == 0 ? 0x18000000 : 0x12FFFFFF);
+                c.drawRect(x0 + 1.5f, y0 + 2.5f, x0 + N / 8f - 1.5f, y0 + N / 12f, p);
+            }
+        }
         p.setColor(0x55000000);                                     // horizontal tile rows
         for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y, N, y + 2.5f, p); }
+        p.setColor(0x1C000000);                                     // soft shadow lip under each row (tiles overlap)
+        for (int row = 0; row <= 12; row++) { float y = row * N / 12f; c.drawRect(0, y + 2.5f, N, y + 5.5f, p); }
         p.setColor(0x33000000);                                     // staggered vertical seams
         for (int row = 0; row < 12; row++) {
             float y = row * N / 12f, off = (row % 2) * (N / 16f);
@@ -6344,6 +6485,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 int v = rnd.nextInt(34);                            // per-brick tone variation
                 p.setColor(0xFF000000 | (cl255(0x9a - v + rnd.nextInt(18)) << 16) | (cl255(0x55 - v / 2) << 8) | cl255(0x42 - v / 2));
                 c.drawRect(x0, y0, x1, y1, p);
+                if (rnd.nextInt(9) == 0) {                          // the odd over-fired dark header brick
+                    p.setColor(0x3C2A1812);
+                    c.drawRect(x0, y0, x1, y1, p);
+                }
+                p.setColor(0x2EFFFFFF);                             // lit top edge — bricks read as raised
+                c.drawRect(x0, y0, x1, y0 + 1.4f, p);
+                p.setColor(0x30000000);                             // shadowed bottom edge into the mortar bed
+                c.drawRect(x0, y1 - 1.6f, x1, y1, p);
             }
         }
         p.setColor(0x22000000);                                     // weathering speckle
@@ -6364,9 +6513,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float y0 = row * rh + gap, y1 = (row + 1) * rh - gap, off = (row % 2) * (bw * 0.5f);
             for (int col = -1; col <= 3; col++) {
                 float x0 = col * bw + off + gap, x1 = (col + 1) * bw + off - gap;
-                int s = 0x9c - rnd.nextInt(26) + rnd.nextInt(14);   // slightly warm grey
+                int s = 0x9c - rnd.nextInt(34) + rnd.nextInt(18);   // wider tone range block to block
                 p.setColor(0xFF000000 | (cl255(s) << 16) | (cl255(s - 2) << 8) | cl255(s - 6));
                 c.drawRect(x0, y0, x1, y1, p);
+                p.setColor(0x26FFFFFF);                             // chiselled lit top edge
+                c.drawRect(x0, y0, x1, y0 + 2f, p);
+                p.setColor(0x2E000000);                             // recessed shadowed bottom edge
+                c.drawRect(x0, y1 - 2.2f, x1, y1, p);
             }
         }
         p.setColor(0x18FFFFFF);                                     // aggregate highlight speckle
@@ -6393,6 +6546,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         p.setColor(0x1C000000);                                     // vertical grain streaks
         for (int k = 0; k < 220; k++) { float x = rnd.nextInt(N), y = rnd.nextInt(N), len = 8 + rnd.nextInt(26); c.drawRect(x, y, x + 1.2f, y + len, p); }
+        p.setColor(0x36241505);                                     // the odd knot in a board
+        for (int k = 0; k < 12; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 2f + rnd.nextFloat() * 2.5f, p);
         return b;
     }
 
@@ -6429,11 +6584,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             p.setColor(0x55000000 | col);
             c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 18 + rnd.nextInt(70), p);
         }
+        for (int k = 0; k < 26; k++) {                  // sun-dried warm patches (meadow, not golf lawn)
+            p.setColor(0x2C6E6430);
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 10 + rnd.nextInt(34), p);
+        }
         for (int k = 0; k < 5000; k++) {                // grass speckle
             int v = rnd.nextInt(70);
             p.setColor((0x40 << 24) | ((0x30 + v) << 16) | ((0x44 + v) << 8) | (0x22 + v / 2));
             float x = rnd.nextInt(N), y = rnd.nextInt(N);
             c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1 + rnd.nextInt(3), p);
+        }
+        for (int k = 0; k < 900; k++) {                 // dark blade clusters — adds depth between the speckle
+            p.setColor(0x30263A18);
+            float x = rnd.nextInt(N), y = rnd.nextInt(N);
+            c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 2 + rnd.nextInt(3), p);
         }
         p.setColor(0x66556055);                          // scattered pebbles
         for (int k = 0; k < 120; k++) c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 1 + rnd.nextInt(2), p);
@@ -6559,7 +6723,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // wall stays a DARKER version of itself instead of a washed-out different-looking material. Rim is halved
         // too — at the grazing angles of the overhead build view it was haloing the far walls bright.
         "    col=(base*(uAmbient*vec3(0.165,0.17,0.185)+uSunInt*df*vec3(1.30,1.17,0.95)+fl*vec3(0.26,0.27,0.30))" +
-        "        +sp*vec3(0.9)*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +
+        "        +sp*vec3(0.90,0.81,0.67)*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +   // specular carries the sun's warmth, not neutral white
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
@@ -6628,6 +6792,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    cloud=mix(cloud,vec3(0.60,0.63,0.68),uOvercast*0.7)+halo*0.6*vec3(1.0,0.9,0.7);" +   // greyer storm cloud
         "    col=mix(col,cloud,cov*mix(0.92,0.98,uOvercast));" +
         "  }" +
+        "  col+=vec3((hash(vP*913.7)-0.5)*0.008);" +   // tiny dither breaks up mediump banding in the gradient
         "  gl_FragColor=vec4(pow(min(col,vec3(1.0)),vec3(0.4545)),1.0);" +
         "}";
 
