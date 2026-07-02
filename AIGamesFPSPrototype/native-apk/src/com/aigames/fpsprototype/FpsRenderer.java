@@ -384,7 +384,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] enWind = new float[MAX_ENEMIES];   // >0 = winding up to strike, <0 = post-whiff recovery
     private static final float WINDUP = 0.42f;                // telegraph time before a zombie's hit lands
     private final int[] enOutfit = new int[MAX_ENEMIES];
-    private final int[] enType = new int[MAX_ENEMIES];   // 0 = normal, 1 = runner (fast/weak), 2 = brute (slow/tanky)
+    private final int[] enType = new int[MAX_ENEMIES];   // 0 = normal, 1 = CRAWLER (fast/weak, legless, low), 2 = brute (slow/tanky)
+    private final float[] enVar = new float[MAX_ENEMIES]; // per-zombie 0..1: skin tint, clothing wear, wound layout
     private final int[] enFaceType = new int[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
     private final float[] enScale = new float[MAX_ENEMIES];   // 1 = normal, >1 = (mini)boss
@@ -999,6 +1000,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHurt[i] = 0f; enWind[i] = 0f;
                 enKx[i] = 0f; enKz[i] = 0f;
                 enFaceType[i] = rng.nextInt(6);
+                enVar[i] = rng.nextFloat();                            // per-zombie skin/wear/wound variety
                 float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
                 if (bossPending > 0) {
                     enBoss[i] = bossPending;
@@ -1045,8 +1047,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int c = rng.nextInt(4);
             if (c == 0)      { pR[i] = o[0]; pG[i] = o[1]; pB[i] = o[2]; }   // shirt
             else if (c == 1) { pR[i] = o[3]; pG[i] = o[4]; pB[i] = o[5]; }   // pants
-            else if (c == 3) { pR[i] = 1f; pG[i] = 0.90f; pB[i] = 0.45f; }   // hot ember garnish
-            else             { pR[i] = 0.97f; pG[i] = 0.83f; pB[i] = 0.30f; } // yellow head
+            else if (c == 3) { pR[i] = 0.44f; pG[i] = 0.09f; pB[i] = 0.07f; } // dark gore garnish
+            else             { pR[i] = 0.70f; pG[i] = 0.73f; pB[i] = 0.50f; } // pale undead skin
             pSize[i] = (0.05f + rng.nextFloat() * 0.045f) * scale;
             pMaxLife[i] = 0.55f + rng.nextFloat() * 0.45f;
             pLife[i] = pMaxLife[i];
@@ -1302,85 +1304,141 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 bob += 0.18f + 0.05f * (float) Math.sin(timeAcc * 12f);
                 wr = 0.58f + 0.32f * (float) Math.sin(timeAcc * 18f);   // pulsing but always strongly red
             }
+            // Per-zombie variety: pale sickly skin graded from greenish to grey, clothing wear, wound layout.
+            float sv = enVar[i], wv = (sv * 7.31f) % 1f;
+            float wear = 0.76f + 0.34f * wv;
+            float skR = 0.64f + 0.16f * sv, skG = 0.74f - 0.04f * sv, skB = 0.44f + 0.14f * sv;
             float[] o = OUTFITS[enOutfit[i]];
-            float shR = (o[0] + hf) * (1f - wr) + 1.00f * wr, shG = (o[1] + hf) * (1f - wr) + 0.16f * wr, shB = (o[2] + hf) * (1f - wr) + 0.13f * wr;
-            float paR = (o[3] + hf) * (1f - wr) + 1.00f * wr, paG = (o[4] + hf) * (1f - wr) + 0.16f * wr, paB = (o[5] + hf) * (1f - wr) + 0.13f * wr;
-            float hdR = (0.97f + hf) * (1f - wr) + 1.00f * wr, hdG = (0.83f + hf) * (1f - wr) + 0.16f * wr, hdB = (0.30f + hf) * (1f - wr) + 0.13f * wr;
+            float shR = (o[0] * wear + hf) * (1f - wr) + 1.00f * wr, shG = (o[1] * wear + hf) * (1f - wr) + 0.16f * wr, shB = (o[2] * wear + hf) * (1f - wr) + 0.13f * wr;
+            float paR = (o[3] * wear + hf) * (1f - wr) + 1.00f * wr, paG = (o[4] * wear + hf) * (1f - wr) + 0.16f * wr, paB = (o[5] * wear + hf) * (1f - wr) + 0.13f * wr;
+            float hdR = (skR + hf) * (1f - wr) + 1.00f * wr, hdG = (skG + hf) * (1f - wr) + 0.16f * wr, hdB = (skB + hf) * (1f - wr) + 0.13f * wr;
+            float blR = (0.34f + hf) * (1f - wr) + 1.00f * wr, blG = (0.06f + hf * 0.3f) * (1f - wr) + 0.16f * wr, blB = (0.05f + hf * 0.3f) * (1f - wr) + 0.13f * wr;
+            boolean crawler = enType[i] == 1 && enBoss[i] == 0;
+            if (crawler) bob *= 0.5f;                          // crawl lurch is flatter than a walk bob
             Matrix.setIdentityM(gunBase, 0);                  // reuse as enemy base
             Matrix.translateM(gunBase, 0, enX[i], terrainH(enX[i], enZ[i]) + bob, enZ[i]);
             Matrix.rotateM(gunBase, 0, (float) Math.toDegrees(enFace[i]), 0f, 1f, 0f);
             if (enScale[i] != 1f) Matrix.scaleM(gunBase, 0, enScale[i], enScale[i], enScale[i]);  // bosses are bigger
-            enemyPart(0f, 0.95f, 0f, 0.50f, 0.75f, 0.30f, shR, shG, shB);                       // torso (shirt)
-            enemyPart(0f, 1.50f, 0f, 0.34f, 0.34f, 0.34f, hdR, hdG, hdB);                      // head
-            enemyFace(enFaceType[i]);                                                           // goofy face (varies)
-            enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f,  sw * 26f, paR, paG, paB); // leg L
-            enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, -sw * 26f, paR, paG, paB); // leg R
-            enemyLimb(-0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f, -sw * 22f, shR, shG, shB); // arm L
-            enemyLimb( 0.33f, 1.30f, 0f, 0.29f, 0.13f, 0.58f, 0.16f,  sw * 22f, shR, shG, shB); // arm R
-            // two-tone limbs: dark boots + skin-tone hands, welded to the same pivots/swing so they track
-            // the walk cycle, colours derived from the blended shirt/pants/head values so hurt-flash and
-            // the red attack telegraph propagate automatically.
-            enemyLimb(-0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f,  sw * 26f, paR * 0.42f, paG * 0.38f, paB * 0.34f); // boot L
-            enemyLimb( 0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f, -sw * 26f, paR * 0.42f, paG * 0.38f, paB * 0.34f); // boot R
-            enemyLimb(-0.33f, 1.30f, 0f, 0.545f, 0.135f, 0.11f, 0.17f, -sw * 22f, hdR, hdG, hdB); // hand L
-            enemyLimb( 0.33f, 1.30f, 0f, 0.545f, 0.135f, 0.11f, 0.17f,  sw * 22f, hdR, hdG, hdB); // hand R
+
+            if (crawler) {
+                // ===== CRAWLER: no legs -- a torn torso hauling itself on its hands =====
+                // chest propped up on the arms, pelvis stump dragging along the ground behind it
+                enemyPart(0f, 0.26f, -0.02f, 0.44f, 0.24f, 0.66f, shR, shG, shB);               // prone torso
+                enemyPart(0f, 0.17f, -0.44f, 0.38f, 0.20f, 0.26f, paR, paG, paB);               // pelvis stump, dragging
+                enemyPart(0f, 0.16f, -0.585f, 0.30f, 0.16f, 0.05f, blR, blG, blB);              // torn-off edge
+                enemyPart(0f, 0.40f, 0.38f, 0.34f, 0.34f, 0.34f, hdR, hdG, hdB);                // head, raised in front
+                faceDy = -1.10f; faceDz = 0.38f;
+                enemyFace(enFaceType[i]);
+                faceDy = 0f; faceDz = 0f;
+                float aL = -64f + sw * 12f, aR = -64f - sw * 12f;                               // alternating crawl pull
+                enemyLimb(-0.27f, 0.34f, 0.22f, 0.14f, 0.13f, 0.28f, 0.16f, aL, shR, shG, shB); // sleeves
+                enemyLimb( 0.27f, 0.34f, 0.22f, 0.14f, 0.13f, 0.28f, 0.16f, aR, shR, shG, shB);
+                enemyLimb(-0.27f, 0.34f, 0.22f, 0.38f, 0.12f, 0.24f, 0.15f, aL, hdR, hdG, hdB); // bare forearms
+                enemyLimb( 0.27f, 0.34f, 0.22f, 0.38f, 0.12f, 0.24f, 0.15f, aR, hdR, hdG, hdB);
+                enemyLimb(-0.27f, 0.34f, 0.22f, 0.50f, 0.13f, 0.11f, 0.16f, aL, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f); // hands
+                enemyLimb( 0.27f, 0.34f, 0.22f, 0.50f, 0.13f, 0.11f, 0.16f, aR, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f);
+            } else {
+                // ===== WALKER / BRUTE: hunched shamble, arms reaching for the player =====
+                float tw = enType[i] == 2 ? 0.56f : 0.50f;                                      // brutes are broader
+                enemyPart(0f, 0.92f, 0.02f, tw, 0.70f, 0.30f, shR, shG, shB);                   // torso, pitched forward
+                enemyPart(0f, 1.24f, -0.09f, tw * 0.88f, 0.26f, 0.24f, shR * 0.86f, shG * 0.86f, shB * 0.86f); // hunched upper back
+                enemyPart(0f, 1.33f, 0.04f, 0.16f, 0.10f, 0.16f, hdR * 0.92f, hdG * 0.92f, hdB * 0.92f);       // neck
+                enemyPart(0f, 1.47f, 0.10f, 0.34f, 0.34f, 0.34f, hdR, hdG, hdB);                // head, jutting forward
+                faceDy = -0.03f; faceDz = 0.10f;
+                enemyFace(enFaceType[i]);
+                faceDy = 0f; faceDz = 0f;
+                // tattered shirt hem strips + wound patches laid out by the per-zombie seed
+                enemyPart(-0.16f, 0.52f, 0.05f, 0.11f, 0.15f, 0.30f, shR * 0.80f, shG * 0.80f, shB * 0.80f);
+                enemyPart( 0.06f, 0.49f, 0.02f, 0.10f, 0.13f, 0.30f, shR * 0.74f, shG * 0.74f, shB * 0.74f);
+                enemyPart( 0.18f, 0.52f, 0.04f, 0.09f, 0.14f, 0.30f, shR * 0.82f, shG * 0.82f, shB * 0.82f);
+                if (sv > 0.35f) enemyPart(0.12f, 1.04f, 0.155f, 0.15f, 0.18f, 0.02f, blR, blG, blB);   // torso wound
+                if (sv > 0.70f) enemyPart(-0.15f, 0.86f, 0.155f, 0.11f, 0.13f, 0.02f, blR, blG, blB);  // second gash
+                // shambling legs: one drags behind (asymmetric swing), boots track the same angles
+                float lL = sw * 20f, lR = -sw * 30f + 7f;
+                enemyLimb(-0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, lL, paR, paG, paB);
+                enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, lR, paR, paG, paB);
+                enemyLimb(-0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f, lL, paR * 0.42f, paG * 0.38f, paB * 0.34f);
+                enemyLimb( 0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f, lR, paR * 0.42f, paG * 0.38f, paB * 0.34f);
+                // the classic zombie reach: arms thrust forward, swaying slightly, rising during the telegraph
+                float aL = -74f + sw * 9f - wr * 16f, aR = -74f - sw * 9f - wr * 16f;
+                enemyLimb(-0.33f, 1.28f, 0.02f, 0.16f, 0.13f, 0.32f, 0.16f, aL, shR, shG, shB); // sleeves
+                enemyLimb( 0.33f, 1.28f, 0.02f, 0.16f, 0.13f, 0.32f, 0.16f, aR, shR, shG, shB);
+                enemyLimb(-0.33f, 1.28f, 0.02f, 0.42f, 0.12f, 0.26f, 0.15f, aL, hdR, hdG, hdB); // bare forearms
+                enemyLimb( 0.33f, 1.28f, 0.02f, 0.42f, 0.12f, 0.26f, 0.15f, aR, hdR, hdG, hdB);
+                enemyLimb(-0.33f, 1.28f, 0.02f, 0.585f, 0.13f, 0.11f, 0.16f, aL, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f); // hands
+                enemyLimb( 0.33f, 1.28f, 0.02f, 0.585f, 0.13f, 0.11f, 0.16f, aR, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f);
+            }
         }
     }
 
-    /** One of several funny / dopey faces (chosen per enemy). Features drawn UNLIT (mode 4)
-     *  for high contrast on the yellow head; local +z always faces the player. */
+    /** Six undead faces (one chosen per enemy), drawn UNLIT (mode 4) for high contrast; local +z always
+     *  faces the player. Dark hollow sockets + small emissive red pupils are the shared zombie tell. */
     private void enemyFace(int t) {
-        float fz = 0.176f;
+        float fz = 0.176f, fzp = fz + 0.010f;
         switch (t) {
-            case 0:   // big goofy open grin  :D
-                enemyFacePart(-0.085f, 1.560f, fz, 0.052f, 0.054f, 0.02f, 0f, 0f, 0f);   // eye L
-                enemyFacePart( 0.085f, 1.560f, fz, 0.052f, 0.054f, 0.02f, 0f, 0f, 0f);   // eye R
-                enemyFacePart( 0.000f, 1.452f, fz, 0.190f, 0.040f, 0.02f, 0f, 0f, 0f);   // wide mouth top
-                enemyFacePart( 0.000f, 1.410f, fz, 0.120f, 0.055f, 0.02f, 0f, 0f, 0f);   // open lower
+            case 0:   // hollow stare, jaw hanging open, chin drip
+                enemyFacePart(-0.085f, 1.555f, fz, 0.080f, 0.078f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart( 0.085f, 1.555f, fz, 0.080f, 0.078f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart(-0.085f, 1.550f, fzp, 0.030f, 0.030f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.085f, 1.550f, fzp, 0.030f, 0.030f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.000f, 1.408f, fz, 0.110f, 0.130f, 0.02f, 0.05f, 0.02f, 0.02f);   // hanging jaw
+                enemyFacePart( 0.020f, 1.330f, fz, 0.028f, 0.085f, 0.02f, 0.34f, 0.06f, 0.05f);   // drip
                 break;
-            case 1:   // surprised dope  o_o
-                enemyFacePart(-0.088f, 1.560f, fz, 0.070f, 0.070f, 0.02f, 0f, 0f, 0f);   // big eye L
-                enemyFacePart( 0.088f, 1.560f, fz, 0.070f, 0.070f, 0.02f, 0f, 0f, 0f);   // big eye R
-                enemyFacePart( 0.000f, 1.430f, fz, 0.062f, 0.072f, 0.02f, 0f, 0f, 0f);   // small "o" mouth
+            case 1:   // rage: bright glowing eyes, gritted teeth
+                enemyFacePart(-0.085f, 1.555f, fz, 0.062f, 0.060f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart( 0.085f, 1.555f, fz, 0.062f, 0.060f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart(-0.085f, 1.552f, fzp, 0.040f, 0.040f, 0.015f, 1.00f, 0.22f, 0.10f);
+                enemyFacePart( 0.085f, 1.552f, fzp, 0.040f, 0.040f, 0.015f, 1.00f, 0.22f, 0.10f);
+                enemyFacePart( 0.000f, 1.435f, fz, 0.170f, 0.040f, 0.02f, 0.05f, 0.02f, 0.02f);   // gritted line
+                enemyFacePart(-0.035f, 1.437f, fzp, 0.028f, 0.030f, 0.012f, 0.82f, 0.80f, 0.72f); // teeth
+                enemyFacePart( 0.035f, 1.437f, fzp, 0.028f, 0.030f, 0.012f, 0.82f, 0.80f, 0.72f);
                 break;
-            case 2:   // tongue out  :P
-                enemyFacePart(-0.085f, 1.560f, fz, 0.050f, 0.052f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.085f, 1.560f, fz, 0.050f, 0.052f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.000f, 1.470f, fz, 0.150f, 0.028f, 0.02f, 0f, 0f, 0f);   // mouth line
-                enemyFacePart( 0.035f, 1.420f, fz + 0.012f, 0.062f, 0.078f, 0.02f, 0.96f, 0.36f, 0.46f); // pink tongue
+            case 2:   // one-eyed, scar cross over the lost eye, snarl
+                enemyFacePart(-0.085f, 1.555f, fz, 0.075f, 0.072f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart(-0.085f, 1.550f, fzp, 0.032f, 0.032f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.085f, 1.555f, fz, 0.028f, 0.120f, 0.02f, 0.34f, 0.06f, 0.05f);   // scar |
+                enemyFacePart( 0.085f, 1.555f, fz, 0.100f, 0.026f, 0.02f, 0.34f, 0.06f, 0.05f);   // scar -
+                enemyFacePart( 0.020f, 1.432f, fz, 0.120f, 0.038f, 0.02f, 0.05f, 0.02f, 0.02f);   // snarl
+                enemyFacePart(-0.070f, 1.448f, fz, 0.045f, 0.030f, 0.02f, 0.05f, 0.02f, 0.02f);
                 break;
-            case 3:   // happy closed eyes  ^_^
-                enemyFacePart(-0.122f, 1.566f, fz, 0.032f, 0.030f, 0.02f, 0f, 0f, 0f);   // eye L arc (ends up)
-                enemyFacePart(-0.085f, 1.546f, fz, 0.032f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart(-0.048f, 1.566f, fz, 0.032f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.048f, 1.566f, fz, 0.032f, 0.030f, 0.02f, 0f, 0f, 0f);   // eye R arc
-                enemyFacePart( 0.085f, 1.546f, fz, 0.032f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.122f, 1.566f, fz, 0.032f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.000f, 1.430f, fz, 0.075f, 0.030f, 0.02f, 0f, 0f, 0f);   // small smile
-                enemyFacePart(-0.058f, 1.446f, fz, 0.038f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.058f, 1.446f, fz, 0.038f, 0.030f, 0.02f, 0f, 0f, 0f);
+            case 3:   // moaner: slit eyes, tall open mouth, drip
+                enemyFacePart(-0.085f, 1.562f, fz, 0.072f, 0.034f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart( 0.085f, 1.562f, fz, 0.072f, 0.034f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart(-0.080f, 1.560f, fzp, 0.026f, 0.024f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.080f, 1.560f, fzp, 0.026f, 0.024f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.000f, 1.420f, fz, 0.090f, 0.140f, 0.02f, 0.05f, 0.02f, 0.02f);   // moan mouth
+                enemyFacePart(-0.015f, 1.328f, fz, 0.026f, 0.095f, 0.02f, 0.34f, 0.06f, 0.05f);   // drip
                 break;
-            case 4:   // wonky / cross-eyed derp
-                enemyFacePart(-0.078f, 1.578f, fz, 0.058f, 0.058f, 0.02f, 0f, 0f, 0f);   // higher, bigger
-                enemyFacePart( 0.092f, 1.534f, fz, 0.044f, 0.044f, 0.02f, 0f, 0f, 0f);   // lower, smaller
-                enemyFacePart( 0.000f, 1.448f, fz, 0.095f, 0.026f, 0.02f, 0f, 0f, 0f);   // mouth
-                enemyFacePart(-0.062f, 1.462f, fz, 0.040f, 0.026f, 0.02f, 0f, 0f, 0f);   // little wave
+            case 4:   // sunken: heavy brow, uneven slits, downturned mouth
+                enemyFacePart( 0.000f, 1.588f, fz, 0.230f, 0.032f, 0.02f, 0.03f, 0.02f, 0.02f);   // brow bar
+                enemyFacePart(-0.080f, 1.548f, fz, 0.058f, 0.030f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart( 0.088f, 1.542f, fz, 0.042f, 0.028f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart(-0.078f, 1.545f, fzp, 0.024f, 0.022f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.086f, 1.540f, fzp, 0.022f, 0.020f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.000f, 1.426f, fz, 0.085f, 0.030f, 0.02f, 0.05f, 0.02f, 0.02f);   // downturned
+                enemyFacePart(-0.068f, 1.443f, fz, 0.045f, 0.028f, 0.02f, 0.05f, 0.02f, 0.02f);
+                enemyFacePart( 0.068f, 1.443f, fz, 0.045f, 0.028f, 0.02f, 0.05f, 0.02f, 0.02f);
                 break;
-            default:  // big U smile
-                enemyFacePart(-0.085f, 1.560f, fz, 0.050f, 0.052f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.085f, 1.560f, fz, 0.050f, 0.052f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.000f, 1.420f, fz, 0.078f, 0.030f, 0.02f, 0f, 0f, 0f);   // low centre
-                enemyFacePart(-0.072f, 1.440f, fz, 0.046f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart( 0.072f, 1.440f, fz, 0.046f, 0.030f, 0.02f, 0f, 0f, 0f);
-                enemyFacePart(-0.112f, 1.475f, fz, 0.046f, 0.030f, 0.02f, 0f, 0f, 0f);   // corners up
-                enemyFacePart( 0.112f, 1.475f, fz, 0.046f, 0.030f, 0.02f, 0f, 0f, 0f);
+            default:  // screamer: wide sockets, huge open mouth with a broken tooth row
+                enemyFacePart(-0.088f, 1.568f, fz, 0.080f, 0.080f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart( 0.088f, 1.568f, fz, 0.080f, 0.080f, 0.02f, 0.03f, 0.02f, 0.02f);
+                enemyFacePart(-0.088f, 1.562f, fzp, 0.028f, 0.028f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.088f, 1.562f, fzp, 0.028f, 0.028f, 0.015f, 0.95f, 0.18f, 0.10f);
+                enemyFacePart( 0.000f, 1.412f, fz, 0.130f, 0.150f, 0.02f, 0.05f, 0.02f, 0.02f);   // scream
+                enemyFacePart(-0.028f, 1.348f, fzp, 0.030f, 0.026f, 0.012f, 0.82f, 0.80f, 0.72f); // broken teeth
+                enemyFacePart( 0.024f, 1.348f, fzp, 0.026f, 0.024f, 0.012f, 0.82f, 0.80f, 0.72f);
                 break;
         }
     }
+
+    // Face placement offsets: the zombie faces are authored for a head centred at (0, 1.50, 0); the walker's
+    // hunched head sits forward and the crawler's head sits at ground level, so the whole face shifts with it.
+    private float faceDy = 0f, faceDz = 0f;
 
     /** Like enemyPart but UNLIT (mode 4) for crisp, high-contrast facial features. */
     private void enemyFacePart(float lx, float ly, float lz, float sx, float sy, float sz,
                                float r, float g, float b) {
+        ly += faceDy; lz += faceDz;
         Matrix.setIdentityM(partM, 0);
         Matrix.translateM(partM, 0, lx, ly, lz);
         Matrix.scaleM(partM, 0, sx, sy, sz);
@@ -3080,6 +3138,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (!enAlive[i]) continue;
                 float sc = enScale[i];                    // bosses are bigger → bigger hit boxes
                 float base = terrainH(enX[i], enZ[i]);    // hit boxes stand where the enemy is DRAWN (not y=0)
+                if (enType[i] == 1 && enBoss[i] == 0) {   // crawler: long low body, head out in front — aim LOW
+                    float bt = rayBox(px, py, pz, dx, dy, dz,
+                            enX[i] - 0.55f * sc, base, enZ[i] - 0.55f * sc, enX[i] + 0.55f * sc, base + 0.50f * sc, enZ[i] + 0.55f * sc);
+                    if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
+                    float hx = enX[i] + (float) Math.sin(enFace[i]) * 0.38f * sc;   // head crawls ahead of the torso
+                    float hz = enZ[i] + (float) Math.cos(enFace[i]) * 0.38f * sc;
+                    float ht = rayBox(px, py, pz, dx, dy, dz,
+                            hx - 0.20f * sc, base + 0.20f * sc, hz - 0.20f * sc, hx + 0.20f * sc, base + 0.62f * sc, hz + 0.20f * sc);
+                    if (ht >= 0f && ht < best) { best = ht; type = 2; idx = i; }
+                    continue;
+                }
                 float bt = rayBox(px, py, pz, dx, dy, dz,
                         enX[i] - 0.45f * sc, base, enZ[i] - 0.45f * sc, enX[i] + 0.45f * sc, base + 1.24f * sc, enZ[i] + 0.45f * sc);
                 if (bt >= 0f && bt < best) { best = bt; type = 1; idx = i; }
@@ -3111,9 +3180,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enHP[idx] -= dmg;
                 float kf = (head ? 4.6f : 2.3f) * (enBoss[idx] > 0 ? 0.22f : 1f);   // knockback (headshots hit harder)
                 enKx[idx] += dx * kf; enKz[idx] += dz * kf;
-                spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (head ? 1.6f : 0.95f) * enScale[idx], enZ[idx], head, dx, dy, dz);
+                boolean lowHit = enType[idx] == 1 && enBoss[idx] == 0;              // crawler: feedback near the ground
+                spawnHitSparks(enX[idx], terrainH(enX[idx], enZ[idx]) + (lowHit ? (head ? 0.45f : 0.32f) : (head ? 1.6f : 0.95f)) * enScale[idx], enZ[idx], head, dx, dy, dz);
                 // floating damage number at the enemy (projected to screen)
-                if (optDmgNum && projectToScreen(enX[idx], 1.45f * enScale[idx], enZ[idx], projScreen)) {
+                if (optDmgNum && projectToScreen(enX[idx], (lowHit ? 0.75f : 1.45f) * enScale[idx], enZ[idx], projScreen)) {
                     float jx = (fxRnd.nextFloat() - 0.5f) * 36f * us;
                     if (head) spawnPopup("" + Math.round(dmg), projScreen[0] + jx, projScreen[1], 1f, 0.82f, 0.22f, 27f);
                     else      spawnPopup("" + Math.round(dmg), projScreen[0] + jx, projScreen[1], 1f, 0.97f, 0.85f, 20f);
@@ -3209,7 +3279,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void onKill(int idx, boolean head) {
-        spawnDeathBurst(enX[idx], enZ[idx], enScale[idx], enOutfit[idx]);   // pixel-burst feedback
+        spawnDeathBurst(enX[idx], enZ[idx],
+                enScale[idx] * (enType[idx] == 1 && enBoss[idx] == 0 ? 0.6f : 1f),   // crawlers burst low + small
+                enOutfit[idx]);
         hitStop = Math.max(hitStop, head ? 0.07f : 0.05f);                 // brief slow-mo crunch
         enAlive[idx] = false;
         combo = (comboTimer > 0f) ? Math.min(combo + 1, 9) : 1;
@@ -3498,7 +3570,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (!enAlive[i] || enMaxHP[i] <= 0f) continue;
             float frac = enHP[i] / enMaxHP[i];
             if (frac >= 0.999f && enBoss[i] == 0) continue;
-            float topY = terrainH(enX[i], enZ[i]) + 1.95f * enScale[i];
+            float topY = terrainH(enX[i], enZ[i])
+                    + (enType[i] == 1 && enBoss[i] == 0 ? 0.90f : 1.95f) * enScale[i];   // crawlers hug the ground
             if (!projectToScreen(enX[i], topY, enZ[i], projScreen)) continue;
             float bx = projScreen[0], by = projScreen[1];
             if (bx < -50f || bx > width + 50f || by < 0f || by > height) continue;
