@@ -184,6 +184,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         {0.62f, 0.43f, 0.35f},   // 9 accent fabric / books (terracotta)
         {0.27f, 0.45f, 0.28f},   // 10 plant foliage (green)
         {0.80f, 0.80f, 0.84f},   // 11 picture / mirror (light)
+        {0.24f, 0.26f, 0.30f},   // 12 dark metal (stove body, chest bands)
+        {1.00f, 0.62f, 0.22f},   // 13 ember / bulb glow (warm bright)
+        {0.58f, 0.56f, 0.52f},   // 14 hearth stone
+        {0.78f, 0.72f, 0.58f},   // 15 linen / paper
     };
 
     private final float[] proj = new float[16];
@@ -2519,7 +2523,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (cat == 3) return kind >= 0 && kind < HOUSE_NAMES.length ? HOUSE_NAMES[kind] : "Haus";
         return kind >= 0 && kind < PROP_NAMES.length ? PROP_NAMES[kind] : "Prop";
     }
-    private static final String[] ED_FURN_NAMES = {"Bett", "Schrank", "Tisch", "Stuhl", "Sofa", "Regal", "Pflanze", "Teppich", "Lampe"};
+    private static final String[] ED_FURN_NAMES = {"Bett", "Schrank", "Tisch", "Stuhl", "Sofa", "Regal", "Pflanze", "Teppich", "Lampe",
+                                                   "Kommode", "Truhe", "Schreibtisch", "Ofen", "Kamin", "Bank", "Nachttisch", "Spiegel"};
 
     /** Serialize the editable overlay as FU/T/B lines, appended to the kept scenery text; write level.lvl. */
     private String edSerialize() {
@@ -2609,16 +2614,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         edGroundRect(o[2], o[3], b[3], b[5], o[4], b[1] * 2f + 0.05f, 0.05f, AC_CYAN[0] * pulse, AC_CYAN[1] * pulse, AC_CYAN[2] * pulse);
     }
 
+    /** Palette tabs: 0 Moebel (seating/storage) · 1 Deko (accents) · 2 Pflanzen · 3 Props · 4 Haeuser.
+     *  17 furniture kinds no longer fit one column, so furniture is split over two tabs. */
     private int[][] edCatKinds(int t) {
-        if (t == 0) return new int[][]{{0,0},{0,1},{0,2},{0,3},{0,4},{0,5},{0,6},{0,7},{0,8}};
-        if (t == 1) return new int[][]{{1,0},{1,1},{1,2}};
-        if (t == 3) return new int[][]{{3,0},{3,1},{3,2},{3,3}};
+        if (t == 0) return new int[][]{{0,0},{0,1},{0,2},{0,3},{0,4},{0,14},{0,11},{0,15},{0,9}};
+        if (t == 1) return new int[][]{{0,5},{0,6},{0,7},{0,8},{0,10},{0,12},{0,13},{0,16}};
+        if (t == 2) return new int[][]{{1,0},{1,1},{1,2}};
+        if (t == 4) return new int[][]{{3,0},{3,1},{3,2},{3,3}};
         return new int[][]{{2,0},{2,1},{2,2},{2,3},{2,4}};
     }
     /** A small filled swatch (no font glyph needed) so a category/kind reads at a glance. */
     private void edSwatch(float cx, float cy, float r, int cat) {
-        float[] c = cat == 0 ? new float[]{0.60f, 0.42f, 0.26f} : cat == 1 ? new float[]{0.36f, 0.68f, 0.34f}
-                  : cat == 3 ? new float[]{0.80f, 0.55f, 0.34f} : new float[]{0.62f, 0.66f, 0.72f};
+        float[] c = cat == 0 ? new float[]{0.60f, 0.42f, 0.26f} : cat == 1 ? new float[]{0.82f, 0.66f, 0.38f}
+                  : cat == 2 ? new float[]{0.36f, 0.68f, 0.34f}
+                  : cat == 4 ? new float[]{0.80f, 0.55f, 0.34f} : new float[]{0.62f, 0.66f, 0.72f};
         drawCircle(cx, cy, r, 0f, 0f, 0f, 0.35f);
         drawCircle(cx, cy - r * 0.12f, r * 0.86f, c[0], c[1], c[2], 1f);
     }
@@ -2750,7 +2759,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
 
         if (edPaletteOpen) {
-            String[] cats = {"Moebel", "Pflanzen", "Props", "Haeuser"};
+            String[] cats = {"Moebel", "Deko", "Pflanzen", "Props", "Haeuser"};
             float catW = 150f * us, catH = 54f * us, catX = 96f * us + catW * 0.5f, catGap = 8f * us;
             int[][] kinds = edCatKinds(edCatTab);
             float kx = catX + catW * 0.5f + 14f * us + 210f * us * 0.5f, kw = 210f * us, kh = 50f * us, kGap = 6f * us;
@@ -6033,8 +6042,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Baked pitched gable roof over every house (one draw call). */
     private float[] makeRoofMesh() {
-        // 6 tris + 3 box6 (ridge cap + 2 eave fascias) per house
-        float[] d = new float[houseRects.size() * (6 * 3 + 3 * 36) * 8 + 64];
+        // 6 tris + 5 box6 (ridge cap + 4 soffit boxes closing the overhang ring) per house
+        float[] d = new float[houseRects.size() * (6 * 3 + 5 * 36) * 8 + 64];
         int o = 0, gi = 0;
         roofGroups = new float[houseRects.size()][];
         for (float[] hh : houseRects) {
@@ -6070,11 +6079,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = tri(d, o, R1, F2, F1, 0f, hd * inv, -rh * inv);
             o = tri(d, o, R2, E2, F2, 1f, 0f, 0f);
             o = tri(d, o, R1, F1, E1, -1f, 0f, 0f);
-            // roof-edge package: a slim ridge cap along the peak + fascia boards under the eave edges give
-            // the paper-thin roof planes visible thickness (silhouette reads from 3 m to the horizon)
+            // ridge cap + soffit boxes: the soffits CLOSE the whole overhang ring between the wall top and
+            // the roof edge. Culling is off, so from below the bare roof planes rendered sky-bright (lit by
+            // their upward normals) -- the "gap" between roof and house. The soffit's down-facing underside
+            // shades correctly and reads as a real closed eave.
             o = box6(d, o, cx, ridgeY + 0.015f, cz, hw, 0.05f, 0.10f);
-            o = box6(d, o, cx, baseY - 0.045f, cz + hd - 0.02f, hw, 0.05f, 0.045f);
-            o = box6(d, o, cx, baseY - 0.045f, cz - hd + 0.02f, hw, 0.05f, 0.045f);
+            if (ov > 0.10f) {
+                float sHalf = (ov + 0.045f) * 0.5f, sOff = (ov - 0.055f) * 0.5f, sy = baseY - 0.075f;
+                o = box6(d, o, cx, sy, cz + dd * 0.5f + sOff, hw, 0.075f, sHalf);          // long-eave soffits
+                o = box6(d, o, cx, sy, cz - dd * 0.5f - sOff, hw, 0.075f, sHalf);
+                o = box6(d, o, cx + w * 0.5f + sOff, sy, cz, sHalf, 0.075f, hd);           // gable-end soffits
+                o = box6(d, o, cx - w * 0.5f - sOff, sy, cz, sHalf, 0.075f, hd);
+            }
         } else {                                         // ridge along Z
             float hw = w * 0.5f + ov, hd = dd * 0.5f + ov;
             float[] R1 = {cx, ridgeY, cz - hd},     R2 = {cx, ridgeY, cz + hd};
@@ -6088,8 +6104,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = tri(d, o, R2, E2, F2, 0f, 0f, 1f);
             o = tri(d, o, R1, F1, E1, 0f, 0f, -1f);
             o = box6(d, o, cx, ridgeY + 0.015f, cz, 0.10f, 0.05f, hd);          // ridge cap
-            o = box6(d, o, cx + hw - 0.02f, baseY - 0.045f, cz, 0.045f, 0.05f, hd);   // eave fascias
-            o = box6(d, o, cx - hw + 0.02f, baseY - 0.045f, cz, 0.045f, 0.05f, hd);
+            if (ov > 0.10f) {                                                    // soffits close the overhang ring
+                float sHalf = (ov + 0.045f) * 0.5f, sOff = (ov - 0.055f) * 0.5f, sy = baseY - 0.075f;
+                o = box6(d, o, cx + w * 0.5f + sOff, sy, cz, sHalf, 0.075f, hd);           // long-eave soffits
+                o = box6(d, o, cx - w * 0.5f - sOff, sy, cz, sHalf, 0.075f, hd);
+                o = box6(d, o, cx, sy, cz + dd * 0.5f + sOff, hw, 0.075f, sHalf);          // gable-end soffits
+                o = box6(d, o, cx, sy, cz - dd * 0.5f - sOff, hw, 0.075f, sHalf);
+            }
         }
         return o;
     }
@@ -6252,7 +6273,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addPiece(L, cx, ceilH, cz, slx * 2f, 0.10f, slz * 2f, 1, false);                       // ceiling
         addPiece(L, cx, 0.058f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
         addPiece(L, cx, ceilH - 0.18f, cz, 0.06f, 0.30f, 0.06f, 6, false);                     // lamp cord
-        addPiece(L, cx, ceilH - 0.40f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
+        addPiece(L, cx, ceilH - 0.36f, cz, 0.14f, 0.10f, 0.14f, 13, false);                    // warm bulb glow
+        addPiece(L, cx, ceilH - 0.42f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
         // small entry passage just inside the doorway that furniture must keep clear (so the player can always pass)
         float lane = 1.3f, pass = 1.05f;
         float koX = cx + dox * (inx - lane * 0.5f), koZ = cz + doz * (inz - lane * 0.5f);
@@ -6272,6 +6294,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             addPiece(L, bx, 0.22f, bz, bedW, 0.30f, bedD, 2, true);                            // frame (solid)
             addPiece(L, bx, 0.42f, bz, bedW - 0.08f, 0.14f, bedD - 0.08f, 4, false);           // duvet
             addPiece(L, bx - sgx[bedC] * bedW * 0.30f, 0.46f, bz - sgz[bedC] * bedD * 0.30f, 0.40f, 0.12f, 0.28f, 5, false); // pillow
+            // headboard behind the pillow end + a folded blanket accent across the foot
+            if (bedAlongX) {
+                addPiece(L, bx - sgx[bedC] * (bedW * 0.5f - 0.035f), 0.56f, bz, 0.07f, 0.50f, bedD, 3, false);
+                addPiece(L, bx + sgx[bedC] * bedW * 0.24f, 0.505f, bz, 0.30f, 0.05f, bedD - 0.12f, 9, false);
+            } else {
+                addPiece(L, bx, 0.56f, bz - sgz[bedC] * (bedD * 0.5f - 0.035f), bedW, 0.50f, 0.07f, 3, false);
+                addPiece(L, bx, 0.505f, bz + sgz[bedC] * bedD * 0.24f, bedW - 0.12f, 0.05f, 0.30f, 9, false);
+            }
             occ.add(new float[]{bx, bz, bedW, bedD});
             // nightstand tucked beside the head of the bed (toward room centre), with a tiny lamp
             float nsx = bx - sgx[bedC] * (bedW * 0.5f + 0.22f), nsz = bz - sgz[bedC] * (bedD * 0.5f - 0.10f);
@@ -6288,6 +6318,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (aabbOverlap(wx, wz, 0.70f, 0.50f, koX, koZ, koW, koD)) continue;               // blocks the door lane
             if (bedPlaced && aabbOverlap(wx, wz, 0.70f, 0.50f, bx, bz, bedW, bedD)) continue;  // into the bed
             addPiece(L, wx, wardH * 0.5f + 0.04f, wz, 0.62f, wardH, 0.42f, 3, true);
+            // plinth + cornice + a pair of door panels with handles on the room-facing side
+            addPiece(L, wx, 0.05f, wz, 0.68f, 0.08f, 0.48f, 3, false);
+            addPiece(L, wx, wardH + 0.06f, wz, 0.68f, 0.06f, 0.48f, 3, false);
+            float wfx = cx - wx, wfz = cz - wz;
+            boolean wFrontX = Math.abs(wfx) > Math.abs(wfz);
+            float wsx2 = wFrontX ? Math.signum(wfx) : 0f, wsz2 = wFrontX ? 0f : Math.signum(wfz);
+            float pfx = wx + wsx2 * (wFrontX ? 0.325f : 0f), pfz = wz + wsz2 * (wFrontX ? 0f : 0.225f);
+            for (int dp = -1; dp <= 1; dp += 2) {
+                float ox2 = wFrontX ? 0f : dp * 0.145f, oz2 = wFrontX ? dp * 0.10f : 0f;
+                addPiece(L, pfx + ox2, wardH * 0.52f, pfz + oz2,
+                        wFrontX ? 0.025f : 0.25f, wardH - 0.28f, wFrontX ? 0.17f : 0.025f, 2, false);
+                addPiece(L, pfx + ox2 * 0.30f + wsx2 * 0.014f, wardH * 0.52f, pfz + oz2 * 0.30f + wsz2 * 0.014f,
+                        wFrontX ? 0.02f : 0.03f, 0.13f, wFrontX ? 0.03f : 0.02f, 6, false);
+            }
             occ.add(new float[]{wx, wz, 0.62f, 0.42f});
             break;
         }
@@ -6297,10 +6341,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (!aabbOverlap(tx, tz, 0.95f, 0.75f, koX, koZ, koW, koD)
              && !(bedPlaced && aabbOverlap(tx, tz, 0.95f, 0.75f, bx, bz, bedW, bedD))) {
                 addPiece(L, tx, 0.70f, tz, 0.80f, 0.07f, 0.60f, 2, true);                       // table top (solid)
+                addPiece(L, tx, 0.625f, tz, 0.66f, 0.06f, 0.46f, 3, false);                    // apron under the top
+                addPiece(L, tx, 0.765f, tz, 0.20f, 0.07f, 0.20f, 9, false);                    // bowl on top
                 for (int lg = 0; lg < 4; lg++)
-                    addPiece(L, tx + ((lg & 1) == 0 ? -0.32f : 0.32f), 0.35f, tz + ((lg & 2) == 0 ? -0.24f : 0.24f), 0.06f, 0.66f, 0.06f, 3, false);
-                addPiece(L, tx - 0.52f, 0.27f, tz, 0.38f, 0.46f, 0.38f, 2, false);             // chair (sits on the floor)
-                addPiece(L, tx + 0.52f, 0.27f, tz, 0.38f, 0.46f, 0.38f, 2, false);
+                    addPiece(L, tx + ((lg & 1) == 0 ? -0.32f : 0.32f), 0.33f, tz + ((lg & 2) == 0 ? -0.24f : 0.24f), 0.06f, 0.62f, 0.06f, 3, false);
+                for (int s2 = -1; s2 <= 1; s2 += 2) {                                          // proper chairs: seat + legs + backrest
+                    float chx = tx + s2 * 0.52f;
+                    addPiece(L, chx, 0.43f, tz, 0.38f, 0.05f, 0.38f, 2, false);
+                    for (int lg = 0; lg < 4; lg++)
+                        addPiece(L, chx + ((lg & 1) == 0 ? -0.15f : 0.15f), 0.205f, tz + ((lg & 2) == 0 ? -0.15f : 0.15f), 0.05f, 0.41f, 0.05f, 3, false);
+                    addPiece(L, chx + s2 * 0.185f, 0.69f, tz, 0.05f, 0.50f, 0.38f, 2, false);
+                }
                 occ.add(new float[]{tx, tz, 1.65f, 0.75f});                                     // table + both chairs
             }
         }
@@ -6318,6 +6369,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float bdx2 = alongX ? 0f : (side == 2 ? -1f : 1f), bdz2 = alongX ? (side == 0 ? -1f : 1f) : 0f;
             addPiece(L, sx2 + bdx2 * (sd * 0.5f - 0.08f), 0.46f, sz2 + bdz2 * (sd * 0.5f - 0.08f),
                     alongX ? sw : 0.16f, 0.34f, alongX ? 0.16f : sd, 8, false);                 // backrest
+            float cLen = (alongX ? sw : sd) * 0.5f - 0.06f;                                     // 2 accent seat cushions
+            for (int q2 = -1; q2 <= 1; q2 += 2)
+                addPiece(L, sx2 + (alongX ? q2 * cLen * 0.5f : bdx2 * -0.04f), 0.40f, sz2 + (alongX ? bdz2 * -0.04f : q2 * cLen * 0.5f),
+                        alongX ? cLen - 0.05f : sd - 0.16f, 0.09f, alongX ? sd - 0.16f : cLen - 0.05f, 9, false);
             occ.add(new float[]{sx2, sz2, sw, sd});
             break;
         }
@@ -6327,8 +6382,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (!clearSpot(occ, shx, shz, 0.6f, 0.34f)) continue;
             float shH = Math.min(1.85f, ceilH - 0.2f);
             addPiece(L, shx, shH * 0.5f + 0.04f, shz, 0.56f, shH, 0.3f, 3, true);               // case
-            addPiece(L, shx, shH * 0.62f, shz, 0.48f, 0.16f, 0.24f, 9, false);                  // books
-            addPiece(L, shx, shH * 0.40f, shz, 0.48f, 0.16f, 0.24f, 9, false);
+            addPiece(L, shx, shH * 0.62f, shz, 0.48f, 0.16f, 0.24f, 9, false);                  // varied book rows
+            addPiece(L, shx, shH * 0.40f, shz, 0.48f, 0.16f, 0.24f, 8, false);
+            addPiece(L, shx, shH * 0.20f, shz, 0.48f, 0.16f, 0.24f, 15, false);
+            addPiece(L, shx + 0.12f, shH + 0.10f, shz, 0.12f, 0.13f, 0.12f, 7, false);          // trinket on top
             occ.add(new float[]{shx, shz, 0.6f, 0.34f});
             break;
         }
@@ -6336,8 +6393,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int ci = 3; ci >= 0; ci--) {
             float pxp = cx + sgx[ci] * (inx - 0.20f), pzp = cz + sgz[ci] * (inz - 0.20f);
             if (!clearSpot(occ, pxp, pzp, 0.32f, 0.32f)) continue;
-            addPiece(L, pxp, 0.15f, pzp, 0.26f, 0.30f, 0.26f, 2, false);                        // pot
-            addPiece(L, pxp, 0.46f, pzp, 0.40f, 0.42f, 0.40f, 10, false);                       // foliage
+            addPiece(L, pxp, 0.02f, pzp, 0.32f, 0.04f, 0.32f, 3, false);                        // saucer
+            addPiece(L, pxp, 0.16f, pzp, 0.26f, 0.30f, 0.26f, 9, false);                        // terracotta pot
+            addPiece(L, pxp, 0.46f, pzp, 0.42f, 0.38f, 0.42f, 10, false);                       // layered foliage
+            addPiece(L, pxp, 0.68f, pzp, 0.28f, 0.22f, 0.28f, 10, false);
             occ.add(new float[]{pxp, pzp, 0.32f, 0.32f});
             break;
         }
@@ -6377,24 +6436,82 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // Furniture recipes shared with the editor (kind -> pieces of {dx,dy,dz, w,h,d, colorIdx, solid}).
     // dx,dz are local offsets, dy the piece-centre height; all multiplied by the placed scale. KEEP IN SYNC with FURN in level-editor.html.
     static final float[][][] FURN = {
-        // 0 Bett (frame + Decke + Kissen)
-        {{0,0.22f,0, 1.5f,0.30f,0.95f, 2,1}, {0,0.42f,0, 1.42f,0.14f,0.87f, 4,0}, {0,0.46f,-0.30f, 0.42f,0.12f,0.28f, 5,0}},
-        // 1 Schrank
-        {{0,0.85f,0, 0.62f,1.66f,0.45f, 3,1}, {0,1.10f,0.18f, 0.46f,1.20f,0.04f, 2,0}},
-        // 2 Tisch (+ 4 Beine)
-        {{0,0.70f,0, 0.90f,0.07f,0.65f, 2,1}, {-0.36f,0.35f,-0.26f, 0.07f,0.66f,0.07f, 3,0}, {0.36f,0.35f,-0.26f, 0.07f,0.66f,0.07f, 3,0}, {-0.36f,0.35f,0.26f, 0.07f,0.66f,0.07f, 3,0}, {0.36f,0.35f,0.26f, 0.07f,0.66f,0.07f, 3,0}},
-        // 3 Stuhl
-        {{0,0.24f,0, 0.40f,0.46f,0.40f, 2,1}, {0,0.55f,-0.17f, 0.40f,0.50f,0.06f, 2,0}},
-        // 4 Sofa (Sitz + Lehne + 2 Armlehnen)
-        {{0,0.24f,0, 1.50f,0.32f,0.62f, 8,1}, {0,0.50f,-0.25f, 1.50f,0.40f,0.16f, 8,0}, {-0.72f,0.34f,0, 0.12f,0.48f,0.62f, 8,0}, {0.72f,0.34f,0, 0.12f,0.48f,0.62f, 8,0}},
-        // 5 Regal (+ 3 Buchreihen)
-        {{0,0.90f,0, 0.60f,1.80f,0.32f, 3,1}, {0,1.18f,0, 0.50f,0.16f,0.26f, 9,0}, {0,0.78f,0, 0.50f,0.16f,0.26f, 9,0}, {0,1.45f,0, 0.50f,0.16f,0.26f, 9,0}},
-        // 6 Pflanze (Topf + Laub)
-        {{0,0.18f,0, 0.30f,0.34f,0.30f, 2,0}, {0,0.55f,0, 0.46f,0.50f,0.46f, 10,0}},
-        // 7 Teppich
-        {{0,0.025f,0, 1.60f,0.03f,1.10f, 4,0}},
-        // 8 Lampe (Fuß + Stange + Schirm)
-        {{0,0.06f,0, 0.30f,0.10f,0.30f, 2,0}, {0,0.78f,0, 0.07f,1.40f,0.07f, 6,0}, {0,1.55f,0, 0.42f,0.34f,0.42f, 7,0}},
+        // 0 Bett: frame(solid) + 4 legs + headboard + duvet + 2 pillows + folded blanket
+        {{0,0.22f,0, 1.5f,0.30f,0.95f, 2,1},
+         {-0.68f,0.05f,-0.40f, 0.10f,0.10f,0.10f, 3,0}, {0.68f,0.05f,-0.40f, 0.10f,0.10f,0.10f, 3,0},
+         {-0.68f,0.05f,0.40f, 0.10f,0.10f,0.10f, 3,0}, {0.68f,0.05f,0.40f, 0.10f,0.10f,0.10f, 3,0},
+         {0,0.58f,-0.505f, 1.50f,0.55f,0.07f, 3,0},                         // headboard
+         {0,0.42f,0.10f, 1.42f,0.14f,0.66f, 4,0},                           // duvet
+         {-0.35f,0.47f,-0.32f, 0.50f,0.11f,0.26f, 5,0}, {0.35f,0.47f,-0.32f, 0.50f,0.11f,0.26f, 5,0},
+         {0,0.505f,0.30f, 1.44f,0.05f,0.26f, 9,0}},                         // folded blanket accent
+        // 1 Schrank: body(solid) + plinth + cornice + 2 door panels + handles
+        {{0,0.85f,0, 0.62f,1.66f,0.45f, 3,1},
+         {0,0.04f,0, 0.68f,0.08f,0.50f, 3,0}, {0,1.70f,0, 0.68f,0.06f,0.50f, 3,0},
+         {-0.145f,0.88f,0.235f, 0.25f,1.44f,0.025f, 2,0}, {0.145f,0.88f,0.235f, 0.25f,1.44f,0.025f, 2,0},
+         {-0.05f,0.88f,0.252f, 0.03f,0.14f,0.02f, 6,0}, {0.05f,0.88f,0.252f, 0.03f,0.14f,0.02f, 6,0}},
+        // 2 Tisch: top(solid) + apron + 4 legs + bowl
+        {{0,0.70f,0, 0.90f,0.07f,0.65f, 2,1}, {0,0.62f,0, 0.76f,0.07f,0.51f, 3,0},
+         {-0.36f,0.33f,-0.26f, 0.07f,0.62f,0.07f, 3,0}, {0.36f,0.33f,-0.26f, 0.07f,0.62f,0.07f, 3,0},
+         {-0.36f,0.33f,0.26f, 0.07f,0.62f,0.07f, 3,0}, {0.36f,0.33f,0.26f, 0.07f,0.62f,0.07f, 3,0},
+         {0,0.765f,0, 0.22f,0.07f,0.22f, 9,0}},
+        // 3 Stuhl: thin seat(solid) + 4 legs + backrest + top rail
+        {{0,0.44f,0, 0.40f,0.06f,0.40f, 2,1},
+         {-0.16f,0.21f,-0.16f, 0.05f,0.42f,0.05f, 3,0}, {0.16f,0.21f,-0.16f, 0.05f,0.42f,0.05f, 3,0},
+         {-0.16f,0.21f,0.16f, 0.05f,0.42f,0.05f, 3,0}, {0.16f,0.21f,0.16f, 0.05f,0.42f,0.05f, 3,0},
+         {0,0.71f,-0.185f, 0.40f,0.48f,0.05f, 2,0}, {0,0.985f,-0.185f, 0.42f,0.07f,0.06f, 3,0}},
+        // 4 Sofa: seat(solid) + back + 2 arms + 2 seat cushions + 2 back cushions + feet
+        {{0,0.24f,0, 1.50f,0.32f,0.62f, 8,1}, {0,0.50f,-0.25f, 1.50f,0.40f,0.16f, 8,0},
+         {-0.72f,0.34f,0, 0.12f,0.48f,0.62f, 8,0}, {0.72f,0.34f,0, 0.12f,0.48f,0.62f, 8,0},
+         {-0.34f,0.44f,0.05f, 0.60f,0.10f,0.48f, 9,0}, {0.34f,0.44f,0.05f, 0.60f,0.10f,0.48f, 9,0},
+         {-0.34f,0.62f,-0.20f, 0.58f,0.26f,0.12f, 9,0}, {0.34f,0.62f,-0.20f, 0.58f,0.26f,0.12f, 9,0},
+         {-0.66f,0.045f,0.22f, 0.08f,0.09f,0.08f, 3,0}, {0.66f,0.045f,0.22f, 0.08f,0.09f,0.08f, 3,0}},
+        // 5 Regal: case(solid) + varied book rows + top trinket
+        {{0,0.90f,0, 0.60f,1.80f,0.32f, 3,1},
+         {0,1.45f,0, 0.50f,0.16f,0.26f, 9,0}, {0,1.18f,0, 0.50f,0.16f,0.26f, 8,0},
+         {0,0.78f,0, 0.50f,0.16f,0.26f, 9,0}, {0,0.45f,0, 0.50f,0.16f,0.26f, 15,0},
+         {0.14f,1.87f,0, 0.12f,0.14f,0.12f, 7,0}},
+        // 6 Pflanze: saucer + terracotta pot + stem + layered foliage
+        {{0,0.02f,0, 0.36f,0.04f,0.36f, 3,0}, {0,0.18f,0, 0.30f,0.34f,0.30f, 9,0},
+         {0,0.42f,0, 0.08f,0.26f,0.08f, 3,0},
+         {0,0.60f,0, 0.50f,0.36f,0.50f, 10,0}, {0,0.82f,0, 0.34f,0.26f,0.34f, 10,0}},
+        // 7 Teppich: border + inner field (two-tone)
+        {{0,0.025f,0, 1.60f,0.03f,1.10f, 4,0}, {0,0.045f,0, 1.20f,0.015f,0.74f, 9,0}},
+        // 8 Lampe: base + pole + warm bulb + shade
+        {{0,0.06f,0, 0.30f,0.10f,0.30f, 2,0}, {0,0.78f,0, 0.07f,1.40f,0.07f, 6,0},
+         {0,1.44f,0, 0.16f,0.12f,0.16f, 13,0}, {0,1.55f,0, 0.42f,0.34f,0.42f, 7,0}},
+        // 9 Kommode: body(solid) + plinth + top + 3 drawer fronts + handles
+        {{0,0.44f,0, 0.90f,0.80f,0.42f, 2,1},
+         {0,0.04f,0, 0.94f,0.08f,0.46f, 3,0}, {0,0.865f,0, 0.96f,0.05f,0.46f, 3,0},
+         {0,0.22f,0.215f, 0.78f,0.17f,0.03f, 3,0}, {0,0.44f,0.215f, 0.78f,0.17f,0.03f, 3,0}, {0,0.66f,0.215f, 0.78f,0.17f,0.03f, 3,0},
+         {0,0.22f,0.235f, 0.16f,0.04f,0.02f, 6,0}, {0,0.44f,0.235f, 0.16f,0.04f,0.02f, 6,0}, {0,0.66f,0.235f, 0.16f,0.04f,0.02f, 6,0}},
+        // 10 Truhe: body(solid) + lid + 2 metal bands + lock
+        {{0,0.28f,0, 0.80f,0.48f,0.50f, 3,1}, {0,0.555f,0, 0.84f,0.11f,0.54f, 2,0},
+         {-0.22f,0.30f,0, 0.05f,0.62f,0.55f, 12,0}, {0.22f,0.30f,0, 0.05f,0.62f,0.55f, 12,0},
+         {0,0.38f,0.265f, 0.10f,0.13f,0.04f, 6,0}},
+        // 11 Schreibtisch: top(solid) + side panels + drawer block + knobs + paper
+        {{0,0.72f,0, 1.10f,0.06f,0.60f, 2,1},
+         {-0.51f,0.36f,0, 0.06f,0.66f,0.54f, 3,0}, {0.51f,0.36f,0, 0.06f,0.66f,0.54f, 3,0},
+         {0.30f,0.50f,0, 0.40f,0.36f,0.52f, 3,0},
+         {0.30f,0.58f,0.27f, 0.10f,0.04f,0.02f, 6,0}, {0.30f,0.44f,0.27f, 0.10f,0.04f,0.02f, 6,0},
+         {-0.18f,0.76f,0.02f, 0.30f,0.02f,0.22f, 15,0}},
+        // 12 Ofen: dark body(solid) + worktop + 2 rings + oven door + handle
+        {{0,0.45f,0, 0.70f,0.86f,0.60f, 12,1}, {0,0.895f,0, 0.74f,0.05f,0.64f, 6,0},
+         {-0.16f,0.935f,0, 0.22f,0.03f,0.22f, 3,0}, {0.17f,0.935f,-0.02f, 0.26f,0.03f,0.26f, 3,0},
+         {0,0.38f,0.315f, 0.50f,0.44f,0.03f, 6,0}, {0,0.62f,0.325f, 0.46f,0.05f,0.04f, 5,0}},
+        // 13 Kamin: stone body(solid) + dark firebox + ember glow + mantel shelf
+        {{0,0.60f,0, 1.20f,1.20f,0.52f, 14,1},
+         {0,0.42f,0.245f, 0.64f,0.62f,0.08f, 12,0},
+         {0,0.26f,0.22f, 0.44f,0.26f,0.12f, 13,0},
+         {0,1.26f,0, 1.32f,0.09f,0.60f, 3,0}},
+        // 14 Bank: seat(solid) + 2 leg slabs
+        {{0,0.26f,0, 1.20f,0.09f,0.38f, 2,1},
+         {-0.50f,0.11f,0, 0.09f,0.22f,0.34f, 3,0}, {0.50f,0.11f,0, 0.09f,0.22f,0.34f, 3,0}},
+        // 15 Nachttisch: body(solid) + top + drawer + knob
+        {{0,0.24f,0, 0.38f,0.44f,0.34f, 2,1}, {0,0.475f,0, 0.42f,0.03f,0.38f, 3,0},
+         {0,0.30f,0.175f, 0.30f,0.13f,0.025f, 3,0}, {0,0.30f,0.195f, 0.05f,0.04f,0.02f, 6,0}},
+        // 16 Spiegel: frame(solid) + glass + 2 feet
+        {{0,0.85f,0, 0.50f,1.60f,0.10f, 3,1}, {0,0.90f,0.056f, 0.38f,1.30f,0.02f, 11,0},
+         {-0.18f,0.05f,0, 0.10f,0.10f,0.30f, 3,0}, {0.18f,0.05f,0, 0.10f,0.10f,0.30f, 3,0}},
     };
 
     /** Place one level-authored furniture piece (visual + collider), spun about its own centre by yaw and scaled. */
