@@ -626,7 +626,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         us = clamp(height / 800f, 1.4f, 2.3f);    // bigger UI on bigger/denser phone screens
         GLES20.glViewport(0, 0, w, h);
         aspect = (float) w / height;
-        Matrix.perspectiveM(proj, 0, 68f, aspect, 0.05f, 300f);
+        Matrix.perspectiveM(proj, 0, 68f, aspect, 0.07f, 300f);   // near up from 0.05: more depth precision (gun stays well past 0.07)
     }
 
     @Override
@@ -7260,7 +7260,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (rng.nextFloat() < omit) continue;                // drop a few so it isn't stamped
                 if (off[1] > td.length - 5000) continue;             // trim scratch nearly full: skip gracefully (never overflow)
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
-                off[2] = windowQuad(rv, off[2], a, b, t, wy, winW * 0.86f, winH * 0.86f, axis, sign, 0.16f);  // dark room just behind the glass (occludes the wall -> looks like an opening)
+                // dark room set 12 cm behind the glass (occludes the wall -> reads as an opening). The wide
+                // gap keeps pane and room depth-separable at distance — 2 cm z-fought into moiré stripes
+                // on 16-bit depth buffers; the jamb/lintel/sill boxes case the gap so no slit ever shows.
+                off[2] = windowQuad(rv, off[2], a, b, t, wy, winW * 0.86f, winH * 0.86f, axis, sign, 0.06f);
                 float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
                 float hy = wy + winH * 0.5f + 0.045f;                // head lintel just above it
                 if (axis == 0) {
