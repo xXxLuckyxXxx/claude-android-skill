@@ -5119,11 +5119,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final float[][] ROAD_SPEC = {
         // {asphalt halfWidth,  x0,z0, x1,z1, ...}  — the main road skirts the plaza's SOUTH edge, so the
         // spawn corridor (0,9 facing the square) and its cover crates stay off the asphalt
-        {1.8f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},   // main road: a lazy S, west-east
-        {1.5f, 9,-36, 7,-26, 4,-16, 1,-8, 0,-2},                               // north approach to the junction
-        {1.3f, 0,-2, -5,3, -7,10, -4,18, 3,24, 11,28},                         // south lane, swings west of the plaza
-        {1.1f, -15,-4, -19,2, -25,7, -30,10},                                  // west dead-end lane
-        {1.1f, 17,-2, 20,6, 21,13, 20,19},                                     // east dead-end lane
+        {2.2f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},   // main road: two lanes, a lazy S west-east
+        {1.8f, 9,-36, 7,-26, 4,-16, 1,-8, 0,-2},                               // north approach to the junction
+        {1.6f, 0,-2, -5,3, -7,10, -4,18, 3,24, 11,28},                         // south lane, swings west of the plaza
+        {1.25f, -15,-4, -19,2, -25,7, -30,10},                                 // west dead-end lane (single track)
+        {1.25f, 17,-2, 20,6, 21,13, 20,19},                                    // east dead-end lane (single track)
     };
     private static final float[][][] ROAD_PTS;       // sampled centrelines [road][pt][x,z]
     private static final float[] ROAD_HALFW;         // per-road asphalt half width
@@ -5543,8 +5543,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             p.setColor(0x66000000 | col);
             c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 12 + rnd.nextInt(64), p);
         }
-        // the village square: a cobbled apron around the spawn plaza, under the road junction
-        float sqx = (SQ_X + half) * s, sqz = (SQ_Z + half) * s, sqr = 9.4f * s;
+        // the village square: a cobbled apron centred on the market ring, under the road junction
+        float sqx = (SQ_X + 0.8f + half) * s, sqz = (SQ_Z + 1.9f + half) * s, sqr = 9.8f * s;
         p.setColor(0xFF98928A);                            // cobble base
         c.drawCircle(sqx, sqz, sqr, p);
         p.setColor(0xFF8A8479);                            // outer ring wear
@@ -5582,25 +5582,52 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 }
             }
         }
-        // centre dashes along the main roads (skip narrow lanes + the square itself)
-        p.setColor(0xFFD9C24E);
+        // White dashed centre line splitting each two-lane road into two carriageways. The dashes are a
+        // DashPathEffect stroked ALONG the curve, so they bend with it perfectly. Junction zones (where
+        // lanes meet) and the cobbled square get NO markings — dash lines never cross each other.
+        java.util.List<float[]> junctions = new java.util.ArrayList<float[]>();
         for (int r = 0; r < ROAD_PTS.length; r++) {
-            if (ROAD_HALFW[r] < 1.4f) continue;
             float[][] P = ROAD_PTS[r];
-            float acc = 1.6f;
-            for (int i = 0; i + 1 < P.length; i++) {
-                float ax = P[i][0], az = P[i][1];
-                float tx = P[i + 1][0] - ax, tz = P[i + 1][1] - az;
-                float sl = (float) Math.sqrt(tx * tx + tz * tz);
-                acc -= sl;
-                if (acc > 0f) continue;
-                acc = 2.6f;
-                if (Math.hypot(ax - SQ_X, az - SQ_Z) < 10f) continue;
-                tx /= sl; tz /= sl;
-                float x0 = (ax + half) * s, z0 = (az + half) * s;
-                c.drawRect(Math.min(x0, x0 + tx * 1.1f * s) - 2f, Math.min(z0, z0 + tz * 1.1f * s) - 2f,
-                           Math.max(x0, x0 + tx * 1.1f * s) + 2f, Math.max(z0, z0 + tz * 1.1f * s) + 2f, p);
+            for (int e = 0; e < 2; e++) {
+                float ex = P[e == 0 ? 0 : P.length - 1][0], ez = P[e == 0 ? 0 : P.length - 1][1];
+                for (int r2 = 0; r2 < ROAD_PTS.length; r2++) {
+                    if (r2 == r) continue;
+                    float[][] Q = ROAD_PTS[r2];
+                    for (int i = 0; i + 1 < Q.length; i++) {
+                        float ax = Q[i][0], az = Q[i][1], abx = Q[i + 1][0] - ax, abz = Q[i + 1][1] - az;
+                        float tt = ((ex - ax) * abx + (ez - az) * abz) / (abx * abx + abz * abz + 1e-6f);
+                        tt = tt < 0f ? 0f : (tt > 1f ? 1f : tt);
+                        float dx = ex - (ax + abx * tt), dz = ez - (az + abz * tt);
+                        if (dx * dx + dz * dz < (ROAD_HALFW[r2] + 0.6f) * (ROAD_HALFW[r2] + 0.6f)) {
+                            junctions.add(new float[]{ex, ez, Math.max(ROAD_HALFW[r], ROAD_HALFW[r2])});
+                            i = Q.length; // one hit is enough for this endpoint/road pair
+                        }
+                    }
+                }
             }
+        }
+        Paint dashP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        dashP.setStyle(Paint.Style.STROKE);
+        dashP.setStrokeCap(Paint.Cap.BUTT);
+        dashP.setColor(0xFFEFF1EC);                        // white lane divider
+        dashP.setStrokeWidth(0.14f * s);
+        dashP.setPathEffect(new android.graphics.DashPathEffect(new float[]{1.7f * s, 1.9f * s}, 0.6f * s));
+        for (int r = 0; r < ROAD_PTS.length; r++) {
+            if (ROAD_HALFW[r] < 1.4f) continue;            // single-track lanes carry no centre line
+            float[][] P = ROAD_PTS[r];
+            android.graphics.Path dpth = new android.graphics.Path();
+            boolean pen = false;
+            for (float[] pt : P) {
+                boolean excl = Math.hypot(pt[0] - SQ_X, pt[1] - SQ_Z) < 10.5f;
+                for (int j = 0; !excl && j < junctions.size(); j++) {
+                    float[] jn = junctions.get(j);
+                    if (Math.hypot(pt[0] - jn[0], pt[1] - jn[1]) < jn[2] + 2.6f) excl = true;
+                }
+                if (excl) { pen = false; continue; }
+                float xx = (pt[0] + half) * s, zz = (pt[1] + half) * s;
+                if (!pen) { dpth.moveTo(xx, zz); pen = true; } else dpth.lineTo(xx, zz);
+            }
+            c.drawPath(dpth, dashP);
         }
         // tilled garden soil: dark plot + row furrows, corner-transformed with each garden's yaw
         if (gardenSoil != null) for (float[] gd : gardenSoil) {
@@ -5795,12 +5822,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.pathStrokes = new java.util.ArrayList<float[]>();
         this.gardenSoil = new java.util.ArrayList<float[]>();
         this.gardenTreePts = new java.util.ArrayList<float[]>();
-        // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two stone
-        // pillars — arranged on the cobbled square, clear of the main road that skirts its south edge
-        L.add(new float[]{-2.1f, 0.75f, 3.4f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
-        L.add(new float[]{ 2.1f, 0.75f, 3.4f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
-        L.add(new float[]{-2.9f, 1.5f, 7.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
-        L.add(new float[]{ 2.9f, 1.5f, 7.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
+        // No more loose cover blocks on the plaza — the market (fountain centrepiece + a ring of
+        // stalls, see addAccessories) provides the spawn cover now.
+        numCover = 0;
 
         // ---- houses strung along the curved lanes, each turned to face its road -------------------
         // March each road by arclength; at irregular intervals drop a lot on one side (sometimes both),
@@ -5817,10 +5841,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float sl = (float) Math.sqrt(tx * tx + tz * tz);
                 acc -= sl;
                 if (acc > 0f) continue;
-                acc = 5.5f + rc.nextFloat() * 4.0f;                 // next lot 5.5-9.5 m further along
+                acc = 4.6f + rc.nextFloat() * 3.0f;                 // next lot 4.6-7.6 m further along
                 tx /= sl; tz /= sl;
                 float nxr = -tz, nzr = tx;                          // road normal (left of travel)
-                int nSides = rc.nextFloat() < 0.55f ? 2 : 1;        // often a lot on BOTH sides
+                int nSides = rc.nextFloat() < 0.7f ? 2 : 1;         // usually a lot on BOTH sides
                 int side = rc.nextFloat() < 0.72f ? -lastSide : lastSide;   // mostly alternate sides
                 for (int sI = 0; sI < nSides; sI++, side = -side) {
                     lastSide = side;
@@ -5915,7 +5939,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (cx * cx + cz * cz > 30.2f * 30.2f) return;
         if (inSpawnLane(cx, cz)) return;
         float dSq = (float) Math.hypot(cx - SQ_X, cz - SQ_Z);
-        if (dSq < (arch == 3 ? 7.2f : 8.8f)) return;                // shops may ring the square more tightly
+        if (dSq < (arch == 3 ? 6.8f : 8.2f)) return;                // shops may ring the square more tightly
         double ya = Math.toRadians(yawDeg);
         float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
         for (int cIx = 0; cIx < 9; cIx++) {                         // 8 perimeter points + centre stay off the streets
@@ -5925,7 +5949,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         for (float[] o : houses)                                    // never overlap a neighbour (OBB + breathing room)
             if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, o[0], o[1], o[2] * 0.5f, o[3] * 0.5f,
-                    o.length > 25 ? o[25] : 0f, 1.3f)) return;
+                    o.length > 25 ? o[25] : 0f, 1.1f)) return;
         for (float[] g : gardens)
             if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, g[0], g[1], g[2], g[3], g[4], 0.8f)) return;
 
@@ -5954,7 +5978,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  tilled soil plot (painted into the ground + sprouted by the vegetation bake), maybe a fruit tree. */
     private void buildGardens(List<float[]> L, List<float[]> houses, List<float[]> gardens, Random rc) {
         for (float[] h : houses) {
-            if (rc.nextFloat() > 0.55f) continue;
+            if (rc.nextFloat() > 0.78f) continue;
             float w = h[2], d = h[3], yawDeg = h[25];
             double ya = Math.toRadians(yawDeg);
             float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
@@ -6123,22 +6147,37 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             n++;
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
-        // 4. the market square rings the spawn plaza: fountain landmark + well + two stalls, nudged
-        //    off the asphalt automatically so a road tweak can never leave one stranded on the lane
-        addFountain(L, 6.0f, 5.4f);
-        float[][] marketSpots = {{7.2f, 9.8f, 14f}, {2.2f, 14.8f, -12f}, {4.4f, 10.6f, 8f}};
-        for (int mIx = 0; mIx < marketSpots.length; mIx++) {
-            float mx = marketSpots[mIx][0], mz = marketSpots[mIx][1], myaw = marketSpots[mIx][2];
-            for (int push = 0; push < 8 && (roadSd(mx, mz) < 1.1f || inSpawnLane(mx, mz)); push++) {
-                float away = (float) Math.hypot(mx - SQ_X, mz - SQ_Z) + 1e-3f;
-                mx += (mx - SQ_X) / away * 0.7f; mz += (mz - SQ_Z) / away * 0.7f;   // slide outward until clear
-            }
-            if (!clearOfHouses(houses, mx, mz, 1.0f)) continue;
+        // 4. the market: a fountain centrepiece on the square with stalls, the well and goods crates
+        //    arranged in a RING around it, every front turned toward the middle — a proper market circle.
+        //    The player spawns at (0,9) just inside the ring and weaves between the stands.
+        float mcx = 0.8f, mcz = 5.4f, mrad = 5.4f;
+        addFountain(L, mcx, mcz);
+        clutterPts.add(new float[]{mcx, mcz});
+        // walk the ring and take the free spots (roads/houses/spawn vetoed), keeping the stands
+        // spread apart — the market wraps as far around the fountain as the square allows
+        int[] kinds = {0, 3, 1, 4, 2, 5};   // stall red · well · stall green · barrels · stall blue · planter
+        int placedK = 0;
+        float lastA = -999f;
+        for (float aDeg = -170f; aDeg <= 180f && placedK < kinds.length; aDeg += 10f) {
+            if (aDeg - lastA < 42f) continue;               // breathing room between stands
+            double aa = Math.toRadians(aDeg);
+            float mx = mcx + (float) Math.sin(aa) * mrad, mz = mcz + (float) Math.cos(aa) * mrad;
+            if (roadSd(mx, mz) < 1.15f || mx * mx + mz * mz > 30f * 30f) continue;   // never on/next to the asphalt
+            if (Math.hypot(mx - 0f, mz - 9f) < 2.1f) continue;                        // keep the spawn point free
+            if (!clearOfHouses(houses, mx, mz, 0.9f) || blocksAnyDoor(houses, mx, mz)) continue;
+            float face = aDeg + 180f;                       // local +z (the stall front) points at the fountain
             int b0 = L.size();
-            if (mIx == 2) addWell(L, mx, mz);
-            else addStall(L, mx, mz, mIx == 0 ? 0.78f : 0.34f, mIx == 0 ? 0.32f : 0.46f, mIx == 0 ? 0.27f : 0.32f);
-            for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, mx, mz, myaw);
+            int kind = kinds[placedK];
+            if (kind <= 2)      addStall(L, mx, mz, kind == 0 ? 0.78f : (kind == 1 ? 0.34f : 0.30f),
+                                          kind == 0 ? 0.32f : (kind == 1 ? 0.46f : 0.38f),
+                                          kind == 0 ? 0.27f : (kind == 1 ? 0.32f : 0.62f));
+            else if (kind == 3) addWell(L, mx, mz);
+            else if (kind == 4) { addBarrel(L, mx - 0.4f, mz); addBarrel(L, mx + 0.35f, mz + 0.3f); addCrate(L, rc, mx + 0.1f, mz - 0.55f); }
+            else                { addPlanter(L, mx - 0.4f, mz); addWoodpile(L, rc, mx + 0.55f, mz); }
+            for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, mx, mz, face);
             clutterPts.add(new float[]{mx, mz});
+            placedK++;
+            lastA = aDeg;
         }
     }
 
