@@ -23,18 +23,23 @@ class MultisampleConfigChooser implements GLSurfaceView.EGLConfigChooser {
 
     @Override
     public EGLConfig chooseConfig(EGL10 egl, EGLDisplay display) {
-        EGLConfig c = tryChoose(egl, display, samples);
-        if (c == null && samples > 2) c = tryChoose(egl, display, 2);
-        if (c == null) c = tryChoose(egl, display, 0);   // no MSAA fallback
+        // A 24-bit depth buffer first: 16-bit quantisation makes nearly-coplanar surfaces (window
+        // pane vs. the dark reveal behind it) z-fight into crawling moiré stripes at a distance.
+        EGLConfig c = tryChoose(egl, display, samples, 24);
+        if (c == null && samples > 2) c = tryChoose(egl, display, 2, 24);
+        if (c == null) c = tryChoose(egl, display, samples, 16);
+        if (c == null && samples > 2) c = tryChoose(egl, display, 2, 16);
+        if (c == null) c = tryChoose(egl, display, 0, 24);   // no MSAA fallback
+        if (c == null) c = tryChoose(egl, display, 0, 16);
         return c;
     }
 
-    private EGLConfig tryChoose(EGL10 egl, EGLDisplay display, int s) {
+    private EGLConfig tryChoose(EGL10 egl, EGLDisplay display, int s, int depth) {
         int[] spec;
         if (s > 0) {
             spec = new int[] {
                 EGL10.EGL_RED_SIZE, 8, EGL10.EGL_GREEN_SIZE, 8, EGL10.EGL_BLUE_SIZE, 8,
-                EGL10.EGL_ALPHA_SIZE, 0, EGL10.EGL_DEPTH_SIZE, 16,
+                EGL10.EGL_ALPHA_SIZE, 0, EGL10.EGL_DEPTH_SIZE, depth,
                 EGL10.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
                 EGL10.EGL_SAMPLE_BUFFERS, 1, EGL10.EGL_SAMPLES, s,
                 EGL10.EGL_NONE
@@ -42,7 +47,7 @@ class MultisampleConfigChooser implements GLSurfaceView.EGLConfigChooser {
         } else {
             spec = new int[] {
                 EGL10.EGL_RED_SIZE, 8, EGL10.EGL_GREEN_SIZE, 8, EGL10.EGL_BLUE_SIZE, 8,
-                EGL10.EGL_ALPHA_SIZE, 0, EGL10.EGL_DEPTH_SIZE, 16,
+                EGL10.EGL_ALPHA_SIZE, 0, EGL10.EGL_DEPTH_SIZE, depth,
                 EGL10.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
                 EGL10.EGL_NONE
             };
