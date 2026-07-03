@@ -386,6 +386,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final int[] enOutfit = new int[MAX_ENEMIES];
     private final int[] enType = new int[MAX_ENEMIES];   // 0 = normal, 1 = CRAWLER (fast/weak, legless, low), 2 = brute (slow/tanky)
     private final float[] enVar = new float[MAX_ENEMIES]; // per-zombie 0..1: skin tint, clothing wear, wound layout
+    // Radar echoes: a blip is painted only when the sweep line passes the enemy's bearing, then it
+    // afterglows and fades where it was painted (even if the enemy has since moved or died).
+    private final float[] blipX = new float[MAX_ENEMIES], blipZ = new float[MAX_ENEMIES];
+    private final float[] blipAge = new float[MAX_ENEMIES];      // seconds since painted (999 = dark)
+    private final float[] blipRel = new float[MAX_ENEMIES];      // last bearing-minus-sweep (-1 = untracked)
+    private final boolean[] blipBoss = new boolean[MAX_ENEMIES];
+    private float radarPrevT = -1f;                              // timeAcc at the previous radar frame
+    private static final float RADAR_RATE = 2.2f;                // sweep speed (rad/s, ~2.9 s per turn)
+    private static final float RADAR_GLOW = 2.45f;               // afterglow fade time (most of a turn)
     private final int[] enFaceType = new int[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
     private final float[] enScale = new float[MAX_ENEMIES];   // 1 = normal, >1 = (mini)boss
@@ -2668,8 +2677,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] b = new float[6];
         float pulse = 0.7f + 0.3f * pulse01(3.2f, 0f);
         float[] o = editObjs.get(selObj); edObjBounds(o, b);
-        edGroundRect(o[2], o[3], b[3], b[5], o[4], 0.08f, 0.06f, AC_CYAN[0] * pulse, AC_CYAN[1] * pulse, AC_CYAN[2] * pulse);
-        edGroundRect(o[2], o[3], b[3], b[5], o[4], b[1] * 2f + 0.05f, 0.05f, AC_CYAN[0] * pulse, AC_CYAN[1] * pulse, AC_CYAN[2] * pulse);
+        edGroundRect(o[2], o[3], b[3], b[5], o[4], 0.08f, 0.06f, AC_TOXIC[0] * pulse, AC_TOXIC[1] * pulse, AC_TOXIC[2] * pulse);
+        edGroundRect(o[2], o[3], b[3], b[5], o[4], b[1] * 2f + 0.05f, 0.05f, AC_TOXIC[0] * pulse, AC_TOXIC[1] * pulse, AC_TOXIC[2] * pulse);
     }
 
     /** Palette tabs: 0 Moebel (seating/storage) · 1 Deko (accents) · 2 Pflanzen · 3 Props · 4 Haeuser.
@@ -2694,12 +2703,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean hit = tapped && hitRect(cx, cy, w, h, px, py);
         float rad = Math.min(16f * us, h * 0.32f);
         if (active) {
-            drawGlow(cx, cy, w, h, rad, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
-            drawButton(cx, cy, w, h, rad, 0.14f, 0.40f, 0.56f, 0.97f, false);
+            drawGlow(cx, cy, w, h, rad, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.55f);
+            drawButton(cx, cy, w, h, rad, 0.20f, 0.42f, 0.12f, 0.97f, false);
         } else {
-            drawCard(cx, cy, w, h, rad, 0.105f, 0.125f, 0.175f, 0.94f);
+            drawCard(cx, cy, w, h, rad, 0.082f, 0.092f, 0.064f, 0.94f);
         }
-        drawTextCenteredShadow(label, cx, cy, tsize, active ? 1f : 0.90f, active ? 1f : 0.94f, 1f, 1f);
+        drawTextCenteredShadow(label, cx, cy, tsize, active ? 1f : 0.92f, active ? 1f : 0.90f, active ? 0.92f : 0.80f, 1f);
         return hit;
     }
     /** SANDBOX 2D overlay: a top toolbar (pick a kind + place/move/rotate/delete), a top-right EXIT, a centre
@@ -2711,7 +2720,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean tapped = input.consumeMenuTap(tap);
         float tx = tap[0], ty = tap[1];
 
-        drawRectPx(width * 0.5f, 78f * us, width, 156f * us, 0.05f, 0.06f, 0.09f, 0.42f);   // strip backdrop
+        drawRectPx(width * 0.5f, 78f * us, width, 156f * us, 0.05f, 0.055f, 0.04f, 0.42f);   // strip backdrop
 
         // tool row — which kind PLATZIEREN drops
         float bw = 150f * us, bh = 56f * us, gap = 6f * us, bx = 16f * us + bw * 0.5f, y1 = 46f * us;
@@ -2765,7 +2774,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         String hint = selNow ? ("Ausgewaehlt: " + edLabel((int) editObjs.get(selObj)[0], (int) editObjs.get(selObj)[1]))
                              : "PLATZIEREN: Objekt vor dir  ·  WAEHLEN: anvisiertes Objekt bearbeiten";
         drawTextCentered(hint, width * 0.5f, height - 34f * us, 18f, 0.85f, 0.90f, 0.98f, 0.9f);
-        drawText("SANDBOX", 18f * us, height - 16f * us, 14f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.8f);
+        drawText("SANDBOX", 18f * us, height - 16f * us, 14f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.8f);
         if (edToast != null && edToastT > 0f) drawTextCentered(edToast, width * 0.5f, 172f * us, 20f, 1f, 1f, 0.85f, Math.min(1f, edToastT));
     }
 
@@ -2777,15 +2786,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         // --- top bar: dark band + soft glow line + accent, like the hub header ---
         float topY = 42f * us, bh = 60f * us, hbH = 88f * us;
-        drawRectPx(width * 0.5f, topY, width, hbH, 0.055f, 0.075f, 0.135f, 0.96f);
-        for (int i = 0; i < 4; i++)
-            drawRectPx(width * 0.5f, hbH + (4f + i * 6f) * us, width, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.05f - i * 0.01f);
-        drawRectPx(width * 0.5f, hbH, width, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f);
+        drawRectPx(width * 0.5f, topY, width, hbH, 0.055f, 0.058f, 0.042f, 0.96f);
+        drawBloodEdge(hbH, width);
         float fertigW = Math.min(210f * us, width * 0.22f);
         if (edInsideHouse >= 0) {
             if (edBtn(20f * us + fertigW * 0.5f, topY, fertigW, bh, "ZURUECK", 25f, false, tapped, px, py)) { edLeaveHouse(); return; }
         } else if (edBtn(20f * us + fertigW * 0.5f, topY, fertigW, bh, "MENUE", 26f, false, tapped, px, py)) { edExit(); return; }
-        drawTextCenteredShadow(edInsideHouse >= 0 ? "INNENRAUM" : "EDITOR", width * 0.5f, topY, 25f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+        drawTextCenteredShadow(edInsideHouse >= 0 ? "INNENRAUM" : "EDITOR", width * 0.5f, topY, 25f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 1f);
         // Right-side group sized as a fixed FRACTION of width (never fixed px) so it can never collide with
         // FERTIG on a narrow/low-res screen — three equal buttons filling a 58%-of-width budget.
         float rGap = 10f * us, rBudget = width * 0.58f, wBtn = (rBudget - 2f * rGap) / 3f;
@@ -2811,7 +2818,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float fbY = toggleCy + toggleH * 0.5f + 40f * us, fbH = 56f * us, fbW = 74f * us;
             float fcx = toggleCx - toggleW * 0.5f + fbW * 0.5f;
             if (edBtn(fcx, fbY, fbW, fbH, "-", 30f, false, tapped, px, py)) { edSetFloor(edFloor - 1); tapped = false; }
-            drawTextCenteredShadow("ETAGE " + (edFloor + 1) + "/" + floors, fcx + fbW * 0.5f + 74f * us, fbY, 21f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+            drawTextCenteredShadow("ETAGE " + (edFloor + 1) + "/" + floors, fcx + fbW * 0.5f + 74f * us, fbY, 21f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 1f);
             if (edBtn(fcx + fbW + 148f * us, fbY, fbW, fbH, "+", 30f, false, tapped, px, py)) { edSetFloor(edFloor + 1); tapped = false; }
             stickTopY = Math.max(stickTopY, fbY + fbH * 0.5f + 12f * us);
         }
@@ -2841,7 +2848,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // --- placement mode: tap anywhere in the world to drop it; one "Fertig" button to stop ---
         if (armedCat >= 0) {
             drawChip(width * 0.5f, height - 46f * us, measureText("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), 24f) + 46f * us, 54f * us, 0.07f, 0.10f, 0.16f, 0.92f);
-            drawTextCentered("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), width * 0.5f, height - 46f * us, 24f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+            drawTextCentered("Antippen zum Platzieren: " + edLabel(armedCat, armedKind), width * 0.5f, height - 46f * us, 24f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 1f);
             float doneW = Math.min(230f * us, width * 0.24f);
             if (edBtn(width - 20f * us - doneW * 0.5f, height - 46f * us, doneW, 74f * us, "OK", 27f, true, tapped, px, py)) { armedCat = -1; armedKind = -1; tapped = false; }
         } else if (selObj >= 0 && selObj < editObjs.size()) {
@@ -2947,7 +2954,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
-        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; enWind[i] = 0f; }
+        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; enWind[i] = 0f; blipAge[i] = 999f; blipRel[i] = -1f; }
+        radarPrevT = -1f;
         for (int i = 0; i < MAX_PICKUPS; i++) pkLife[i] = 0f;
         hitStop = 0f;
         for (int i = 0; i < MAX_PARTICLES; i++) pLife[i] = 0f;
@@ -3234,12 +3242,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float a = Math.min(1f, feedT[i] / 0.5f);
             float cy = y + shown * rowH;
             float tw = measureText(feedText[i], 15f) + 40f * us;
-            drawRoundRect(x - tw * 0.5f, cy, tw, 28f * us, 14f * us, 0.06f, 0.08f, 0.13f, 0.55f * a);
+            drawRoundRect(x - tw * 0.5f, cy, tw, 28f * us, 14f * us, 0.05f, 0.045f, 0.035f, 0.55f * a);
             float dr = feedKind[i] == 1 ? 1f : (feedKind[i] == 2 ? 1f : 0.95f);
             float dg = feedKind[i] == 1 ? 0.82f : (feedKind[i] == 2 ? 0.3f : 0.35f);
             float db = feedKind[i] == 1 ? 0.25f : (feedKind[i] == 2 ? 0.25f : 0.3f);
             drawCircle(x - tw + 16f * us, cy, 5f * us, dr, dg, db, 0.95f * a);
-            drawText(feedText[i], x - tw + 28f * us, cy, 15f, 0.9f, 0.92f, 0.96f, a);
+            drawText(feedText[i], x - tw + 28f * us, cy, 15f, 0.88f, 0.85f, 0.76f, a);
             shown++;
         }
     }
@@ -3322,7 +3330,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         recomputeLevel();
         if (playerLevel > before) {
             levelsGainedThisRun += playerLevel - before;
-            spawnPopup("LEVEL UP!", width * 0.5f, height * 0.33f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 32f);
+            spawnPopup("LEVEL UP!", width * 0.5f, height * 0.33f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 32f);
             spawnPopup("LV " + playerLevel, width * 0.5f, height * 0.33f + 42f * us, 1f, 1f, 1f, 24f);
         }
 
@@ -3527,41 +3535,86 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // --- HUD: radar, enemy health bars, boss bar ---
 
-    /** A corner radar: player-relative enemy blips, forward = up, with a sweeping line. */
+    /** A corner radar that behaves like the real thing: the rotating sweep line paints a red echo when
+     *  it passes an enemy's bearing; the echo then afterglows and fades where it was painted. */
     private void drawRadar() {
         float rad = 64f * us;
         float rcx = 24f * us + rad, rcy = 178f * us + rad;   // top-left, below the cash/level stack
         float fX = camFwd[0], fZ = camFwd[2];
         float fl = (float) Math.sqrt(fX * fX + fZ * fZ); if (fl < 1e-4f) fl = 1f; fX /= fl; fZ /= fl;
         float rX = -fZ, rZ = fX;                                 // right = forward rotated -90°
-        drawCircle(rcx, rcy + 3f * us, rad + 5f * us, 0f, 0f, 0f, 0.32f);          // shadow
-        drawCircle(rcx, rcy, rad + 2.5f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.45f); // border ring
-        drawCircle(rcx, rcy, rad, 0.05f, 0.09f, 0.13f, 0.62f);                     // dish
-        drawCircle(rcx, rcy, rad * 0.6f + 1.5f * us, 0.3f, 0.5f, 0.6f, 0.16f);     // mid range ring
-        drawCircle(rcx, rcy, rad * 0.6f, 0.05f, 0.09f, 0.13f, 0.62f);
-        drawRectPx(rcx, rcy, rad * 2f, 1.5f * us, 0.4f, 0.6f, 0.7f, 0.16f);        // crosshair
-        drawRectPx(rcx, rcy, 1.5f * us, rad * 2f, 0.4f, 0.6f, 0.7f, 0.16f);
-        float sa = timeAcc * 2.2f, ss = (float) Math.sin(sa), sc = (float) Math.cos(sa);
-        for (int k = 1; k <= 6; k++) {                                            // sweeping line of dots
-            float rr = rad * k / 6f;
-            drawCircle(rcx + ss * rr, rcy - sc * rr, 2.2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.22f * (1f - k / 7.5f));
-        }
-        drawRoundRect(rcx, rcy - rad + 6f * us, 4f * us, 10f * us, 2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f); // forward notch
+
+        // sweep bookkeeping: track each enemy's bearing RELATIVE to the advancing sweep. The gap
+        // shrinks steadily and wraps 0→2π exactly when the line passes over the enemy — detecting
+        // that wrap catches every crossing no matter how fast the player (or the enemy) is turning.
+        float dtR = radarPrevT < 0f ? 0f : Math.min(0.25f, timeAcc - radarPrevT);
+        radarPrevT = timeAcc;
+        float s1 = timeAcc * RADAR_RATE;
         float range = 40f;
         for (int i = 0; i < MAX_ENEMIES; i++) {
-            if (!enAlive[i]) continue;
+            if (blipAge[i] < 900f) blipAge[i] += dtR;            // echoes keep decaying even after a kill
+            if (!enAlive[i]) { blipRel[i] = -1f; continue; }
             float dx = enX[i] - px, dz = enZ[i] - pz;
-            float fwd = dx * fX + dz * fZ, rgt = dx * rX + dz * rZ;
-            float nx = rgt / range, ny = fwd / range;
+            float b = (float) Math.atan2(dx * rX + dz * rZ, dx * fX + dz * fZ);   // radar bearing, 0 = up
+            float rel = (b - s1) % 6.2831853f; if (rel < 0f) rel += 6.2831853f;
+            if (blipRel[i] >= 0f && Math.abs(rel - blipRel[i]) > 3.1415926f) {    // wrapped → sweep passed over
+                blipX[i] = enX[i]; blipZ[i] = enZ[i]; blipAge[i] = 0f; blipBoss[i] = enBoss[i] > 0;
+            }
+            blipRel[i] = rel;
+        }
+
+        // military phosphor dish
+        drawCircle(rcx, rcy + 3f * us, rad + 5f * us, 0f, 0f, 0f, 0.35f);          // shadow
+        drawCircle(rcx, rcy, rad + 3f * us, 0.10f, 0.13f, 0.07f, 0.92f);           // gunmetal housing
+        drawCircle(rcx, rcy, rad + 1f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.28f); // powered rim
+        drawCircle(rcx, rcy, rad, 0.015f, 0.045f, 0.020f, 0.82f);                  // dark phosphor glass
+        for (int k = 0; k < 16; k++) {                                             // dotted range rings
+            float a2 = k * 0.3927f;
+            drawCircle(rcx + (float) Math.sin(a2) * rad * 0.62f, rcy - (float) Math.cos(a2) * rad * 0.62f,
+                    1.3f * us, 0.35f, 0.75f, 0.35f, 0.30f);
+            if ((k & 1) == 0)
+                drawCircle(rcx + (float) Math.sin(a2) * rad * 0.31f, rcy - (float) Math.cos(a2) * rad * 0.31f,
+                        1.2f * us, 0.35f, 0.75f, 0.35f, 0.26f);
+        }
+        drawRectPx(rcx, rcy, rad * 2f, 1.2f * us, 0.30f, 0.65f, 0.30f, 0.14f);     // cross hairs
+        drawRectPx(rcx, rcy, 1.2f * us, rad * 2f, 0.30f, 0.65f, 0.30f, 0.14f);
+
+        // the sweep: a bright leading line with a fading phosphor wedge trailing behind it
+        float sw = s1 % 6.2831853f;
+        for (int t = 6; t >= 0; t--) {
+            float a2 = sw - t * 0.075f;
+            float la = t == 0 ? 0.9f : 0.30f * (1f - t / 7.5f);
+            float ss = (float) Math.sin(a2), sc = (float) Math.cos(a2);
+            int nd = t == 0 ? 8 : 5;
+            for (int k = 1; k <= nd; k++) {
+                float rr = rad * k / nd;
+                drawCircle(rcx + ss * rr, rcy - sc * rr, (t == 0 ? 2.4f : 2.6f) * us,
+                        0.55f, 1f, 0.45f, la * (0.35f + 0.65f * k / nd));
+            }
+        }
+        drawRoundRect(rcx, rcy - rad + 6f * us, 4f * us, 10f * us, 2f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.85f); // forward notch
+
+        // painted echoes: red, brightest right after the sweep hits, then glow-fading in place
+        for (int i = 0; i < MAX_ENEMIES; i++) {
+            if (blipAge[i] >= RADAR_GLOW) continue;
+            float k = 1f - blipAge[i] / RADAR_GLOW;                 // 1 fresh → 0 gone
+            float dx = blipX[i] - px, dz = blipZ[i] - pz;
+            float nx = (dx * rX + dz * rZ) / range, ny = (dx * fX + dz * fZ) / range;
             float bl = (float) Math.sqrt(nx * nx + ny * ny);
             boolean edge = bl > 1f; if (edge) { nx /= bl; ny /= bl; }
             float bx = rcx + nx * rad * 0.9f, by = rcy - ny * rad * 0.9f;
-            boolean boss = enBoss[i] > 0;
-            float bs = (boss ? 6.5f : 4.2f) * us, bp = boss ? (0.7f + 0.3f * pulse01(5f, 0f)) : 1f;
-            drawCircle(bx, by, bs + 1.5f * us, 0f, 0f, 0f, 0.4f);
-            drawCircle(bx, by, bs, 1f, boss ? 0.45f : 0.3f, boss ? 0.15f : 0.25f, (edge ? 0.5f : 0.95f) * bp);
+            float fade = k * k * (edge ? 0.55f : 1f);               // quadratic ≈ phosphor decay
+            boolean boss = blipBoss[i];
+            float bs = (boss ? 6.5f : 4.2f) * us * (0.82f + 0.30f * k);
+            drawCircle(bx, by, bs + 2f * us, 0.45f, 0.03f, 0.02f, 0.55f * fade);    // dark blood halo
+            drawCircle(bx, by, bs, 1f, boss ? 0.40f : 0.16f, 0.10f, 0.95f * fade);  // red echo
+            if (blipAge[i] < 0.30f) {                               // fresh paint: ping pulse + hot core
+                float pk = 1f - blipAge[i] / 0.30f;
+                drawCircle(bx, by, bs + (1f - pk) * 13f * us, 1f, 0.30f, 0.20f, pk * 0.30f);
+                drawCircle(bx, by, bs * 0.65f, 1f, 0.92f, 0.80f, pk * 0.9f);
+            }
         }
-        drawCircle(rcx, rcy, 4.5f * us, 0.8f, 0.95f, 1f, 0.97f);                   // player
+        drawCircle(rcx, rcy, 4.2f * us, 0.80f, 1f, 0.72f, 0.97f);                   // player
     }
 
     /** Small floating health bars over wounded enemies (and always over bosses). */
@@ -3674,8 +3727,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
             // move stick: a defined ring base + a glossy knob that tracks the finger
             float mcx = Hud.moveCx(), mcy = Hud.moveCy(height);
-            drawCircle(mcx, mcy, Hud.MOVE_RADIUS + 2.5f * us, 1f, 1f, 1f, 0.20f);            // ring
-            drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 0.10f, 0.12f, 0.16f, 0.34f);              // dark well
+            drawCircle(mcx, mcy, Hud.MOVE_RADIUS + 2.5f * us, 0.9f, 0.92f, 0.8f, 0.20f);     // ring
+            drawCircle(mcx, mcy, Hud.MOVE_RADIUS, 0.09f, 0.10f, 0.08f, 0.34f);              // dark well
             float kx = input.moveX(), ky = input.moveY();
             float klen = (float) Math.sqrt(kx * kx + ky * ky);
             if (klen > 1f) { kx /= klen; ky /= klen; }
@@ -3710,15 +3763,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // jump button (up chevron), brighter mid-air
             float jpx = Hud.jumpCx(width), jpy = Hud.jumpCy(height);
             float ja = grounded ? 0.42f : 0.7f;
-            drawPad(jpx, jpy, Hud.JUMP_RADIUS, 0.30f, 0.52f, 0.78f, ja);
+            drawPad(jpx, jpy, Hud.JUMP_RADIUS, 0.34f, 0.42f, 0.20f, ja);
             drawRectPx(jpx, jpy - 11f * us, 11f * us, 6f * us, 1f, 1f, 1f, 0.9f);
             drawRectPx(jpx, jpy - 2f * us, 21f * us, 6f * us, 1f, 1f, 1f, 0.9f);
             drawRectPx(jpx, jpy + 7f * us, 31f * us, 6f * us, 1f, 1f, 1f, 0.9f);
 
             // menu button (top-right) — one tap returns to the hub (aborts the run, earnings do not count)
             float mnx = Hud.menuCx(width), mny = Hud.menuCy(height);
-            drawPad(mnx, mny, Hud.MENU_RADIUS, 0.22f, 0.26f, 0.36f, 0.5f);
-            drawTextCentered("MENU", mnx, mny, 18f, 0.92f, 0.95f, 1f, 0.95f);
+            drawPad(mnx, mny, Hud.MENU_RADIUS, 0.24f, 0.24f, 0.20f, 0.5f);
+            drawTextCentered("MENU", mnx, mny, 18f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.95f);
 
             // door prompt — appears only when you're in range of a door; tap it to open/close
             if (nearDoor >= 0) {
@@ -3771,7 +3824,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawRectPx(ccx + off, ccy, 12f, 3f, hr, hg, hb, a);
             }
 
-            drawTextCenteredShadow("" + score, width * 0.5f, 32f * us, 34f, 0.9f, 1f, 1f, 0.97f);
+            drawTextCenteredShadow("" + score, width * 0.5f, 32f * us, 34f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.97f);
 
             // health bar (top-left): medkit icon + rounded track/fill + frame + sheen
             float hp = playerHP / effMaxHp(); if (hp < 0f) hp = 0f;
@@ -3790,16 +3843,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                               brad + (6f + 4f * hb) * us, 1f, 0.2f, 0.2f, 0.10f + 0.18f * hb);
             }
             drawRoundRect(bx0 + bw * 0.5f, by, bw + 6f * us, bh + 6f * us, brad + 3f * us, 0f, 0f, 0f, 0.45f); // frame/shadow
-            drawRoundRect(bx0 + bw * 0.5f, by, bw, bh, brad, 0.16f, 0.16f, 0.20f, 0.75f);                     // track
+            drawRoundRect(bx0 + bw * 0.5f, by, bw, bh, brad, 0.13f, 0.09f, 0.08f, 0.78f);                     // dried track
             if (hp > 0.001f) {
-                drawRoundRect(bx0 + bw * hp * 0.5f, by, bw * hp, bh, brad, 1f - hp, 0.2f + 0.7f * hp, 0.22f, 0.95f);
+                // blood fill: always red, draining darker as it empties
+                drawRoundRect(bx0 + bw * hp * 0.5f, by, bw * hp, bh, brad, 0.45f + 0.40f * hp, 0.07f + 0.08f * hp, 0.06f, 0.95f);
                 drawRoundRect(bx0 + bw * hp * 0.5f, by - bh * 0.22f, bw * hp - 6f * us, bh * 0.34f, brad * 0.6f,
-                              1f - 0.4f * hp, 0.5f + 0.5f * hp, 0.45f, 0.35f);                                // sheen
+                              0.95f, 0.30f + 0.25f * hp, 0.25f, 0.30f);                                       // wet sheen
+                // blood runners dripping off the bar (one live at the fill edge, one dried mid-bar)
+                float dpx = bx0 + bw * hp - 6f * us;
+                float dl = (7f + 5f * pulse01(0.8f, 1.7f)) * us;
+                drawRoundRect(dpx, by + bh * 0.5f + dl * 0.5f, 4.5f * us, dl, 2.2f * us, 0.55f, 0.07f, 0.06f, 0.85f);
+                drawCircle(dpx, by + bh * 0.5f + dl + 1.5f * us, 2.8f * us, 0.62f, 0.09f, 0.07f, 0.9f);
+                if (hp > 0.35f)
+                    drawRoundRect(bx0 + bw * hp * 0.45f, by + bh * 0.5f + 5f * us, 4f * us, 10f * us, 2f * us, 0.45f, 0.06f, 0.05f, 0.6f);
             }
 
             // cash + level + xp progress (top-left, under the health bar)
             drawTextShadow("$" + cash, 40f, 106f * us, 26f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
-            drawTextShadow("LV " + playerLevel, 40f, 150f * us, 20f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+            drawTextShadow("LV " + playerLevel, 40f, 150f * us, 20f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 1f);
             float lp = levelProgress();
             float xbX = 40f + measureText("LV 00", 20f) + 16f, xbW = 150f;
             drawRoundRect(xbX + xbW * 0.5f, 150f * us, xbW, 10f * us, 5f * us, 0.18f, 0.18f, 0.22f, 0.7f);
@@ -3811,7 +3872,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 String cs = "x" + combo;
                 float cw = measureText(cs, 30f) + 64f * us, ch = 46f * us;
                 if (combo >= 3) drawGlow(width * 0.5f, cy2, cw, ch, ch * 0.5f, 1f, mg, mb, 0.7f);
-                drawRoundRect(width * 0.5f, cy2, cw, ch, ch * 0.5f, 0.06f, 0.07f, 0.12f, 0.78f);
+                drawRoundRect(width * 0.5f, cy2, cw, ch, ch * 0.5f, 0.055f, 0.045f, 0.038f, 0.78f);
                 drawRoundRect(width * 0.5f - (cw - 18f * us) * 0.5f + (cw - 18f * us) * ct * 0.5f, cy2 + ch * 0.5f - 5f * us,
                         (cw - 18f * us) * ct, 4f * us, 2f * us, 1f, mg, mb, 0.92f);
                 drawTextCenteredShadow(cs, width * 0.5f, cy2 - 2f * us, 30f, 1f, mg, mb, 0.97f);
@@ -3837,15 +3898,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // wave indicator (top centre, under the score): a rounded pill
             String waveStr = "WAVE " + wave;
             float wpw = measureText(waveStr, 20f) + 40f * us;
-            drawRoundRect(width * 0.5f, 134f * us, wpw, 38f * us, 19f * us, 0.06f, 0.08f, 0.14f, 0.72f);
-            drawTextCentered(waveStr, width * 0.5f, 134f * us, 20f, 0.9f, 0.95f, 1f, 0.95f);
+            drawRoundRect(width * 0.5f, 134f * us, wpw, 38f * us, 19f * us, 0.055f, 0.045f, 0.038f, 0.72f);
+            drawTextCentered(waveStr, width * 0.5f, 134f * us, 20f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.95f);
             // wave progress bar (enemies cleared) + remaining count
             float cleared = waveSize - waveRemaining; if (cleared < 0f) cleared = 0f;
             float wf = waveSize > 0 ? cleared / (float) waveSize : 0f;
             float pbw = Math.max(wpw, 190f * us), pby = 162f * us;
-            drawRoundRect(width * 0.5f, pby, pbw, 7f * us, 3.5f * us, 0.12f, 0.14f, 0.18f, 0.75f);
-            if (wf > 0.001f) drawRoundRect(width * 0.5f - pbw * 0.5f + pbw * wf * 0.5f, pby, pbw * wf, 7f * us, 3.5f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.93f);
-            drawTextCentered(Math.max(0, waveRemaining) + " LEFT", width * 0.5f, pby + 18f * us, 13f, 0.72f, 0.82f, 0.92f, 0.82f);
+            drawRoundRect(width * 0.5f, pby, pbw, 7f * us, 3.5f * us, 0.11f, 0.11f, 0.09f, 0.75f);
+            if (wf > 0.001f) drawRoundRect(width * 0.5f - pbw * 0.5f + pbw * wf * 0.5f, pby, pbw * wf, 7f * us, 3.5f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.93f);
+            drawTextCentered(Math.max(0, waveRemaining) + " LEFT", width * 0.5f, pby + 18f * us, 13f, 0.80f, 0.77f, 0.66f, 0.82f);
             if (waveBanner > 0f) {
                 float ba = Math.min(1f, waveBanner);                       // fade out at the end
                 float elapsed = waveBannerMax - waveBanner;
@@ -3853,19 +3914,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float ease = 1f - (1f - pin) * (1f - pin);
                 float scale = 0.72f + 0.28f * ease;
                 boolean boss = bossPending > 0 || waveBannerText.indexOf("BOSS") >= 0;
-                float gr = boss ? 1f : AC_CYAN[0], gg = boss ? 0.45f : AC_CYAN[1], gb = boss ? 0.32f : AC_CYAN[2];
+                float gr = boss ? 1f : AC_TOXIC[0], gg = boss ? 0.45f : AC_TOXIC[1], gb = boss ? 0.32f : AC_TOXIC[2];
                 float bnY = height * 0.27f + (1f - ease) * -26f * us;      // slides down into place
                 float sz = 40f * scale, tw = measureText(waveBannerText, sz) + 80f * us, bh2 = 64f * us * scale;
                 drawGlow(width * 0.5f, bnY, tw, bh2, bh2 * 0.5f, gr, gg, gb, ba * 0.9f);
                 drawRoundRect(width * 0.5f, bnY, tw + 5f * us, bh2 + 5f * us, bh2 * 0.5f + 2.5f * us, gr, gg, gb, ba * 0.5f); // rim
-                drawRoundRect(width * 0.5f, bnY, tw, bh2, bh2 * 0.5f, 0.05f, 0.07f, 0.13f, ba * 0.9f);
+                drawRoundRect(width * 0.5f, bnY, tw, bh2, bh2 * 0.5f, 0.055f, 0.045f, 0.038f, ba * 0.9f);
                 drawRoundRect(width * 0.5f, bnY - bh2 * 0.5f + 16f * us * scale, tw * 0.96f, 3f * us, 1.5f * us, gr, gg, gb, ba * 0.7f);
-                drawTextCenteredShadow(waveBannerText, width * 0.5f, bnY, sz, 1f, boss ? 0.55f : 0.95f, boss ? 0.4f : 0.6f, ba);
+                drawTextCenteredShadow(waveBannerText, width * 0.5f, bnY, sz, 1f, boss ? 0.45f : 0.95f, boss ? 0.32f : 0.6f, ba);
             }
             // between-wave countdown to the next wave
             if (waveBreak > 0f) {
                 int cd = Math.max(1, (int) Math.ceil(waveBreak));
-                drawTextCenteredShadow("NEXT WAVE IN " + cd, width * 0.5f, height * 0.40f, 22f, 0.85f, 0.92f, 1f, 0.92f);
+                drawTextCenteredShadow("NEXT WAVE IN " + cd, width * 0.5f, height * 0.40f, 22f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.92f);
             }
 
             drawPopups();   // floating "+$" / HEADSHOT / combo reward texts
@@ -3874,8 +3935,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // build number: a small dim chip in the top-right corner (was a big gold readout)
         String bstr = "B" + buildNumber;
         float bcw = measureText(bstr, 15f) + 26f * us, bchx = width - 18f * us - bcw * 0.5f;
-        drawRoundRect(bchx, 32f * us, bcw, 32f * us, 16f * us, 0.06f, 0.08f, 0.13f, 0.45f);
-        drawTextCentered(bstr, bchx, 32f * us, 15f, 0.66f, 0.72f, 0.8f, 0.8f);
+        drawRoundRect(bchx, 32f * us, bcw, 32f * us, 16f * us, 0.05f, 0.055f, 0.04f, 0.45f);
+        drawTextCentered(bstr, bchx, 32f * us, 15f, 0.70f, 0.72f, 0.60f, 0.8f);
 
         // death sequence overlay: darkening red wash + "ELIMINATED" punching in
         if (deathAnim > 0f) {
@@ -3911,8 +3972,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (input.consumeMenuTap(tap) && hitRect(cx, btnY, btnW, btnH, tap[0], tap[1])) {
             state = ST_HUB; sfx.swap();
         }
-        drawTextCenteredShadow("RUN OVER", cx, height * 0.14f, 56f, 1f, 0.45f, 0.3f, 1f);
-        drawTextCenteredShadow("SCORE " + score, cx, height * 0.14f + 86f * us, 30f, 1f, 1f, 1f, 0.95f);
+        drawTextCentered("RUN OVER", cx + 3f * us, height * 0.14f + 3f * us, 56f, 0.35f, 0.04f, 0.03f, 0.9f);
+        drawTextCenteredShadow("RUN OVER", cx, height * 0.14f, 56f, 0.95f, 0.22f, 0.16f, 1f);
+        drawTextCenteredShadow("SCORE " + score, cx, height * 0.14f + 86f * us, 30f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.95f);
         if (newBest) {
             float nb = pulse01(4f, 0f);
             String nbs = "NEW BEST!";
@@ -3926,18 +3988,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         // earnings card
         float y = height * 0.44f;
-        drawCard(cx, y + 58f * us, Math.min(640f * us, width * 0.9f), 210f * us, 24f * us, 0.09f, 0.11f, 0.16f, 0.95f);
+        drawCard(cx, y + 58f * us, Math.min(640f * us, width * 0.9f), 210f * us, 24f * us, 0.078f, 0.088f, 0.060f, 0.95f);
         drawTextCenteredShadow("EARNED $" + runCash, cx, y, 34f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
-        drawTextCenteredShadow("+" + runXp + " XP", cx, y + 52f * us, 24f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.95f);
+        drawTextCenteredShadow("+" + runXp + " XP", cx, y + 52f * us, 24f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.95f);
         drawTextCenteredShadow(runKills + " KILLS   WAVE " + wave, cx, y + 96f * us, 24f, 0.85f, 0.85f, 0.92f, 0.95f);
         if (levelsGainedThisRun > 0)
             drawTextCenteredShadow("LEVEL UP - NOW LV " + playerLevel, cx, y + 144f * us, 26f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 1f);
 
         float cpb = pulse01(2.8f, 0f);
-        drawRoundRect(cx, btnY, btnW + (18f + 14f * cpb) * us, btnH + (18f + 14f * cpb) * us, btnH * 0.5f + (9f + 7f * cpb) * us, 0.24f, 0.85f, 0.40f, 0.07f + 0.08f * cpb);
-        drawButton(cx, btnY, btnW, btnH, btnH * 0.5f, 0.20f, 0.74f, 0.34f, 1f, true);
+        drawRoundRect(cx, btnY, btnW + (18f + 14f * cpb) * us, btnH + (18f + 14f * cpb) * us, btnH * 0.5f + (9f + 7f * cpb) * us, 0.90f, 0.16f, 0.10f, 0.07f + 0.08f * cpb);
+        drawButton(cx, btnY, btnW, btnH, btnH * 0.5f, 0.70f, 0.13f, 0.09f, 1f, true);
         drawSheen(cx, btnY, btnW, btnH, btnH * 0.5f, 3.0f, 0f, 0.20f);
-        drawTextCenteredShadow("CONTINUE", cx, btnY, 34f, 1f, 1f, 1f, 1f);
+        drawTextCenteredShadow("CONTINUE", cx, btnY, 34f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 1f);
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
@@ -3961,11 +4023,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Modal settings overlay: toggle the optional HUD/FX features on or off (persisted). */
     private void drawSettingsOverlay(boolean tapped) {
-        drawQuadNDC(0f, 0f, 1f, 1f, 0.02f, 0.03f, 0.05f, 0.72f);
+        drawQuadNDC(0f, 0f, 1f, 1f, 0.02f, 0.03f, 0.02f, 0.72f);
         float cx = width * 0.5f, cw = Math.min(580f * us, width * 0.72f), ch = 460f * us, cy = height * 0.46f;
-        drawCard(cx, cy, cw, ch, 26f * us, 0.09f, 0.11f, 0.16f, 0.99f);
-        drawTextCenteredShadow("SETTINGS", cx, cy - ch * 0.5f + 46f * us, 30f, 0.9f, 0.95f, 1f, 1f);
-        drawRoundRect(cx, cy - ch * 0.5f + 74f * us, 120f * us, 4f * us, 2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f);
+        drawCard(cx, cy, cw, ch, 26f * us, 0.078f, 0.088f, 0.060f, 0.99f);
+        drawTextCenteredShadow("SETTINGS", cx, cy - ch * 0.5f + 46f * us, 30f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 1f);
+        drawRoundRect(cx, cy - ch * 0.5f + 74f * us, 120f * us, 4f * us, 2f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.85f);
         String[] labels = {"SCREEN SHAKE", "DAMAGE NUMBERS", "RADAR", "KILLFEED"};
         boolean[] vals = {optShake, optDmgNum, optRadar, optKillfeed};
         float rowY0 = cy - ch * 0.5f + 132f * us, rh = 66f * us;
@@ -3975,32 +4037,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float tw = 104f * us, th = 44f * us, tx = cx + cw * 0.5f - 42f * us - tw * 0.5f;
             boolean on = vals[i];
             if (tapped && hitRect(tx, ry, tw + 24f * us, th + 16f * us, tap[0], tap[1])) { toggleOpt(i); on = !on; }
-            drawRoundRect(tx, ry, tw, th, th * 0.5f, on ? 0.16f : 0.15f, on ? 0.52f : 0.16f, on ? 0.3f : 0.18f, 0.96f);
+            drawRoundRect(tx, ry, tw, th, th * 0.5f, on ? 0.20f : 0.14f, on ? 0.48f : 0.15f, on ? 0.10f : 0.12f, 0.96f);
             drawCircle(on ? tx + tw * 0.5f - th * 0.5f : tx - tw * 0.5f + th * 0.5f, ry, th * 0.4f, 1f, 1f, 1f, 0.96f);
             drawTextCentered(on ? "ON" : "OFF", on ? tx - tw * 0.22f : tx + tw * 0.2f, ry, 13f, 1f, 1f, 1f, 0.85f);
         }
         float by = cy + ch * 0.5f - 50f * us, bw = 220f * us, bh = 58f * us;
         if (tapped && hitRect(cx, by, bw, bh, tap[0], tap[1])) { showSettings = false; saveMeta(); sfx.swap(); }
-        drawButton(cx, by, bw, bh, bh * 0.5f, 0.2f, 0.55f, 0.85f, 1f, false);
-        drawTextCenteredShadow("CLOSE", cx, by, 22f, 1f, 1f, 1f, 1f);
+        drawButton(cx, by, bw, bh, bh * 0.5f, 0.58f, 0.13f, 0.09f, 1f, false);
+        drawTextCenteredShadow("CLOSE", cx, by, 22f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 1f);
     }
 
     /** The hub: balance, three tabs, the PLAY button, and the active tab's content. */
     private void drawHub() {
         menuPreamble();
-        fillVGradient(0.058f, 0.078f, 0.170f, 0.012f, 0.016f, 0.038f);        // deep indigo → near-black
-        drawMenuMotes();                                                       // slow drifting light motes
+        fillVGradient(0.050f, 0.066f, 0.042f, 0.010f, 0.014f, 0.009f);        // sickly green-black
+        drawMenuMotes();                                                       // drifting spores + embers
         drawVignette();                                                        // edge depth (under the UI)
         if (!hubWasShown) { hubWasShown = true; hubEnterAnim = 0f; }           // entrance fade on (re)enter
         hubEnterAnim = Math.min(1f, hubEnterAnim + 0.05f);
         float cx = width * 0.5f;
         float hbH = 120f * us;                                                // header band height
-        // header band with a faint top sheen + a glowing accent edge
-        drawRectPx(cx, hbH * 0.5f, width, hbH, 0.065f, 0.085f, 0.145f, 0.98f);
-        drawRectPx(cx, 2f * us, width, 4f * us, 0.16f, 0.20f, 0.30f, 0.5f);              // top sheen
-        for (int i = 0; i < 4; i++)                                                       // soft glow under accent
-            drawRectPx(cx, hbH + (4f + i * 6f) * us, width, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.06f - i * 0.012f);
-        drawRectPx(cx, hbH, width, 3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.9f);    // accent line
+        // charred header band with a faint top sheen + the blood accent edge dripping into the page
+        drawRectPx(cx, hbH * 0.5f, width, hbH, 0.055f, 0.058f, 0.042f, 0.98f);
+        drawRectPx(cx, 2f * us, width, 4f * us, 0.17f, 0.18f, 0.12f, 0.5f);              // top sheen
+        drawBloodEdge(hbH, width);
         boolean tapped = input.consumeMenuTap(tap);
         boolean settingsTap = tapped && showSettings;   // route taps to the settings overlay while it's open
         if (showSettings) tapped = false;                // …and freeze the hub behind it
@@ -4021,25 +4081,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawCoin(cashChipX - cashChipW * 0.5f + 24f * us, 60f * us, coinR);
         drawText(cashStr, cashChipX - cashChipW * 0.5f + 24f * us + coinR + 14f * us, 60f * us, 34f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 1f);
 
-        // title (centred) with a short accent underline + an occasional shimmer sweep
-        drawTextCenteredShadow("AIGAMES FPS", cx, 50f * us, 27f, 0.92f, 0.96f, 1f, 0.97f);
+        // title (centred): a blood-smeared under-print gives the lettering a butcher-stencil feel
+        drawTextCentered("AIGAMES FPS", cx + 2.5f * us, 52.5f * us, 27f, 0.38f, 0.05f, 0.04f, 0.85f);
+        drawTextCenteredShadow("AIGAMES FPS", cx, 50f * us, 27f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.97f);
         drawSheen(cx, 50f * us, measureText("AIGAMES FPS", 27f) + 24f * us, 40f * us, 14f * us, 5.0f, 0f, 0.16f);
-        drawRoundRect(cx, 84f * us, 120f * us, 4f * us, 2f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.85f);
+        drawRoundRect(cx, 84f * us, 120f * us, 4f * us, 2f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.85f);
 
-        // level chip (cyan) + xp bar right
+        // level chip (infection green) + xp bar right
         String lvStr = "LV " + playerLevel;
         float lvTxtW = measureText(lvStr, 26f), lvChipW = lvTxtW + 40f * us;
         float lvChipX = width - 24f * us - lvChipW * 0.5f;
-        drawChip(lvChipX, 50f * us, lvChipW, 50f * us, 0.07f, 0.13f, 0.18f, 0.92f);
-        drawTextCentered(lvStr, lvChipX, 50f * us, 26f, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 1f);
+        drawChip(lvChipX, 50f * us, lvChipW, 50f * us, 0.055f, 0.095f, 0.045f, 0.92f);
+        drawTextCentered(lvStr, lvChipX, 50f * us, 26f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 1f);
         float lp = levelProgress(), xbw = Math.min(300f * us, width * 0.36f), xbx = width - 24f * us - xbw;
         if (lpShown < 0f) lpShown = lp;
         lpShown += (lp - lpShown) * 0.1f;                                  // smooth fill
         if (Math.abs(lp - lpShown) < 0.002f) lpShown = lp;
-        drawRoundRect(xbx + xbw * 0.5f, 92f * us, xbw, 12f * us, 6f * us, 0.14f, 0.16f, 0.20f, 0.9f);
+        drawRoundRect(xbx + xbw * 0.5f, 92f * us, xbw, 12f * us, 6f * us, 0.11f, 0.12f, 0.09f, 0.9f);
         if (lpShown > 0.001f) {
-            drawRoundRect(xbx + xbw * lpShown * 0.5f, 92f * us, xbw * lpShown, 12f * us, 6f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.97f);
-            drawRoundRect(xbx + xbw * lpShown * 0.5f, 89f * us, xbw * lpShown - 4f * us, 4f * us, 2f * us, 0.7f, 0.95f, 1f, 0.6f);
+            drawRoundRect(xbx + xbw * lpShown * 0.5f, 92f * us, xbw * lpShown, 12f * us, 6f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.97f);
+            drawRoundRect(xbx + xbw * lpShown * 0.5f, 89f * us, xbw * lpShown - 4f * us, 4f * us, 2f * us, 0.82f, 1f, 0.45f, 0.6f);
         }
         drawSheen(xbx + xbw * 0.5f, 92f * us, xbw, 14f * us, 7f * us, 4.5f, 0f, 0.18f);   // periodic shine
 
@@ -4054,20 +4115,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < 3; i++) {
             float txp = x0 + i * (tabW + gap);
             if (tapped && hitRect(txp, tabY, tabW, tabH, tap[0], tap[1])) { hubTab = i; sfx.swap(); tapped = false; }
-            drawRoundRect(txp, tabY, tabW, tabH, trad, 0.10f, 0.12f, 0.165f, 0.92f);
-            drawRoundRect(txp, tabY - tabH * 0.5f + 2.4f * us, tabW - 2f * trad, 2.4f * us, 1.2f * us, 0.20f, 0.23f, 0.30f, 0.5f);
+            drawRoundRect(txp, tabY, tabW, tabH, trad, 0.080f, 0.090f, 0.062f, 0.92f);
+            drawRoundRect(txp, tabY - tabH * 0.5f + 2.4f * us, tabW - 2f * trad, 2.4f * us, 1.2f * us, 0.19f, 0.21f, 0.13f, 0.5f);
         }
         // sliding selection highlight: lerp toward the active tab's centre
         float tabTargetX = x0 + hubTab * (tabW + gap);
         if (tabIndX < 0f) tabIndX = tabTargetX;
         tabIndX += (tabTargetX - tabIndX) * 0.28f;
         float tb = pulse01(2.4f, 0f), tix = tabIndX;
-        drawRoundRect(tix, tabY, tabW + (16f + 8f * tb) * us, tabH + (16f + 8f * tb) * us, trad + (8f + 4f * tb) * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.07f + 0.06f * tb);
-        drawRoundRect(tix, tabY, tabW + 8f * us, tabH + 8f * us, trad + 4f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.18f + 0.10f * tb);
-        drawRoundRect(tix, tabY, tabW, tabH, trad, 0.13f, 0.30f, 0.48f, 0.99f);
-        drawRectPx(tix, tabY - tabH * 0.24f, tabW - 2f * trad, tabH * 0.40f, 0.17f, 0.38f, 0.57f, 0.75f);
-        drawRoundRect(tix, tabY - tabH * 0.5f + 3f * us, tabW - 2f * trad, 3f * us, 1.5f * us, 0.7f, 0.92f, 1f, 0.55f);
-        drawRoundRect(tix, tabY + tabH * 0.5f - 8f * us, tabW * 0.40f, 5f * us, 2.5f * us, 0.75f, 0.94f, 1f, 0.97f);
+        drawRoundRect(tix, tabY, tabW + (16f + 8f * tb) * us, tabH + (16f + 8f * tb) * us, trad + (8f + 4f * tb) * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.07f + 0.06f * tb);
+        drawRoundRect(tix, tabY, tabW + 8f * us, tabH + 8f * us, trad + 4f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.18f + 0.10f * tb);
+        drawRoundRect(tix, tabY, tabW, tabH, trad, 0.145f, 0.30f, 0.085f, 0.99f);
+        drawRectPx(tix, tabY - tabH * 0.24f, tabW - 2f * trad, tabH * 0.40f, 0.185f, 0.38f, 0.11f, 0.75f);
+        drawRoundRect(tix, tabY - tabH * 0.5f + 3f * us, tabW - 2f * trad, 3f * us, 1.5f * us, 0.78f, 1f, 0.42f, 0.55f);
+        drawRoundRect(tix, tabY + tabH * 0.5f - 8f * us, tabW * 0.40f, 5f * us, 2.5f * us, 0.80f, 1f, 0.45f, 0.97f);
         // labels on top, brightening as the highlight passes under them
         for (int i = 0; i < 3; i++) {
             float txp = x0 + i * (tabW + gap);
@@ -4075,28 +4136,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawTextCenteredShadow(tabs[i], txp, tabY, 21f, 1f, 1f, 1f, 0.5f + 0.5f * prox);
         }
 
-        // PLAY button (big, glossy, with a breathing glow + a sweeping shine)
+        // PLAY button: a big blood-red slab with a breathing glow — the "go get bitten" button
         float playH = 122f * us, playW = Math.min(520f * us, width * 0.88f), playRad = playH * 0.5f;
         float playY = height - 26f * us - playH * 0.5f;
         if (tapped && hitRect(cx, playY, playW, playH, tap[0], tap[1])) { startRun(); return; }
         float pb = pulse01(2.8f, 0f);
-        drawRoundRect(cx, playY, playW + (20f + 16f * pb) * us, playH + (20f + 16f * pb) * us, playRad + (10f + 8f * pb) * us, 0.24f, 0.85f, 0.40f, 0.07f + 0.09f * pb);
-        drawButton(cx, playY, playW, playH, playRad, 0.22f, 0.80f, 0.38f, 1f, true);
+        drawRoundRect(cx, playY, playW + (20f + 16f * pb) * us, playH + (20f + 16f * pb) * us, playRad + (10f + 8f * pb) * us, 0.90f, 0.16f, 0.10f, 0.07f + 0.09f * pb);
+        drawButton(cx, playY, playW, playH, playRad, 0.70f, 0.13f, 0.09f, 1f, true);
         drawSheen(cx, playY, playW, playH, playRad, 3.0f, 0f, 0.22f);
-        drawTextCenteredShadow("PLAY", cx, playY, 48f, 1f, 1f, 1f, 1f);
-        // BAUEN / EDITOR entry (bottom-left, aligned with PLAY)
+        drawTextCenteredShadow("PLAY", cx, playY, 48f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 1f);
+        // BAUEN / EDITOR entry (bottom-left, aligned with PLAY) — military olive drab
         float ebW = 236f * us, ebH = 76f * us, ebX = 22f * us + ebW * 0.5f, ebY = playY;
         if (tapped && hitRect(ebX, ebY, ebW, ebH, tap[0], tap[1])) { edEnter(); return; }
-        drawRoundRect(ebX, ebY, ebW, ebH, ebH * 0.5f, 0.15f, 0.30f, 0.50f, 0.96f);
-        drawRoundRect(ebX, ebY - ebH * 0.5f + 2.6f * us, ebW - 2f * ebH * 0.5f, 2.6f * us, 1.3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
-        drawTextCentered("BAUEN", ebX, ebY, 30f, 0.92f, 0.97f, 1f, 1f);
-        // SANDBOX entry (bottom-right, mirrors BAUEN): peaceful first-person build + roam, no enemies.
+        drawRoundRect(ebX, ebY, ebW, ebH, ebH * 0.5f, 0.24f, 0.29f, 0.13f, 0.96f);
+        drawRoundRect(ebX, ebY - ebH * 0.5f + 2.6f * us, ebW - 2f * ebH * 0.5f, 2.6f * us, 1.3f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.55f);
+        drawTextCentered("BAUEN", ebX, ebY, 30f, 0.93f, 0.95f, 0.85f, 1f);
+        // SANDBOX entry (bottom-right, mirrors BAUEN): plague violet, peaceful build + roam.
         float sbW = 236f * us, sbH = 76f * us, sbX = width - 22f * us - sbW * 0.5f, sbY = playY;
         if (tapped && hitRect(sbX, sbY, sbW, sbH, tap[0], tap[1])) { sandboxEnter(); return; }
-        drawRoundRect(sbX, sbY, sbW, sbH, sbH * 0.5f, 0.34f, 0.20f, 0.48f, 0.96f);
-        drawRoundRect(sbX, sbY - sbH * 0.5f + 2.6f * us, sbW - sbH, 2.6f * us, 1.3f * us, AC_CYAN[0], AC_CYAN[1], AC_CYAN[2], 0.55f);
-        drawTextCentered("SANDBOX", sbX, sbY, 30f, 0.96f, 0.93f, 1f, 1f);
-        drawText("BUILD " + buildNumber, 18f * us, height - 16f * us, 13f, 0.45f, 0.5f, 0.58f, 0.65f);
+        drawRoundRect(sbX, sbY, sbW, sbH, sbH * 0.5f, 0.28f, 0.15f, 0.32f, 0.96f);
+        drawRoundRect(sbX, sbY - sbH * 0.5f + 2.6f * us, sbW - sbH, 2.6f * us, 1.3f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.55f);
+        drawTextCentered("SANDBOX", sbX, sbY, 30f, 0.94f, 0.90f, 0.96f, 1f);
+        drawText("BUILD " + buildNumber, 18f * us, height - 16f * us, 13f, 0.52f, 0.54f, 0.44f, 0.65f);
         if (highScore > 0) drawTextRight("BEST SCORE  " + highScore, width - 18f * us, height - 16f * us, 14f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.7f);
 
         // tab-switch reveal: reset on change, then ease 0→1 — rows stagger in (see rowReveal())
@@ -4110,7 +4171,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawPopups();   // purchase "-$" feedback
         if (hubEnterAnim < 1f) {                                              // whole-hub entrance fade-in
             float e = 1f - (1f - hubEnterAnim) * (1f - hubEnterAnim);
-            drawRectPx(cx, height * 0.5f, width, height, 0.012f, 0.016f, 0.038f, (1f - e) * 0.97f);
+            drawRectPx(cx, height * 0.5f, width, height, 0.010f, 0.014f, 0.009f, (1f - e) * 0.97f);
         }
         if (showSettings) drawSettingsOverlay(settingsTap);
         GLES20.glDisable(GLES20.GL_BLEND);
@@ -4126,7 +4187,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float cx = width * 0.5f + (1f - reveal) * 80f * us;   // slide in from the right while revealing
         float rowW = Math.min(width - 48f, 920f);
         float x0 = cx - rowW * 0.5f;
-        drawCard(cx, y, rowW, rowH, 18f * us, 0.105f, 0.125f, 0.175f, 0.96f);
+        drawCard(cx, y, rowW, rowH, 18f * us, 0.082f, 0.092f, 0.064f, 0.96f);
         float abH = rowH - 30f * us;
         drawGlow(x0 + 20f * us, y, 9f * us, abH, 4.5f * us, ar, ag, ab, 0.8f);            // accent glow
         drawRoundRect(x0 + 20f * us, y, 9f * us, abH, 4.5f * us, ar, ag, ab, 0.98f);      // rounded accent bar
@@ -4145,24 +4206,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boolean buy = false;
         float brad = btnH * 0.5f;
         if (doneText != null) {
-            drawRoundRect(bcx, y, btnW, btnH, brad, 0.13f, 0.22f, 0.16f, 0.92f);
+            drawRoundRect(bcx, y, btnW, btnH, brad, 0.11f, 0.18f, 0.08f, 0.92f);
             drawTextCenteredShadow(doneText, bcx, y, 22f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 1f);
         } else if (locked) {
-            drawRoundRect(bcx, y, btnW, btnH, brad, 0.26f, 0.13f, 0.13f, 0.92f);
+            drawRoundRect(bcx, y, btnW, btnH, brad, 0.24f, 0.09f, 0.08f, 0.92f);
             drawTextCenteredShadow(lockMsg, bcx, y, 17f, AC_RED[0], AC_RED[1], AC_RED[2], 1f);
         } else {
             if (afford) {
-                drawButton(bcx, y, btnW, btnH, brad, 0.20f, 0.74f, 0.34f, 1f, false);
+                drawButton(bcx, y, btnW, btnH, brad, 0.30f, 0.60f, 0.14f, 1f, false);
                 drawSheen(bcx, y, btnW, btnH, brad, 3.6f, y * 0.012f, 0.16f);   // staggered shine
             } else {
-                drawRoundRect(bcx, y, btnW, btnH, brad, 0.16f, 0.17f, 0.20f, 0.92f);
+                drawRoundRect(bcx, y, btnW, btnH, brad, 0.14f, 0.15f, 0.12f, 0.92f);
             }
             drawTextCenteredShadow("$" + cost, bcx, y, 23f, 1f, 1f, 1f, afford ? 1f : 0.45f);
             if (tapped && afford && reveal > 0.92f && hitRect(bcx, y, btnW, btnH, tap[0], tap[1])) buy = true;
         }
         // per-row fade-in from the dark backdrop (staggered by reveal)
         if (reveal < 1f)
-            drawRoundRect(cx, y, rowW + 10f * us, rowH + 10f * us, 22f * us, 0.020f, 0.028f, 0.058f, (1f - reveal) * 0.96f);
+            drawRoundRect(cx, y, rowW + 10f * us, rowH + 10f * us, 22f * us, 0.014f, 0.020f, 0.012f, (1f - reveal) * 0.96f);
         return buy;
     }
 
@@ -4207,7 +4268,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             boolean sel = upgradeSel == w;
             float syc = top + selH * 0.5f;
             if (sel) drawGlow(sx, syc, selW, selH, selH * 0.5f, weaponR(w), weaponG(w), weaponB(w), 0.85f);
-            drawRoundRect(sx, syc, selW, selH, selH * 0.5f, sel ? 0.20f : 0.10f, sel ? 0.36f : 0.13f, sel ? 0.50f : 0.17f, owned ? 0.95f : 0.4f);
+            drawRoundRect(sx, syc, selW, selH, selH * 0.5f, sel ? 0.17f : 0.085f, sel ? 0.32f : 0.095f, sel ? 0.10f : 0.066f, owned ? 0.95f : 0.4f);
             if (sel) drawRoundRect(sx, syc + selH * 0.5f - 5f * us, selW - 26f * us, 5f * us, 2.5f * us, weaponR(w), weaponG(w), weaponB(w), 0.97f);
             drawTextCenteredShadow(owned ? WEAPON_NAME[w] : "LOCK", sx, syc, 18f, 1f, 1f, 1f, owned ? (sel ? 1f : 0.65f) : 0.4f);
         }
@@ -4422,10 +4483,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // --- modern UI helpers (accent palette + beveled cards + shadowed text + progress pips) ---
-    private static final float[] AC_GOLD  = {1.00f, 0.82f, 0.26f};
-    private static final float[] AC_CYAN  = {0.32f, 0.80f, 1.00f};
-    private static final float[] AC_GREEN = {0.30f, 0.86f, 0.42f};
-    private static final float[] AC_RED   = {1.00f, 0.42f, 0.42f};
+    // Zombie-apocalypse palette: infection green carries status/interactive accents, blood red is
+    // reserved for danger + the signature header drips, gold stays legible for cash.
+    private static final float[] AC_GOLD  = {0.95f, 0.76f, 0.28f};   // scavenged brass
+    private static final float[] AC_TOXIC  = {0.62f, 0.94f, 0.26f};   // infection green (primary accent)
+    private static final float[] AC_GREEN = {0.55f, 0.90f, 0.30f};   // toxic ok/success
+    private static final float[] AC_RED   = {0.95f, 0.30f, 0.22f};   // fresh blood / locked
+    private static final float[] AC_BLOOD = {0.66f, 0.09f, 0.06f};   // dried blood (drips, trims)
+    private static final float[] AC_BONE  = {0.93f, 0.90f, 0.80f};   // bone/parchment text
     // Per-category / per-ability accent colours for the shop rows.
     private static final float[][] UPG_COL = {{1f,0.42f,0.42f}, {1f,0.6f,0.22f}, {0.32f,0.8f,1f}, {0.3f,0.86f,0.42f}};
     private static final float[][] AB_COL = {
@@ -4455,7 +4520,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < count; i++) {
             float px2 = x + i * (ps + gap) + ps * 0.5f;
             if (i < filled) drawRoundRect(px2, y, ps, ps, ps * 0.32f, r, g, b, 0.97f);
-            else drawRoundRect(px2, y, ps, ps, ps * 0.32f, 0.26f, 0.29f, 0.34f, 0.85f);
+            else drawRoundRect(px2, y, ps, ps, ps * 0.32f, 0.24f, 0.26f, 0.20f, 0.85f);
         }
     }
 
@@ -4485,6 +4550,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
+    /** The zombie-UI signature: a blood accent line with a soft glow above and drying runners
+     *  dripping below it. Drip layout is deterministic (hash of the column index); one runner per
+     *  header slowly stretches so the whole thing feels alive without being busy. */
+    private void drawBloodEdge(float y, float w) {
+        for (int i = 0; i < 3; i++)
+            drawRectPx(w * 0.5f, y + (4f + i * 6f) * us, w, 6f * us, AC_BLOOD[0], AC_BLOOD[1], AC_BLOOD[2], 0.07f - i * 0.018f);
+        drawRectPx(w * 0.5f, y, w, 3f * us, 0.74f, 0.10f, 0.07f, 0.92f);
+        int n = Math.max(4, (int) (w / (170f * us)));
+        for (int d = 0; d <= n; d++) {
+            float fx = (d + 0.5f) / (n + 1f) * w + (((d * 37) % 23) - 11) * us;   // jittered spacing
+            float len = (9f + ((d * 53) % 17) * 1.7f) * us;                        // 9..36 px runners
+            if (d == 2) len *= 1f + 0.22f * pulse01(0.35f, 0f);                    // one slow live drip
+            float ww = (4.2f + ((d * 29) % 3) * 1.3f) * us;
+            drawRoundRect(fx, y + 1.5f * us + len * 0.5f, ww, len, ww * 0.5f, AC_BLOOD[0], AC_BLOOD[1], AC_BLOOD[2], 0.82f);
+            drawCircle(fx, y + 2.5f * us + len, ww * 0.62f, 0.74f, 0.11f, 0.08f, 0.88f);
+        }
+    }
+
     /** Vertical two-stop gradient fill of the whole screen (opaque menu backdrop). */
     private void fillVGradient(float tr, float tg, float tb, float br, float bg, float bb) {
         int n = 40;
@@ -4496,7 +4579,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** Slow drifting light motes for the menu backdrop — deterministic positions, looping upward. */
+    /** Slow drifting spores (sickly green) with the odd ember for the menu backdrop — deterministic
+     *  positions, looping upward like ash rising off a fire. */
     private void drawMenuMotes() {
         for (int i = 0; i < 30; i++) {
             float fx = ((i * 79 + 17) % 100) / 100f * width;
@@ -4504,7 +4588,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float fy = height - (((timeAcc * spd) + i * 151f) % (height + 100f));
             float sz = (1.4f + (i % 3) * 0.9f) * us;
             float aa = (0.04f + 0.05f * pulse01(1.3f, i * 0.7f)) * (0.5f + 0.5f * (i % 2));
-            drawCircle(fx, fy, sz, 0.55f, 0.78f, 1f, aa);
+            boolean ember = i % 7 == 0;
+            drawCircle(fx, fy, sz, ember ? 1f : 0.55f, ember ? 0.55f : 0.85f, ember ? 0.25f : 0.35f, aa * (ember ? 1.5f : 1f));
         }
     }
 
@@ -4540,10 +4625,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawRoundRect(cx, cy + 9f * us, w, h, rad, 0f, 0f, 0f, 0.42f * a);                  // drop shadow
         drawRoundRect(cx, cy, w, h, rad, r, g, b, a);                                       // base
         // gentle top-half lightening — an inset plain rect, so no rounded corners poke out
-        drawRectPx(cx, cy - h * 0.26f, w - 2f * rad, h * 0.46f, r + 0.028f, g + 0.032f, b + 0.040f, 0.6f * a);
+        drawRectPx(cx, cy - h * 0.26f, w - 2f * rad, h * 0.46f, r + 0.032f, g + 0.032f, b + 0.022f, 0.6f * a);
         // hairline highlight tucked just inside the top edge
         drawRoundRect(cx, cy - h * 0.5f + 2.4f * us, w - 2f * rad - 4f * us, 2.6f * us, 1.2f * us,
-                      Math.min(1f, r + 0.20f), Math.min(1f, g + 0.22f), Math.min(1f, b + 0.26f), 0.5f * a);
+                      Math.min(1f, r + 0.22f), Math.min(1f, g + 0.22f), Math.min(1f, b + 0.16f), 0.5f * a);
     }
 
     /** A translucent rounded chip used to seat HUD/header values (cash, level, …) over any background. */
@@ -4552,7 +4637,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawRoundRect(cx, cy + 3f * us, w, h, h * 0.5f, 0f, 0f, 0f, 0.30f * a);             // soft shadow
         drawRoundRect(cx, cy, w, h, h * 0.5f, r, g, b, a);                                  // base
         drawRoundRect(cx, cy - h * 0.5f + 2.2f * us, w - h, 2.4f * us, 1.2f * us,
-                      r + 0.10f, g + 0.12f, b + 0.14f, 0.45f * a);                          // top hairline
+                      r + 0.12f, g + 0.12f, b + 0.08f, 0.45f * a);                          // top hairline
     }
 
     /** A tiny gold coin that slowly flips (horizontal squash fakes a 3D spin). */
