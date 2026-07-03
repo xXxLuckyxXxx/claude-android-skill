@@ -120,6 +120,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // sun that lights the facades (they used to point ~24 deg off, which made buildings look pasted-on).
     private static final float LDX = 0.389f, LDY = -0.611f, LDZ = 0.689f;
     private static final float SHADOW_AZI = (float) Math.toDegrees(Math.atan2(LDX, LDZ));  // sun ground azimuth -> cast-shadow direction
+    // Baked directional shadows: every static object projects a flattened hull along the sun ray.
+    private java.nio.FloatBuffer shadowMesh; private int shadowVerts;
+    private static final float SHX = LDX / -LDY, SHZ = LDZ / -LDY;   // ground offset per metre of caster height
 
     private final float[] shotO = new float[3], shotD = new float[3];   // scratch for yaw-aware hitscan
     private float gunFlashAdd = 0f;   // warm light the muzzle flash throws onto the viewmodel this frame
@@ -456,7 +459,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // World look — defaults match the built-in sunny day; a level's SET lines override these.
     private final float[] skyHorizon = {0.76f, 0.85f, 0.95f}, skyZenith = {0.16f, 0.41f, 0.74f};
     private final float[] sunDir = {-0.35f, 0.55f, -0.62f}, fog = {0.72f, 0.80f, 0.90f}, ground = {1f, 1f, 1f};
-    private float sunInt = 1f, ambient = 1f, fogStart = 10f, fogEnd = 70f;
+    private float sunInt = 1f, ambient = 1f, fogStart = 55f, fogEnd = 130f;   // clear days: the whole village crisp, only the world edge fades
 
     // --- Weather: auto-cycles Sun -> Rain -> Fog -> Snow with smooth crossfades, plus rain/snow particles ---
     private static final int WX_SUN = 0, WX_FOG = 1, WX_RAIN = 2, WX_SNOW = 3;
@@ -604,6 +607,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gravelTex = uploadTexture(makeGravelBitmap());
         woodTex = uploadTexture(makeWoodBitmap());
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
+        shadowMesh = makeBuffer(makeShadowMeshData());   // projected directional shadows for every static object
 
         // The GL context can be re-created mid-session (Home + return, screen off). If that happens while in
         // the SANDBOX, the editObjs snapshot-swap must be unwound FIRST — otherwise the hub opens with the
@@ -829,6 +833,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
         }
 
+        drawShadowMesh();                                      // projected shadows over ground, paving AND interior floors
         drawOverlayFurniture();                                // editor-placed furniture (drawn every frame, all states)
         if (state == ST_EDIT || state == ST_SANDBOX) drawEditGizmos();   // selection ring around the picked object (3D)
 
@@ -1131,10 +1136,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             tFr = 0.78f; tFg = 0.81f; tFb = 0.84f; tOver = 0.88f; tFs = 3f; tFe = 28f; tSun = 0.70f; tAmb = 1.15f; tRain = 0f; tSnow = 0f;
         } else if (w == WX_RAIN) {
             tHr = 0.50f; tHg = 0.53f; tHb = 0.58f; tZr = 0.39f; tZg = 0.43f; tZb = 0.49f;
-            tFr = 0.54f; tFg = 0.57f; tFb = 0.62f; tOver = 1f; tFs = 8f; tFe = 52f; tSun = 0.55f; tAmb = 0.90f; tRain = 1f; tSnow = 0f;
+            tFr = 0.54f; tFg = 0.57f; tFb = 0.62f; tOver = 1f; tFs = 16f; tFe = 72f; tSun = 0.55f; tAmb = 0.90f; tRain = 1f; tSnow = 0f;
         } else {
             tHr = 0.82f; tHg = 0.84f; tHb = 0.88f; tZr = 0.74f; tZg = 0.78f; tZb = 0.84f;
-            tFr = 0.85f; tFg = 0.87f; tFb = 0.90f; tOver = 0.95f; tFs = 6f; tFe = 40f; tSun = 0.78f; tAmb = 1.10f; tRain = 0f; tSnow = 1f;
+            tFr = 0.85f; tFg = 0.87f; tFb = 0.90f; tOver = 0.95f; tFs = 12f; tFe = 58f; tSun = 0.78f; tAmb = 1.10f; tRain = 0f; tSnow = 1f;
         }
         float k = Math.min(1f, dt * 0.5f);                  // exponential crossfade (~2 s time constant)
         effHorizon[0] += (tHr - effHorizon[0]) * k; effHorizon[1] += (tHg - effHorizon[1]) * k; effHorizon[2] += (tHb - effHorizon[2]) * k;
@@ -2500,6 +2505,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (ovHouseColliders != null) for (float[] c : ovHouseColliders) merged[mi++] = c;   // placed-house furniture collision
         boxes = merged;
         makeOverlayTrees();
+        shadowMesh = makeBuffer(makeShadowMeshData());   // editor/sandbox objects cast baked shadows too
         editDirty = false;
     }
 
@@ -3470,6 +3476,134 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return tmin >= 0f ? tmin : tmax;
     }
 
+    // ---- baked directional shadow mesh -----------------------------------------------------------
+    // Every static object casts a real projected shadow: its base corners plus its top corners pushed
+    // along the sun ray onto the ground plane, hulled and fan-triangulated. Houses cast one clean hull
+    // each; every outdoor prop box (fences, stalls, lamps, crates...) casts its own; interior furniture
+    // casts onto its room floor; trees cast a sun-aligned ellipse. Drawn with multiplicative blending.
+
+    /** 2D convex hull (Andrew), pts = {x,z}; result count returned, hull written back into pts order. */
+    private static int hull2d(float[][] pts, int n, float[][] out) {
+        java.util.Arrays.sort(pts, 0, n, new java.util.Comparator<float[]>() {
+            public int compare(float[] a, float[] b) { return a[0] != b[0] ? Float.compare(a[0], b[0]) : Float.compare(a[1], b[1]); }
+        });
+        int k = 0;
+        for (int i = 0; i < n; i++) {                            // lower
+            while (k >= 2 && (out[k-1][0]-out[k-2][0])*(pts[i][1]-out[k-2][1]) - (out[k-1][1]-out[k-2][1])*(pts[i][0]-out[k-2][0]) <= 0f) k--;
+            out[k++] = pts[i];
+        }
+        int lower = k + 1;
+        for (int i = n - 2; i >= 0; i--) {                       // upper
+            while (k >= lower && (out[k-1][0]-out[k-2][0])*(pts[i][1]-out[k-2][1]) - (out[k-1][1]-out[k-2][1])*(pts[i][0]-out[k-2][0]) <= 0f) k--;
+            out[k++] = pts[i];
+        }
+        return k - 1;
+    }
+
+    /** Project one yawed box (centre cx/cz, half sizes, yaw) with top height topH onto plane y: hull fan. */
+    private static int shadowHull(float[] d, int o, float cx, float cz, float hx, float hz, float yawDeg,
+                                  float topH, float planeY) {
+        double a = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        float off = Math.max(0f, topH - planeY);
+        float[][] pts = new float[8][];
+        int n = 0;
+        for (int i = 0; i < 4; i++) {
+            float lx = (i % 2 == 0 ? -1 : 1) * hx, lz = (i < 2 ? -1 : 1) * hz;
+            float wx = cx + lx * ca + lz * sa, wz = cz - lx * sa + lz * ca;
+            pts[n++] = new float[]{wx, wz};                                    // base corner
+            pts[n++] = new float[]{wx + SHX * off, wz + SHZ * off};            // top corner cast onto the plane
+        }
+        float[][] hu = new float[9][];
+        int hn = hull2d(pts, n, hu);
+        for (int i = 1; i + 1 < hn; i++) {                                     // fan triangulate
+            if (o > d.length - 3 * 8) return o;
+            o = put(d, o, hu[0][0], planeY, hu[0][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, hu[i][0], planeY, hu[i][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, hu[i + 1][0], planeY, hu[i + 1][1], 0f, 1f, 0f, 0.5f, 0.5f);
+        }
+        return o;
+    }
+
+    private float[] makeShadowMeshData() {
+        java.util.List<float[]> hRects = houseRects != null ? houseRects : java.util.Collections.<float[]>emptyList();
+        float[][] bxs = boxes != null ? boxes : new float[0][];
+        int est = (hRects.size() + bxs.length + (interiorPieces == null ? 0 : interiorPieces.size())
+                + (treeList == null ? 0 : treeList.length)) * 21 * 8 + 512;
+        float[] d = new float[est];
+        int o = 0;
+        // one clean hull per house (walls/roof/chimney skipped below so corners don't double-darken)
+        for (float[] hh : hRects)
+            o = shadowHull(d, o, hh[0], hh[1], hh[2] * 0.5f + 0.15f, hh[3] * 0.5f + 0.15f,
+                    hh.length > 25 ? hh[25] : 0f, Math.min(hh[4], 5f), 0.055f);
+        // every free-standing prop box (fence rails/posts, stalls, lamps, benches, crates, planters...)
+        for (float[] b : bxs) {
+            if (b.length > 10 && b[10] != 0f) continue;            // invisible collider: visual casts elsewhere
+            float top = b[1] + b[4] * 0.5f, bottom = b[1] - b[4] * 0.5f;
+            if (top < 0.12f || bottom > 2.2f) continue;            // paving casts nothing; high slabs belong to houses
+            boolean inHouse = false;
+            for (float[] hh : hRects) {
+                houseLocal(hh, b[0], b[2], hlTmp);
+                if (Math.abs(hlTmp[0]) < hh[2] * 0.5f + 0.4f && Math.abs(hlTmp[1]) < hh[3] * 0.5f + 0.4f) { inHouse = true; break; }
+            }
+            if (inHouse) continue;                                 // walls/doorsteps/canopies: the house hull covers it
+            if (o > d.length - 24 * 8) break;
+            o = shadowHull(d, o, b[0], b[2], b[3] * 0.5f, b[5] * 0.5f, b.length > 9 ? b[9] : 0f,
+                    Math.min(top, 2.5f), 0.055f);
+        }
+        // interior furniture: a soft hull cast onto the room floor right under each piece
+        if (interiorPieces != null) for (float[] p : interiorPieces) {
+            float top = p[1] + p[4] * 0.5f, bottom = p[1] - p[4] * 0.5f;
+            if (p[4] < 0.12f || bottom > 1.6f) continue;           // rugs/ceiling bulbs cast nothing useful
+            if (o > d.length - 24 * 8) break;
+            o = shadowHull(d, o, p[0], p[2], p[3] * 0.5f, p[5] * 0.5f, p.length > 7 ? p[7] : 0f,
+                    Math.min(top, bottom + 0.9f), Math.max(0.055f, bottom + 0.015f));
+        }
+        // trees: a sun-aligned soft ellipse (as a rotated quad) offset the way the crown would fall
+        if (treeList != null) for (float[] t : treeList) {
+            if (o > d.length - 6 * 8) break;
+            float ts = t[2];
+            float cxs = t[0] + SHX * 1.6f * ts, czs = t[1] + SHZ * 1.6f * ts;
+            double az = Math.toRadians(SHADOW_AZI);
+            float caz = (float) Math.cos(az), saz = (float) Math.sin(az);
+            float hl = 1.55f * ts, hw = 1.00f * ts;                // long axis along the sun azimuth
+            float y = terrainH(t[0], t[1]) + 0.055f;
+            float[][] q = {{-hw, -hl}, {hw, -hl}, {hw, hl}, {-hw, hl}};
+            float[][] w = new float[4][2];
+            for (int i = 0; i < 4; i++) {
+                w[i][0] = cxs + q[i][0] * caz + q[i][1] * saz;
+                w[i][1] = czs - q[i][0] * saz + q[i][1] * caz;
+            }
+            o = put(d, o, w[0][0], y, w[0][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, w[1][0], y, w[1][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, w[2][0], y, w[2][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, w[0][0], y, w[0][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, w[2][0], y, w[2][1], 0f, 1f, 0f, 0.5f, 0.5f);
+            o = put(d, o, w[3][0], y, w[3][1], 0f, 1f, 0f, 0.5f, 0.5f);
+        }
+        shadowVerts = o / 8;
+        return java.util.Arrays.copyOf(d, o);
+    }
+
+    /** The baked shadow mesh: multiplicative blend darkens whatever is underneath (ground, floors,
+     *  paving). Drawn AFTER the whole static world so interior floors don't repaint the furniture
+     *  shadows; depth-tested (no write) so walls/boxes still occlude shadows behind them. Overcast
+     *  melts the sun shadows away; mode 4 = flat unlit colour (the multiply factor). */
+    private void drawShadowMesh() {
+        if (shadowMesh == null || shadowVerts <= 0) return;
+        GLES20.glUseProgram(prog3);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_ZERO, GLES20.GL_SRC_COLOR);
+        GLES20.glDepthMask(false);
+        Matrix.setIdentityM(model, 0);
+        float lift = 0.78f * wOvercast;                            // -> factor ~1 when fully overcast
+        drawWorld(shadowMesh, shadowVerts, 4f,
+                0.40f + (1f - 0.40f) * lift, 0.43f + (1f - 0.43f) * lift, 0.55f + (1f - 0.55f) * lift);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
     private void drawShadows() {
         GLES20.glUseProgram(progBlob);
         GLES20.glEnable(GLES20.GL_BLEND);
@@ -3482,30 +3616,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float[] b = boxes[i];
             blob(b[0], 0f, b[1], b[2], Math.max(b[3], b[5]) * 0.62f);
         }
-        // buildings + trees cast a soft contact shadow so they sit on the ground (distance-culled for perf)
+        // Static geometry (houses, props, fences, trees, furniture) now casts baked projected shadows
+        // above; only things the bake can't know keep a soft blob: editor-placed PLANTS (their visual
+        // lives in the overlay vegetation mesh) and the moving enemies below.
         float cullSq = 28f * 28f;
-        if (houseRects != null) for (float[] hh : houseRects) {
-            float dx = hh[0] - px, dz = hh[1] - pz;
-            if (dx * dx + dz * dz < cullSq) blob(hh[0], 0f, 0.8f, hh[1], Math.max(hh[2], hh[3]) * 0.58f);
-        }
-        if (treeList != null) for (float[] t : treeList) {
-            float dx = t[0] - px, dz = t[1] - pz;
-            if (dx * dx + dz * dz < cullSq) blob(t[0], terrainH(t[0], t[1]), 1.3f * t[2], t[1], 1.05f * t[2]);
-        }
-        for (float[] o : editObjs) {                              // editor-placed plants/props also cast a contact shadow
-            if ((int) o[0] == 1) {                                  // plant: shadow sized by KIND (a bush got a full tree oval)
-                int pk = (int) o[1];
-                if (pk == 2) continue;                              // flowers are too small to cast a blob
-                float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
-                float dx = ox - px, dz = oz - pz;
-                float sh = pk == 1 ? 0.5f * s : 1.3f * s, sr = pk == 1 ? 0.6f * s : 1.05f * s;
-                if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), sh, oz, sr);
-            } else if ((int) o[0] == 2) {                           // prop
-                float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
-                float dx = ox - px, dz = oz - pz;
-                float[] pr = PROP_PRESETS[Math.max(0, Math.min((int) o[1], PROP_PRESETS.length - 1))];
-                if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), 0.85f, oz, Math.max(pr[0], pr[2]) * s * 0.6f);
-            }
+        for (float[] o : editObjs) {
+            if ((int) o[0] != 1) continue;                          // props/houses are boxes -> baked on rebuild
+            int pk = (int) o[1];
+            if (pk == 2) continue;                                  // flowers are too small to cast a blob
+            float ox = o[2], oz = o[3], s = o[5] <= 0f ? 1f : o[5];
+            float dx = ox - px, dz = oz - pz;
+            float sh = pk == 1 ? 0.5f * s : 1.3f * s, sr = pk == 1 ? 0.6f * s : 1.05f * s;
+            if (dx * dx + dz * dz < cullSq) blob(ox, terrainH(ox, oz), sh, oz, sr);
         }
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enAlive[i]) blob(enX[i], terrainH(enX[i], enZ[i]), 1.0f, enZ[i], 0.55f);
@@ -5042,15 +5164,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float a = r.nextFloat() * 6.2832f, rad = 4f + r.nextFloat() * 32f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
             if (inBuildingXZ(x, z, 0.5f) || onStreetXZ(x, z)) continue;
+            if (insideGardenXZ(x, z, 0.6f) || onSquareXZ(x, z, 0.2f) || pathDist(x, z) < 0.7f) continue;   // beds/square/paths stay clear
             o = vBush(d, o, x, terrainH(x, z), z, roundBush[r.nextInt(roundBush.length)], r, flowerCells);
             n++;
         }
-        // detailed trees dotted around the meadow / arena edge
+        // detailed trees dotted around the meadow / arena edge — on grass only, never on paving or beds
         for (int n = 0, tries = 0; n < 55 && tries < 4000; tries++) {
             if (o > d.length - 9000) break;
             float a = r.nextFloat() * 6.2832f, rad = 20f + r.nextFloat() * 18f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
-            if (inBuildingXZ(x, z, 0.6f) || onRoadXZ(x, z)) continue;
+            if (inBuildingXZ(x, z, 0.6f)) continue;
+            if (roadSd(x, z) < 1.4f || onSquareXZ(x, z, 0.4f) || pathDist(x, z) < 1.0f || insideGardenXZ(x, z, 0.6f)) continue;
             o = vTree(d, o, x, terrainH(x, z), z, 1.0f + r.nextFloat() * 0.5f, true, r);
             n++;
         }
@@ -6072,13 +6196,45 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** Village furniture: lamps + trees strung along the curved verges, benches beside some doors,
-     *  a market on the square around the spawn plaza, and loose trees filling the green between lanes. */
+    /** True if (x,z) sits on/near a painted dirt footpath — trees and bushes keep off the paths. */
+    private float pathDist(float x, float z) {
+        if (pathStrokes == null) return 1e9f;
+        float best = 1e9f;
+        for (float[] st : pathStrokes) {
+            float abx = st[2] - st[0], abz = st[3] - st[1];
+            float tt = ((x - st[0]) * abx + (z - st[1]) * abz) / (abx * abx + abz * abz + 1e-6f);
+            tt = tt < 0f ? 0f : (tt > 1f ? 1f : tt);
+            float dx = x - (st[0] + abx * tt), dz = z - (st[1] + abz * tt);
+            best = Math.min(best, (float) Math.sqrt(dx * dx + dz * dz) - st[4] * 0.5f);
+        }
+        return best;
+    }
+    /** True inside a tilled garden plot (inflated) — bushes/meadow trees stay out of the beds. */
+    private boolean insideGardenXZ(float x, float z, float inflate) {
+        if (gardenSoil == null) return false;
+        for (float[] g : gardenSoil)
+            if (insideYawXZ(x, z, g[0], g[1], g[2] * 0.5f + inflate, g[3] * 0.5f + inflate, g[4])) return true;
+        return false;
+    }
+    /** True on the cobbled village square (no trees/bushes through the paving). */
+    private static boolean onSquareXZ(float x, float z, float inflate) {
+        return Math.hypot(x - (SQ_X + 0.8f), z - (SQ_Z + 1.9f)) < 9.8f + inflate;
+    }
+    /** A tree may only stand on grass or dirt: off the asphalt+verge, the square, the paths, the beds. */
+    private boolean treeSpotOk(float x, float z) {
+        return roadSd(x, z) > 1.15f && !onSquareXZ(x, z, 0.4f) && pathDist(x, z) > 0.9f && !insideGardenXZ(x, z, 0.5f);
+    }
+
+    /** Village furniture: the market circle FIRST (so nothing spawns in front of the stands), then
+     *  lamps on the verges + trees on the grass, benches beside some doors, loose meadow trees. */
     private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
         java.util.List<float[]> placed = new java.util.ArrayList<float[]>();    // prop positions, for spacing
         java.util.List<float[]> lampPts = new java.util.ArrayList<float[]>();
+        java.util.List<float[]> marketPts = new java.util.ArrayList<float[]>();
         java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
-        // 1. lamps + verge trees: walk each lane by arclength, slots on both shoulders
+        placeMarket(L, houses, rc, marketPts);
+        for (float[] mp : marketPts) placed.add(mp);
+        // 1. lamps on the verge + trees fully on the GRASS behind it: walk each lane by arclength
         for (int r = 0; r < ROAD_PTS.length; r++) {
             float[][] P = ROAD_PTS[r];
             float acc = 3f;
@@ -6090,21 +6246,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (acc > 0f) continue;
                 acc = 6.0f + rc.nextFloat() * 3.5f;
                 tx /= sl; tz /= sl;
-                float off = ROAD_HALFW[r] + 0.55f;
                 for (int side = -1; side <= 1; side += 2) {
+                    float pick = rc.nextFloat();
+                    boolean lamp = pick < 0.30f;
+                    if (!lamp && pick >= 0.82f) continue;          // a deliberate gap
+                    float off = ROAD_HALFW[r] + (lamp ? 0.55f : VERGE + 0.9f);   // lamp on the verge, tree on grass
                     float sx = ax - tz * off * side, sz = az + tx * off * side;
                     if (sx * sx + sz * sz > 30f * 30f) continue;
                     if (inSpawnLane(sx, sz)) continue;
                     if (onRoadXZ(sx, sz) || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
                     if (blocksAnyDoor(houses, sx, sz)) continue;
-                    if (!clearOfPts(placed, sx, sz, 3f)) continue;
-                    placed.add(new float[]{sx, sz});
-                    float pick = rc.nextFloat();
-                    if (pick < 0.30f)      { addLamp(L, sx, sz); lampPts.add(new float[]{sx, sz}); }
-                    else if (pick < 0.82f) {                       // verge tree, crown capped at the nearest wall
+                    if (!clearOfPts(placed, sx, sz, 3f) || !clearOfPts(marketPts, sx, sz, 2.8f)) continue;
+                    if (lamp) {
+                        placed.add(new float[]{sx, sz});
+                        addLamp(L, sx, sz); lampPts.add(new float[]{sx, sz});
+                    } else {
+                        if (!treeSpotOk(sx, sz)) continue;         // grass/dirt only — never verge, square, path or bed
                         float ts = Math.min(0.8f + rc.nextFloat() * 0.7f, houseClearance(houses, sx, sz) / 1.9f);
-                        if (ts >= 0.5f && !blocksAnyDoorCrown(houses, sx, sz, 1.45f * ts)) trees.add(new float[]{sx, sz, ts});
-                    }   // else: a deliberate gap
+                        if (ts >= 0.5f && !blocksAnyDoorCrown(houses, sx, sz, 1.45f * ts)) {
+                            placed.add(new float[]{sx, sz});
+                            trees.add(new float[]{sx, sz, ts});
+                        }
+                    }
                 }
             }
         }
@@ -6124,7 +6287,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (clutterPts != null && !clearOfPts(clutterPts, bx, bz, 1.15f)) continue;
                 if (!clearOfPts(trees, bx, bz, 1.0f) || !clearOfPts(benchPts, bx, bz, 1.7f) || !clearOfPts(lampPts, bx, bz, 0.85f)) continue;
                 int b0 = L.size();
-                addBench(L, bx, bz, 1);                            // built facing -z, then spun with the house
+                addBench(L, bx, bz, 0);                            // backrest toward the wall, seat faces the road
                 for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, bx, bz, yawDeg);
                 benchPts.add(new float[]{bx, bz});
                 break;
@@ -6132,29 +6295,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         // 3. garden fruit trees recorded during buildGardens + loose meadow trees between the lanes
         if (gardenTreePts != null) trees.addAll(gardenTreePts);
-        for (int n = 0, tries = 0; n < 26 && tries < 400; tries++) {
+        for (int n = 0, tries = 0; n < 26 && tries < 500; tries++) {
             float a = rc.nextFloat() * 6.2832f, rad = 6f + rc.nextFloat() * 24f;
             float x = SQ_X + (float) Math.cos(a) * rad, z = SQ_Z + (float) Math.sin(a) * rad;
             if (x * x + z * z > 29f * 29f || inSpawnLane(x, z)) continue;
-            if (roadSd(x, z) < 2.3f) continue;
+            if (roadSd(x, z) < 2.3f || !treeSpotOk(x, z)) continue;   // grass/dirt only
             if (!clearOfHouses(houses, x, z, 1.3f) || blocksAnyDoorCrown(houses, x, z, 1.6f)) continue;
             if (!clearOfPts(trees, x, z, 3.4f) || !clearOfPts(lampPts, x, z, 1.2f) || !clearOfPts(benchPts, x, z, 1.4f)) continue;
-            boolean inGarden = false;
-            if (gardenSoil != null) for (float[] gLot : gardenSoil)
-                if (insideYawXZ(x, z, gLot[0], gLot[1], gLot[2] * 0.5f + 1.0f, gLot[3] * 0.5f + 1.0f, gLot[4])) { inGarden = true; break; }
-            if (inGarden) continue;
+            if (!clearOfPts(marketPts, x, z, 3.0f)) continue;         // never in front of the market stands
             trees.add(new float[]{x, z, 0.8f + rc.nextFloat() * 0.6f});
             n++;
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
-        // 4. the market: a fountain centrepiece on the square with stalls, the well and goods crates
-        //    arranged in a RING around it, every front turned toward the middle — a proper market circle.
-        //    The player spawns at (0,9) just inside the ring and weaves between the stands.
+    }
+
+    /** The market: a fountain centrepiece on the square with stalls, the well and goods crates
+     *  arranged in a RING around it, every front turned toward the middle — a proper market circle.
+     *  Placed FIRST so no tree/lamp/bench ever spawns in front of a stand. */
+    private void placeMarket(List<float[]> L, List<float[]> houses, Random rc, List<float[]> marketPts) {
         float mcx = 0.8f, mcz = 5.4f, mrad = 5.4f;
         addFountain(L, mcx, mcz);
         clutterPts.add(new float[]{mcx, mcz});
-        // walk the ring and take the free spots (roads/houses/spawn vetoed), keeping the stands
-        // spread apart — the market wraps as far around the fountain as the square allows
+        marketPts.add(new float[]{mcx, mcz});
         int[] kinds = {0, 3, 1, 4, 2, 5};   // stall red · well · stall green · barrels · stall blue · planter
         int placedK = 0;
         float lastA = -999f;
@@ -6176,6 +6338,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             else                { addPlanter(L, mx - 0.4f, mz); addWoodpile(L, rc, mx + 0.55f, mz); }
             for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, mx, mz, face);
             clutterPts.add(new float[]{mx, mz});
+            marketPts.add(new float[]{mx, mz});
             placedK++;
             lastA = aDeg;
         }
