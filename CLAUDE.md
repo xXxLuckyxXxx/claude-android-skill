@@ -17,12 +17,16 @@ whole game is essentially one big Java file plus a tiny Android shell. The world
 axis-aligned coloured boxes**. UI text is a bitmap glyph atlas. It ships as a single signed APK.
 
 **Current state: Build/versionCode 75.** Feature set:
-- **Town:** ~24 houses on a 10 m grid with real streets + sidewalks + setbacks; muted-realistic
-  palette; building archetypes (cottage / townhouse / block / shop); pitched gable roofs; chimneys;
-  per-floor windows with "inhabited" glow glass; foundations, trim bands, multiple storeys.
+- **Town (organic village since B196):** ~18 houses of genuinely varied size strung along FIVE
+  curved lanes (Catmull-Rom polylines in `ROAD_SPEC`; queries via `roadSd(x,z)`), each house yawed
+  to face its road (yaw at `houses[25]`, spins walls/roof/windows/interior); archetypes cottage /
+  townhouse / block / shop / long farmhouse; fenced kitchen gardens with painted tilled soil +
+  crop sprouts behind ~half the houses; flagstone front paths marching to the nearest kerb plus
+  painted dirt shortcuts between lanes; a cobbled village square (fountain, market stalls, well)
+  around the spawn plaza. Verified by `VillageTest` + a top-down plan render (`village_plan.py`).
 - **Street furniture:** lamps, benches, market stalls, well, barrels, crates, planters, woodpiles,
-  trees — all placed realistically (furniture on sidewalks, market on reserved lots, nothing on the
-  asphalt or clipping houses).
+  trees — all placed realistically along the curved verges (nothing on the asphalt, nothing
+  clipping houses, doors always kept clear).
 - **Walk-in furnished interiors:** beds, wardrobes, tables, chairs — a baked visual mesh plus
   collision proxies, so you can enter houses and bump into furniture.
 - **Gameplay:** zombie/enemy waves + boss waves; multiple weapons incl. a sniper; abilities &
