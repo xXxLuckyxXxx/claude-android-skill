@@ -1693,7 +1693,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  real interior shows through a closed pane. Distance-culled; hinge transform mirrors drawDoors. */
     private void drawWindows() {
         if (windowData.length == 0) return;
-        float cull = 30f * 30f;
+        float cull = 44f * 44f;   // keep glass on every in-town window (the cut hole is permanent); fog hides beyond
         GLES20.glUseProgram(prog3);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
         for (int i = 0; i < windowData.length; i++) {                 // opaque: frame ring + cross muntins
@@ -7079,8 +7079,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             int ds = (int) hh[5], dens = (int) hh[11], storeys = Math.round(hh[23]);
             float wsc = hh[12], foundH = hh[16];
             if (dens == 0) continue;                       // "none" -> this house has no windows
-            boolean cut = houseCuts(hh);                   // furnished houses get real cut openings (no fake reveal)
-            boolean skipSash = cut && !bakingOverlay;       // base town: reachable panes are drawn as animated sashes
+            // Only the base-town/.lvl walls are actually cut (addWallHoles); the editor overlay builds SOLID
+            // walls, so there it must keep the fake reveal panel + bake every pane (no interactive sash).
+            boolean cut = houseCuts(hh) && !bakingOverlay;
+            boolean skipSash = cut;                         // reachable panes are drawn as animated sashes instead
             long hSeed = houseSeedOf(cx, cz);
             int wstart = off[0] / 8, tstart = off[1] / 8, rstart = off[2] / 8;
             wallWindows(wd, td, rv, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, hSeed, 0, dens, wsc, storeys, foundH, cut, skipSash);
