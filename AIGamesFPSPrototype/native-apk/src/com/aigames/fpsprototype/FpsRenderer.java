@@ -202,6 +202,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] model = new float[16];
     private final float[] mvp = new float[16];
     private final float[] doorBase = new float[16];   // hinge transform for detailed swinging doors
+    private final float[] winBase = new float[16];    // hinge transform for openable window sashes
     private final float[] tmpA = new float[16];
     private final float[] gunBase = new float[16];
     private final float[] partM = new float[16];
@@ -455,6 +456,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
     private int nearDoor = -1;
     private final float[] obb2 = new float[2];         // scratch for oriented-box collision (rotated houses)
+    // Openable window sashes (reachable ground-floor windows) — same record layout + hinge maths as doors:
+    // {cx,cy,cz, tHalf, vHalf, depthHalf, axis, 1, gr,gg,gb, style, swingSign, houseYaw}. Built from
+    // houseRects after the meshes bake; unreachable/upper panes stay baked static glass in windowMesh.
+    private float[][] windowData = new float[0][];
+    private float[] windowOpen = new float[0], windowTarget = new float[0];
+    private int nearWindow = -1;
+    private boolean nearWinCloser = false;             // the nearest interactable is a window (drives the HUD prompt)
+    private boolean bakingOverlay = false;             // editor overlay bake: keep ALL panes baked, no sashes/holes-only glass
 
     // World look — defaults match the built-in sunny day; a level's SET lines override these.
     private final float[] skyHorizon = {0.76f, 0.85f, 0.95f}, skyZenith = {0.16f, 0.41f, 0.74f};
@@ -607,6 +616,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gravelTex = uploadTexture(makeGravelBitmap());
         woodTex = uploadTexture(makeWoodBitmap());
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
+        buildOpenableWindows();                          // reachable ground-floor sashes (from the same window layout)
         shadowMesh = makeBuffer(makeShadowMeshData());   // projected directional shadows for every static object
 
         // The GL context can be re-created mid-session (Home + return, screen off). If that happens while in
@@ -838,6 +848,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (state == ST_EDIT || state == ST_SANDBOX) drawEditGizmos();   // selection ring around the picked object (3D)
 
         drawDoors();
+        drawWindows();
         drawEnemies();
         drawParticles();
         drawWeather();
@@ -1529,26 +1540,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // --- interactive doors ---
 
     private void updateDoors(float dt) {
-        int near = -1;
-        float best = INTERACT_DIST * INTERACT_DIST;
+        int nd = -1, nw = -1;
+        float bestD = INTERACT_DIST * INTERACT_DIST, bestW = INTERACT_DIST * INTERACT_DIST;
         if (state == ST_PLAYING) {
             for (int i = 0; i < doorData.length; i++) {
                 float dx = px - doorData[i][0], dz = pz - doorData[i][2];
                 float d2 = dx * dx + dz * dz;
-                if (d2 < best) { best = d2; near = i; }
+                if (d2 < bestD) { bestD = d2; nd = i; }
+            }
+            for (int i = 0; i < windowData.length; i++) {
+                float dx = px - windowData[i][0], dz = pz - windowData[i][2];
+                float d2 = dx * dx + dz * dz;
+                if (d2 < bestW) { bestW = d2; nw = i; }
             }
         }
-        nearDoor = near;
-        input.setDoorInRange(near >= 0);
+        nearDoor = nd;
+        nearWindow = nw;
+        nearWinCloser = nw >= 0 && (nd < 0 || bestW <= bestD);       // which is the single closest interactable
+        input.setDoorInRange(nd >= 0 || nw >= 0);
         boolean tap = input.consumeInteract();
-        if (tap && near >= 0) {
-            doorTarget[near] = (doorTarget[near] > 0.5f) ? 0f : 1f;   // toggle open / close
-            sfx.reload();                                            // mechanical clack
+        if (tap) {                                                   // one button toggles the single closest thing
+            if (nearWinCloser)  { windowTarget[nw] = (windowTarget[nw] > 0.5f) ? 0f : 1f; sfx.reload(); }
+            else if (nd >= 0)   { doorTarget[nd]   = (doorTarget[nd] > 0.5f)   ? 0f : 1f; sfx.reload(); }
         }
         for (int i = 0; i < doorData.length; i++) {
             doorOpen[i] += (doorTarget[i] - doorOpen[i]) * Math.min(1f, dt * 6f);
             if (doorOpen[i] < 0.001f) doorOpen[i] = 0f;
             else if (doorOpen[i] > 0.999f) doorOpen[i] = 1f;
+        }
+        for (int i = 0; i < windowData.length; i++) {
+            windowOpen[i] += (windowTarget[i] - windowOpen[i]) * Math.min(1f, dt * 6f);
+            if (windowOpen[i] < 0.001f) windowOpen[i] = 0f;
+            else if (windowOpen[i] > 0.999f) windowOpen[i] = 1f;
         }
     }
 
@@ -1611,6 +1634,115 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (axis == 0) { Matrix.translateM(model, 0, lt, lv, ld); Matrix.scaleM(model, 0, st, sv, sd); }
         else           { Matrix.translateM(model, 0, ld, lv, lt); Matrix.scaleM(model, 0, sd, sv, st); }
         drawWorld(cube, 36, 0f, r, g, b);
+    }
+
+    // --- openable window sashes (reachable ground-floor windows) — same hinge maths as the doors ---
+
+    /** Build the interactive sash records from the (base town) house list. A reachable ground-floor opening
+     *  (from the shared windowSlots) becomes a casement leaf hinged on one jamb, tinted with its house glass. */
+    private void buildOpenableWindows() {
+        java.util.List<float[]> wins = new java.util.ArrayList<float[]>();
+        for (float[] hh : houseRects) {
+            float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
+            int ds = (int) hh[5], dens = (int) hh[11], storeys = Math.round(hh[23]);
+            float wsc = hh[12], foundH = hh[16], yaw = hh.length > 25 ? hh[25] : 0f;
+            float gr = hh[13], gg = hh[14], gb = hh[15];
+            if (dens == 0 || !houseCuts(hh)) continue;
+            long seed = houseSeedOf(cx, cz);
+            sashSide(wins, hh, cx, cz + dd * 0.5f, w, h, 0, 0, ds == 0, dens, wsc, storeys, foundH, seed, gr, gg, gb, yaw);  // +z
+            sashSide(wins, hh, cx, cz - dd * 0.5f, w, h, 0, 1, ds == 1, dens, wsc, storeys, foundH, seed, gr, gg, gb, yaw);  // -z
+            sashSide(wins, hh, cx + w * 0.5f, cz, dd, h, 1, 2, ds == 2, dens, wsc, storeys, foundH, seed, gr, gg, gb, yaw);  // +x
+            sashSide(wins, hh, cx - w * 0.5f, cz, dd, h, 1, 3, ds == 3, dens, wsc, storeys, foundH, seed, gr, gg, gb, yaw);  // -x
+        }
+        windowData = wins.toArray(new float[0][]);
+        windowOpen = new float[windowData.length];
+        windowTarget = new float[windowData.length];
+        nearWindow = -1;
+    }
+
+    private void sashSide(java.util.List<float[]> out, float[] hh, float wcx, float wcz, float span, float h,
+                          int axis, int side, boolean doorWall, int dens, float wsc, int storeys, float foundH,
+                          long seed, float gr, float gg, float gb, float yaw) {
+        java.util.ArrayList<float[]> slots = new java.util.ArrayList<float[]>();
+        windowSlots(span, h, dens, wsc, storeys, foundH, doorWall, seed, side, slots);
+        float swingSign = (side == 1 || side == 2) ? -1f : 1f;   // open OUTWARD, same convention as the door leaf
+        for (float[] s : slots) {
+            if (s[5] == 0f) continue;                            // reachable ground-floor sashes only
+            float t = s[0], wy = s[1], winW = s[2], winH = s[3];
+            float lx = axis == 0 ? wcx + t : wcx;
+            float lz = axis == 0 ? wcz     : wcz + t;
+            addWindowSash(out, lx, wy, lz, winW * 0.5f, winH * 0.5f, axis, swingSign, hh[0], hh[1], yaw, gr, gg, gb);
+        }
+    }
+
+    /** Add one sash record, rotating its centre about the house centre by yaw (matches rotateDoorAbout). */
+    private void addWindowSash(java.util.List<float[]> out, float lx, float ly, float lz, float tHalf, float vHalf,
+                               int axis, float swingSign, float cxH, float czH, float yaw, float gr, float gg, float gb) {
+        float wx = lx, wz = lz;
+        if (yaw != 0f) {
+            double a = Math.toRadians(yaw);
+            float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+            float rx = lx - cxH, rz = lz - czH;
+            wx = cxH + rx * ca + rz * sa;
+            wz = czH - rx * sa + rz * ca;
+        }
+        out.add(new float[]{wx, ly, wz, tHalf, vHalf, 0.04f, axis, 1f, gr, gg, gb, 0f, swingSign, yaw});
+    }
+
+    /** Draw the openable sashes: opaque frames + muntins, then reflective glass in a see-through pass so the
+     *  real interior shows through a closed pane. Distance-culled; hinge transform mirrors drawDoors. */
+    private void drawWindows() {
+        if (windowData.length == 0) return;
+        float cull = 30f * 30f;
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        for (int i = 0; i < windowData.length; i++) {                 // opaque: frame ring + cross muntins
+            float[] wd = windowData[i];
+            float dx = wd[0] - px, dz = wd[2] - pz;
+            if (dx * dx + dz * dz > cull) continue;
+            winHinge(wd, windowOpen[i]);
+            int axis = (int) wd[6]; float tH = wd[3], vH = wd[4];
+            float fr = 0.90f, fg = 0.89f, fb = 0.84f;                 // painted white frame
+            winBit(axis, 0f, vH, 0f, tH * 2f + 0.06f, 0.06f, 0.09f, 0f, fr, fg, fb);   // head
+            winBit(axis, 0f, -vH, 0f, tH * 2f + 0.06f, 0.06f, 0.09f, 0f, fr, fg, fb);  // sill rail
+            winBit(axis, -tH, 0f, 0f, 0.06f, vH * 2f, 0.09f, 0f, fr, fg, fb);          // jambs
+            winBit(axis,  tH, 0f, 0f, 0.06f, vH * 2f, 0.09f, 0f, fr, fg, fb);
+            winBit(axis, 0f, 0f, 0f, 0.045f, vH * 2f, 0.07f, 0f, fr, fg, fb);          // muntin cross
+            winBit(axis, 0f, 0f, 0f, tH * 2f, 0.045f, 0.07f, 0f, fr, fg, fb);
+        }
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, winTex);           // transparent: reflective glass
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glDepthMask(false);
+        for (int i = 0; i < windowData.length; i++) {
+            float[] wd = windowData[i];
+            float dx = wd[0] - px, dz = wd[2] - pz;
+            if (dx * dx + dz * dz > cull) continue;
+            winHinge(wd, windowOpen[i]);
+            int axis = (int) wd[6];
+            winBit(axis, 0f, 0f, 0f, wd[3] * 2f - 0.02f, wd[4] * 2f - 0.02f, 0.03f, 5f, wd[8], wd[9], wd[10]);
+        }
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
+    }
+
+    /** Build the sash hinge transform into winBase: leaf centre -> house yaw -> swing about the jamb edge. */
+    private void winHinge(float[] wd, float open) {
+        Matrix.setIdentityM(winBase, 0);
+        Matrix.translateM(winBase, 0, wd[0], wd[1], wd[2]);
+        float dyaw = wd[13];
+        if (dyaw != 0f) Matrix.rotateM(winBase, 0, dyaw, 0f, 1f, 0f);
+        int axis = (int) wd[6];
+        float ang = open * 78f * wd[12], tH = wd[3];
+        if (axis == 0) { Matrix.translateM(winBase, 0, tH, 0f, 0f); Matrix.rotateM(winBase, 0, ang, 0f, 1f, 0f); Matrix.translateM(winBase, 0, -tH, 0f, 0f); }
+        else           { Matrix.translateM(winBase, 0, 0f, 0f, tH); Matrix.rotateM(winBase, 0, ang, 0f, 1f, 0f); Matrix.translateM(winBase, 0, 0f, 0f, -tH); }
+    }
+
+    private void winBit(int axis, float lt, float lv, float ld, float st, float sv, float sd, float mode, float r, float g, float b) {
+        System.arraycopy(winBase, 0, model, 0, 16);
+        if (axis == 0) { Matrix.translateM(model, 0, lt, lv, ld); Matrix.scaleM(model, 0, st, sv, sd); }
+        else           { Matrix.translateM(model, 0, ld, lv, lt); Matrix.scaleM(model, 0, sd, sv, st); }
+        drawWorld(cube, 36, mode, r, g, b);
     }
 
     // --- weapon viewmodels ---
@@ -2428,6 +2560,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int sRoofV = roofVerts, sWinV = windowVerts, sTrimV = trimVerts, sRevealV = revealVerts, sBandV = bandVerts, sIntV = interiorVerts;
         float[] sTrim = trimData, sReveal = revealData;
         java.util.List<float[]> colliders = new java.util.ArrayList<float[]>();
+        bakingOverlay = true;                          // editor houses keep every pane baked (no interactive sashes)
         try {
             houseRects = ovH;
             ovRoofMesh = makeBuffer(makeRoofMesh());   ovRoofGroups = roofGroups; ovRoofVerts = roofVerts;
@@ -2439,6 +2572,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (float[] hh : ovH) if (hh[26] != 0f) furnishHouse(colliders, hh[0], hh[1], hh[2], hh[3], hh[4], (int) hh[5], hh[25]);   // skip unpacked houses (their furniture is editable FU)
             ovIntMesh = makeBuffer(makeInteriorMesh()); ovIntGroups = interiorGroups; ovIntVerts = interiorVerts;
         } finally {
+            bakingOverlay = false;
             houseRects = sRects; interiorPieces = sPieces;
             roofGroups = sRoofG; winGroups = sWinG; bandGroups = sBandG; interiorGroups = sIntG;
             roofVerts = sRoofV; windowVerts = sWinV; trimVerts = sTrimV; revealVerts = sRevealV; bandVerts = sBandV; interiorVerts = sIntV;
@@ -2964,6 +3098,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         aimOn = false; aim = 0f; sprinting = false; sprintAnim = 0f; bobPhase = 0f;
         for (int i = 0; i < doorData.length; i++) { doorOpen[i] = 0f; doorTarget[i] = 0f; }
         nearDoor = -1;
+        for (int i = 0; i < windowOpen.length; i++) { windowOpen[i] = 0f; windowTarget[i] = 0f; }
+        nearWindow = -1;
         for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; enWind[i] = 0f; blipAge[i] = 999f; blipRel[i] = -1f; }
         radarPrevT = -1f;
         for (int i = 0; i < MAX_PICKUPS; i++) pkLife[i] = 0f;
@@ -3899,16 +4035,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawPad(mnx, mny, Hud.MENU_RADIUS, 0.24f, 0.24f, 0.20f, 0.5f);
             drawTextCentered("MENU", mnx, mny, 18f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.95f);
 
-            // door prompt — appears only when you're in range of a door; tap it to open/close
-            if (nearDoor >= 0) {
+            // interact prompt — appears in range of a door OR a window; tap it to open/close the nearest one
+            if (nearDoor >= 0 || nearWindow >= 0) {
                 float ix = Hud.interactCx(width), iy = Hud.interactCy(height);
-                boolean open = doorOpen[nearDoor] > 0.5f;
+                boolean win = nearWinCloser;
+                boolean open = win ? windowOpen[nearWindow] > 0.5f : doorOpen[nearDoor] > 0.5f;
                 drawGlow(ix, iy, Hud.INTERACT_RADIUS * 2f, Hud.INTERACT_RADIUS * 2f, Hud.INTERACT_RADIUS,
                         open ? 0.9f : 0.3f, open ? 0.55f : 0.85f, open ? 0.3f : 0.45f, 0.8f);
                 drawPad(ix, iy, Hud.INTERACT_RADIUS, open ? 0.85f : 0.28f, open ? 0.5f : 0.82f, open ? 0.28f : 0.45f, 0.55f);
-                drawRoundRect(ix, iy, 40f * us, 60f * us, 6f * us, 0.93f, 0.93f, 0.80f, 0.96f);   // door frame
-                drawRoundRect(ix, iy, 28f * us, 48f * us, 4f * us, 0.46f, 0.30f, 0.17f, 0.97f);   // door leaf
-                drawCircle(ix + 8f * us, iy, 4f * us, 0.96f, 0.9f, 0.45f, 1f);                    // knob
+                if (win) {                                                                       // window icon: framed glass + muntin cross
+                    drawRoundRect(ix, iy, 46f * us, 46f * us, 5f * us, 0.93f, 0.93f, 0.80f, 0.96f);
+                    drawRoundRect(ix, iy, 36f * us, 36f * us, 3f * us, 0.55f, 0.68f, 0.80f, 0.95f);
+                    drawRectPx(ix, iy, 36f * us, 4f * us, 0.93f, 0.93f, 0.80f, 0.96f);
+                    drawRectPx(ix, iy, 4f * us, 36f * us, 0.93f, 0.93f, 0.80f, 0.96f);
+                } else {
+                    drawRoundRect(ix, iy, 40f * us, 60f * us, 6f * us, 0.93f, 0.93f, 0.80f, 0.96f);   // door frame
+                    drawRoundRect(ix, iy, 28f * us, 48f * us, 4f * us, 0.46f, 0.30f, 0.17f, 0.97f);   // door leaf
+                    drawCircle(ix + 8f * us, iy, 4f * us, 0.96f, 0.9f, 0.45f, 1f);                    // knob
+                }
                 drawTextCenteredShadow(open ? "CLOSE" : "OPEN", ix, iy + Hud.INTERACT_RADIUS + 24f * us, 16f, 1f, 1f, 1f, 0.92f);
             }
 
@@ -5908,7 +6052,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 int mat = (int) hh[34];                                  // facade material from the level (0 = plaster)
                 int dStyle = mat == 0 ? 1 : (mat == 1 ? 0 : (mat == 2 ? 2 : 3));   // door style follows the material, like the procedural town
                 addBuilding(L, doors, hh[0], hh[1], hh[2], hh[3], hh[4], door, roof, hh[7], hh[8], hh[9], chim,
-                            hh[21], hh[22], hh[23], hh[24], hh[25], dStyle, mat, hh[35]); // doorW doorH doorR doorG doorB | doorStyle material | yaw
+                            hh[21], hh[22], hh[23], hh[24], hh[25], dStyle, mat, hh[35], // doorW doorH doorR doorG doorB | doorStyle material | yaw
+                            (int) hh[15], hh[16], (int) hh[33], hh[26], houseFurnishable(hh[2], hh[3], hh[4]) && hh[36] != 0f);  // dens wsc storeys foundH cutHoles
                 houses.add(new float[]{hh[0], hh[1], hh[2], hh[3], hh[4], door, rr, rg, rb, hh[13], hh[14], hh[15], hh[16],
                             gr, gg, gb, hh[26], hh[27], hh[28], hh[29], hh[30], hh[31], hh[32], hh[33], hh[21], hh[35], hh[36]});  // [24] doorW, [25] yaw, [26] autoFurnish
             }
@@ -6082,7 +6227,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float fR = 0.40f + rc.nextFloat() * 0.06f, fG = 0.38f + rc.nextFloat() * 0.06f, fB = 0.36f + rc.nextFloat() * 0.06f;
         float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
         addBuilding(L, doors, cx, cz, w, d, h, 0, 1, p[0], p[1], p[2], chimney ? 1 : 0,
-                    doorW, doorH, dc[0], dc[1], dc[2], doorStyle, mat, yawDeg);
+                    doorW, doorH, dc[0], dc[1], dc[2], doorStyle, mat, yawDeg,
+                    winDens, winSize, storeys, foundH, houseFurnishable(w, d, h));   // cut real window openings
         houses.add(new float[]{cx, cz, w, d, h, 0f, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                 GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys, doorW,
                 yawDeg});                                            // [25] = house yaw (spins roof/windows/interior)
@@ -6575,18 +6721,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney, doorW, doorH, dr, dg, db, doorStyle, material, 0f);
     }
 
-    /** Deepest overload: yaw (degrees) spins the whole house about (cx,cz). yaw=0 is the unrotated axis-aligned build. */
     private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
                                     int doorSide, int roofStyle, float r, float g, float b, int chimney,
                                     float doorW, float doorH, float dr, float dg, float db, int doorStyle, int material, float yaw) {
+        // no window info -> solid walls (used by editor stand-ins / legacy callers). The gameplay + .lvl paths
+        // call the deeper overload with dens/storeys so their walls get real cut openings.
+        addBuilding(L, doors, cx, cz, w, d, h, doorSide, roofStyle, r, g, b, chimney,
+                    doorW, doorH, dr, dg, db, doorStyle, material, yaw, 0, 1f, 1, 0.3f, false);
+    }
+
+    /** Deepest overload: yaw (degrees) spins the whole house about (cx,cz); dens/wsc/storeys/foundH describe the
+     *  window layout and, when cutHoles, cut REAL openings through the walls (so the interior shows through). */
+    private static void addBuilding(List<float[]> L, List<float[]> doors, float cx, float cz, float w, float d, float h,
+                                    int doorSide, int roofStyle, float r, float g, float b, int chimney,
+                                    float doorW, float doorH, float dr, float dg, float db, int doorStyle, int material, float yaw,
+                                    int dens, float wsc, int storeys, float foundH, boolean cutHoles) {
         int boxStart = L.size(), doorStart = doors.size();
         float t = 0.3f;
         doorW = clamp(doorW, 0.8f, Math.min(w, d) - 0.6f);     // keep the gap inside the wall
         doorH = clamp(doorH, 1.6f, h - 0.3f);                  // keep the lintel under the eave
-        addWall(L, cx, cz + d * 0.5f, w, t, h, doorSide == 0, doorW, doorH, true, r, g, b, material);   // +z
-        addWall(L, cx, cz - d * 0.5f, w, t, h, doorSide == 1, doorW, doorH, true, r, g, b, material);   // -z
-        addWall(L, cx + w * 0.5f, cz, t, d, h, doorSide == 2, doorW, doorH, false, r, g, b, material);  // +x
-        addWall(L, cx - w * 0.5f, cz, t, d, h, doorSide == 3, doorW, doorH, false, r, g, b, material);  // -x
+        long hSeed = houseSeedOf(cx, cz);
+        buildWallSide(L, cx, cz + d * 0.5f, w, t, h, true,  doorSide == 0, doorW, doorH, 0, dens, wsc, storeys, foundH, cutHoles, hSeed, r, g, b, material);   // +z
+        buildWallSide(L, cx, cz - d * 0.5f, w, t, h, true,  doorSide == 1, doorW, doorH, 1, dens, wsc, storeys, foundH, cutHoles, hSeed, r, g, b, material);   // -z
+        buildWallSide(L, cx + w * 0.5f, cz, d, t, h, false, doorSide == 2, doorW, doorH, 2, dens, wsc, storeys, foundH, cutHoles, hSeed, r, g, b, material);   // +x
+        buildWallSide(L, cx - w * 0.5f, cz, d, t, h, false, doorSide == 3, doorW, doorH, 3, dens, wsc, storeys, foundH, cutHoles, hSeed, r, g, b, material);   // -x
         L.add(new float[]{cx, h + 0.15f, cz, w + t, 0.3f, d + t, r * 0.9f, g * 0.9f, b * 0.95f}); // roof
         float dcx, dcz; int axis;                          // openable door leaf in the gap
         if (doorSide == 0)      { dcx = cx; dcz = cz + d * 0.5f; axis = 0; }
@@ -6685,6 +6843,123 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             d[o + 3] = nx * ca + nz * sa;
             d[o + 5] = -nx * sa + nz * ca;
         }
+    }
+
+    // ---- real window openings: one shared layout function feeds BOTH the wall cutter and the pane placer ----
+
+    /** Geometry-derived house seed so the window-omission pattern is reproducible by any caller. */
+    static long houseSeedOf(float cx, float cz) {
+        return ((long) Float.floatToIntBits(cx)) * 0x9E3779B1L ^ (Float.floatToIntBits(cz) & 0xffffffffL);
+    }
+    /** Matches furnishHouse's early-return conditions — a house only gets a real interior (hence cut holes)
+     *  when it is big + tall enough to furnish. */
+    static boolean houseFurnishable(float w, float d, float h) {
+        float inx = w * 0.5f - 0.28f, inz = d * 0.5f - 0.28f;
+        if (inx < 0.7f || inz < 0.7f) return false;
+        return Math.min(2.55f, h - 0.22f) >= 2.0f;
+    }
+    /** Deterministic per-column omission (splitmix64 on the geometry seed) — no shared advancing Random, so
+     *  the wall cutter and the pane placer independently agree on which columns are dropped. */
+    static boolean windowOmit(long seed, int side, int fi, int ci, float omit) {
+        long z = seed ^ ((long) (side + 1) * 0x9E3779B97F4A7C15L)
+                      ^ ((long) (fi + 1)   * 0xC2B2AE3D27D4EB4FL)
+                      ^ ((long) (ci + 1)   * 0x165667B19E3779F9L);
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        z ^= z >>> 31;
+        return (float) ((z >>> 11) * 0x1.0p-53) < omit;
+    }
+    /** The single source of truth for where windows sit on a wall of span `span`, height `h`. Reproduces the
+     *  old wallWindows column/row maths bit-for-bit; appends {t, wy, winW, winH, floor, reachable} per opening.
+     *  `side`: +z=0,-z=1,+x=2,-x=3 (drives the omission hash — MUST match across all callers). */
+    static void windowSlots(float span, float h, int dens, float wsc, int storeys, float foundH,
+                            boolean doorWall, long houseSeed, int side, java.util.List<float[]> out) {
+        wsc = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f);
+        if (storeys < 1) storeys = 1;
+        if (storeys > 8) storeys = 8;
+        float floorH = h / storeys;
+        float winW = 0.85f * wsc, winH = Math.min(1.05f * wsc, floorH * 0.62f);
+        float colDiv, omit;
+        if (dens == 1)      { colDiv = 2.3f; omit = 0.10f; }
+        else if (dens >= 3) { colDiv = 1.25f; omit = 0.04f; }
+        else                { colDiv = 1.7f; omit = 0.10f; }
+        int cols = Math.max(1, (int) ((span - 0.6f) / colDiv));
+        float colGap = span / cols;
+        for (int fi = 0; fi < storeys; fi++) {
+            float wy = floorH * (fi + 0.5f);
+            if (wy + winH * 0.5f > h - 0.2f) continue;               // top floor clears the eave (no hole in the gable)
+            if (wy - winH * 0.5f < foundH + 0.12f) wy = foundH + 0.12f + winH * 0.5f;   // clear the plinth
+            for (int ci = 0; ci < cols; ci++) {
+                float t = -span * 0.5f + colGap * (ci + 0.5f);
+                if (doorWall && Math.abs(t) < 1.4f * Math.max(1f, wsc) && wy - winH * 0.5f < 2.45f) continue;
+                if (windowOmit(houseSeed, side, fi, ci, omit)) continue;
+                boolean reach = (fi == 0) && (wy - winH * 0.5f <= 1.5f);   // ground floor + reachable sill -> openable sash
+                out.add(new float[]{t, wy, winW, winH, fi, reach ? 1f : 0f});
+            }
+        }
+    }
+
+    /** Build one wall side as a set of solid boxes tiling the rectangle EXCEPT its openings (door + windows).
+     *  A provably-complete Y-band / X-interval decomposition: cut Y at every opening edge, then per band take
+     *  the union of the covering openings' t-intervals and emit the complement as solid segments. That yields
+     *  the below-sill spandrel, the header/lintel strips, inter-storey strips and mullion piers for free — and
+     *  never leaves a gap or an overlap. hole = {t0,t1,y0,y1} in wall-local coords (t along the wall). */
+    static void addWallHoles(List<float[]> L, float wcx, float wcz, float span, float thick, float h,
+                             boolean spanX, float[][] holes, float r, float g, float b, int material) {
+        float half = span * 0.5f;
+        java.util.ArrayList<Float> ys = new java.util.ArrayList<Float>();
+        ys.add(0f); ys.add(h);
+        for (float[] ho : holes) { ys.add(clamp(ho[2], 0f, h)); ys.add(clamp(ho[3], 0f, h)); }
+        java.util.Collections.sort(ys);
+        java.util.ArrayList<Float> yl = new java.util.ArrayList<Float>();
+        for (float y : ys) if (yl.isEmpty() || y - yl.get(yl.size() - 1) > 1e-3f) yl.add(y);
+        for (int bi = 0; bi + 1 < yl.size(); bi++) {
+            float yA = yl.get(bi), yB = yl.get(bi + 1), bandH = yB - yA;
+            if (bandH < 1e-3f) continue;
+            float midY = (yA + yB) * 0.5f;
+            java.util.ArrayList<float[]> iv = new java.util.ArrayList<float[]>();
+            for (float[] ho : holes)
+                if (ho[2] <= yA + 1e-3f && ho[3] >= yB - 1e-3f) {     // hole fully covers this band
+                    float t0 = Math.max(-half, ho[0]), t1 = Math.min(half, ho[1]);
+                    if (t1 > t0) iv.add(new float[]{t0, t1});
+                }
+            java.util.Collections.sort(iv, new java.util.Comparator<float[]>() {
+                public int compare(float[] a, float[] bb) { return Float.compare(a[0], bb[0]); }
+            });
+            java.util.ArrayList<float[]> un = new java.util.ArrayList<float[]>();
+            for (float[] i2 : iv) {                                   // union of the void intervals (no thin double piers)
+                if (!un.isEmpty() && i2[0] <= un.get(un.size() - 1)[1] + 1e-4f)
+                    un.get(un.size() - 1)[1] = Math.max(un.get(un.size() - 1)[1], i2[1]);
+                else un.add(new float[]{i2[0], i2[1]});
+            }
+            float cursor = -half;                                     // complement of the union = solid segments
+            for (float[] u2 : un) { emitWallSeg(L, wcx, wcz, cursor, u2[0], midY, bandH, thick, spanX, r, g, b, material); cursor = Math.max(cursor, u2[1]); }
+            emitWallSeg(L, wcx, wcz, cursor, half, midY, bandH, thick, spanX, r, g, b, material);
+        }
+    }
+    private static void emitWallSeg(List<float[]> L, float wcx, float wcz, float s0, float s1, float midY,
+                                    float bandH, float thick, boolean spanX, float r, float g, float b, int material) {
+        float segLen = s1 - s0;
+        if (segLen < 0.05f) return;                                   // sliver guard: no zero-width z-fighting/junk-collision boxes
+        float midT = (s0 + s1) * 0.5f;
+        if (spanX) L.add(new float[]{wcx + midT, midY, wcz, segLen, bandH, thick, r, g, b, 0f, 0f, (float) material});
+        else       L.add(new float[]{wcx, midY, wcz + midT, thick, bandH, segLen, r, g, b, 0f, 0f, (float) material});
+    }
+    /** One wall side: gather its openings (the door on the door side + real window holes when the house is
+     *  furnished) and tile the solid remainder. `side` matches windowSlots (+z=0,-z=1,+x=2,-x=3). */
+    private static void buildWallSide(List<float[]> L, float wcx, float wcz, float span, float thick, float h,
+                                      boolean spanX, boolean isDoor, float doorW, float doorH, int side,
+                                      int dens, float wsc, int storeys, float foundH, boolean cutHoles,
+                                      long houseSeed, float r, float g, float b, int material) {
+        java.util.ArrayList<float[]> holes = new java.util.ArrayList<float[]>();
+        if (isDoor) holes.add(new float[]{-doorW * 0.5f, doorW * 0.5f, 0f, doorH});
+        if (cutHoles && dens > 0) {
+            java.util.ArrayList<float[]> slots = new java.util.ArrayList<float[]>();
+            windowSlots(span, h, dens, wsc, storeys, foundH, isDoor, houseSeed, side, slots);
+            for (float[] s : slots)
+                holes.add(new float[]{s[0] - s[2] * 0.5f, s[0] + s[2] * 0.5f, s[1] - s[3] * 0.5f, s[1] + s[3] * 0.5f});
+        }
+        addWallHoles(L, wcx, wcz, span, thick, h, spanX, holes.toArray(new float[0][]), r, g, b, material);
     }
 
     private static void addWall(List<float[]> L, float cx, float cz, float sx, float sz, float h,
@@ -6798,18 +7073,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] td = new float[3200000];   // 4 trim boxes per window now (sill + lintel + 2 jambs)
         float[] rv = new float[1200000];   // dark recessed interior behind every pane
         int[] off = {0, 0, 0};
-        Random rng = new Random(202);   // irregular per-house omission so no two facades match
         java.util.List<float[]> winG = new java.util.ArrayList<float[]>();
         for (float[] hh : houseRects) {
             float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
             int ds = (int) hh[5], dens = (int) hh[11], storeys = Math.round(hh[23]);
             float wsc = hh[12], foundH = hh[16];
             if (dens == 0) continue;                       // "none" -> this house has no windows
+            boolean cut = houseCuts(hh);                   // furnished houses get real cut openings (no fake reveal)
+            boolean skipSash = cut && !bakingOverlay;       // base town: reachable panes are drawn as animated sashes
+            long hSeed = houseSeedOf(cx, cz);
             int wstart = off[0] / 8, tstart = off[1] / 8, rstart = off[2] / 8;
-            wallWindows(wd, td, rv, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, rv, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, rv, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, rng, dens, wsc, storeys, foundH);
-            wallWindows(wd, td, rv, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, rng, dens, wsc, storeys, foundH);
+            wallWindows(wd, td, rv, off, cx, cz + dd * 0.5f, w, h, 0, 1, ds == 0, hSeed, 0, dens, wsc, storeys, foundH, cut, skipSash);
+            wallWindows(wd, td, rv, off, cx, cz - dd * 0.5f, w, h, 0, -1, ds == 1, hSeed, 1, dens, wsc, storeys, foundH, cut, skipSash);
+            wallWindows(wd, td, rv, off, cx + w * 0.5f, cz, dd, h, 1, 1, ds == 2, hSeed, 2, dens, wsc, storeys, foundH, cut, skipSash);
+            wallWindows(wd, td, rv, off, cx - w * 0.5f, cz, dd, h, 1, -1, ds == 3, hSeed, 3, dens, wsc, storeys, foundH, cut, skipSash);
             float yaw = hh.length > 25 ? hh[25] : 0f;      // spin panes + sills + reveals with the house
             if (yaw != 0f) {
                 rotateVertSpanY(wd, wstart, off[0] / 8 - wstart, cx, cz, yaw);
@@ -7237,48 +7514,46 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // off[0] = window-mesh cursor, off[1] = sill-mesh cursor.
-    private static void wallWindows(float[] wd, float[] td, float[] rv, int[] off, float a, float b, float span, float h, int axis, int sign, boolean doorWall, Random rng, int dens, float wsc, int storeys, float foundH) {
-        // One row of windows per FLOOR, centred in its storey -> the building visibly reads as having Etagen.
-        wsc = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f);
-        if (storeys < 1) storeys = 1;
-        if (storeys > 8) storeys = 8;
-        float floorH = h / storeys;
-        float winW = 0.85f * wsc, winH = Math.min(1.05f * wsc, floorH * 0.62f), proud = 0.18f;
-        float colDiv, omit;                                          // density: 1 sparse, 2 normal, 3 dense
-        if (dens == 1)      { colDiv = 2.3f; omit = 0.10f; }
-        else if (dens >= 3) { colDiv = 1.25f; omit = 0.04f; }
-        else                { colDiv = 1.7f; omit = 0.10f; }
-        int cols = Math.max(1, (int) ((span - 0.6f) / colDiv));
-        float colGap = span / cols;
-        for (int fi = 0; fi < storeys; fi++) {
-            float wy = floorH * (fi + 0.5f);                         // centre of this floor
-            if (wy + winH * 0.5f > h - 0.2f) continue;               // top floor clears the eave
-            if (wy - winH * 0.5f < foundH + 0.12f) wy = foundH + 0.12f + winH * 0.5f;   // clear the plinth
-            for (int ci = 0; ci < cols; ci++) {
-                float t = -span * 0.5f + colGap * (ci + 0.5f);       // offset along the wall
-                if (doorWall && Math.abs(t) < 1.4f * Math.max(1f, wsc) && wy - winH * 0.5f < 2.45f) continue;   // no pane over/around the doorway
-                if (rng.nextFloat() < omit) continue;                // drop a few so it isn't stamped
-                if (off[1] > td.length - 5000) continue;             // trim scratch nearly full: skip gracefully (never overflow)
+    /** Does this house get real cut openings? (furnished + auto-furnish on). Both the wall cutter and the
+     *  pane placer key off this so glass exactly fills every hole. */
+    static boolean houseCuts(float[] hh) {
+        boolean autoFurn = hh.length <= 26 || hh[26] != 0f;
+        return autoFurn && houseFurnishable(hh[2], hh[3], hh[4]);
+    }
+
+    private static void wallWindows(float[] wd, float[] td, float[] rv, int[] off, float a, float b, float span, float h,
+                                    int axis, int sign, boolean doorWall, long houseSeed, int side,
+                                    int dens, float wsc, int storeys, float foundH, boolean cutHoles, boolean skipReachablePane) {
+        // Positions come from the shared windowSlots() so panes exactly fill the cut holes.
+        float wscC = clamp(wsc <= 0f ? 1f : wsc, 0.5f, 1.6f), proud = 0.18f;
+        java.util.ArrayList<float[]> slots = new java.util.ArrayList<float[]>();
+        windowSlots(span, h, dens, wscC, storeys, foundH, doorWall, houseSeed, side, slots);
+        for (float[] s : slots) {
+            float t = s[0], wy = s[1], winW = s[2], winH = s[3];
+            boolean reachable = s[5] != 0f;
+            if (off[1] > td.length - 5000) continue;             // trim scratch nearly full: skip gracefully (never overflow)
+            // Reachable ground-floor panes are drawn as animated sashes (drawWindows), so skip baking them for
+            // the base town. Overlay houses (skipReachablePane=false) keep every pane baked (no interactive sash).
+            if (!(reachable && skipReachablePane))
                 off[0] = windowQuad(wd, off[0], a, b, t, wy, winW, winH, axis, sign, proud);
-                // dark room set 12 cm behind the glass (occludes the wall -> reads as an opening). The wide
-                // gap keeps pane and room depth-separable at distance — 2 cm z-fought into moiré stripes
-                // on 16-bit depth buffers; the jamb/lintel/sill boxes case the gap so no slit ever shows.
+            // The fake dark reveal panel only makes sense on UNCUT (unfurnished) houses; a cut house shows its
+            // real interior straight through the hole.
+            if (!cutHoles)
                 off[2] = windowQuad(rv, off[2], a, b, t, wy, winW * 0.86f, winH * 0.86f, axis, sign, 0.06f);
-                float sy = wy - winH * 0.5f - 0.04f;                 // sill ledge just below the pane
-                float hy = wy + winH * 0.5f + 0.045f;                // head lintel just above it
-                if (axis == 0) {
-                    off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
-                    // complete the stone surround: lintel on top + jamb strips flanking the pane (they also
-                    // hide the proud pane's bare side edges at oblique view angles)
-                    off[1] = box6(td, off[1], a + t, hy, b + sign * 0.10f, winW * 0.5f + 0.09f, 0.045f, 0.10f);
-                    off[1] = box6(td, off[1], a + t - winW * 0.5f - 0.035f, wy, b + sign * 0.10f, 0.035f, winH * 0.5f + 0.02f, 0.10f);
-                    off[1] = box6(td, off[1], a + t + winW * 0.5f + 0.035f, wy, b + sign * 0.10f, 0.035f, winH * 0.5f + 0.02f, 0.10f);
-                } else {
-                    off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
-                    off[1] = box6(td, off[1], a + sign * 0.10f, hy, b + t, 0.10f, 0.045f, winW * 0.5f + 0.09f);
-                    off[1] = box6(td, off[1], a + sign * 0.10f, wy, b + t - winW * 0.5f - 0.035f, 0.10f, winH * 0.5f + 0.02f, 0.035f);
-                    off[1] = box6(td, off[1], a + sign * 0.10f, wy, b + t + winW * 0.5f + 0.035f, 0.10f, winH * 0.5f + 0.02f, 0.035f);
-                }
+            float sy = wy - winH * 0.5f - 0.04f;                     // sill ledge just below the pane
+            float hy = wy + winH * 0.5f + 0.045f;                    // head lintel just above it
+            if (axis == 0) {
+                off[1] = box6(td, off[1], a + t, sy, b + sign * 0.11f, winW * 0.5f + 0.1f, 0.05f, 0.11f);
+                // complete the stone surround: lintel on top + jamb strips flanking the pane (these also
+                // face the cut reveal so the opening reads as a framed window, not a raw hole)
+                off[1] = box6(td, off[1], a + t, hy, b + sign * 0.10f, winW * 0.5f + 0.09f, 0.045f, 0.10f);
+                off[1] = box6(td, off[1], a + t - winW * 0.5f - 0.035f, wy, b + sign * 0.10f, 0.035f, winH * 0.5f + 0.02f, 0.10f);
+                off[1] = box6(td, off[1], a + t + winW * 0.5f + 0.035f, wy, b + sign * 0.10f, 0.035f, winH * 0.5f + 0.02f, 0.10f);
+            } else {
+                off[1] = box6(td, off[1], a + sign * 0.11f, sy, b + t, 0.11f, 0.05f, winW * 0.5f + 0.1f);
+                off[1] = box6(td, off[1], a + sign * 0.10f, hy, b + t, 0.10f, 0.045f, winW * 0.5f + 0.09f);
+                off[1] = box6(td, off[1], a + sign * 0.10f, wy, b + t - winW * 0.5f - 0.035f, 0.10f, winH * 0.5f + 0.02f, 0.035f);
+                off[1] = box6(td, off[1], a + sign * 0.10f, wy, b + t + winW * 0.5f + 0.035f, 0.10f, winH * 0.5f + 0.02f, 0.035f);
             }
         }
     }
