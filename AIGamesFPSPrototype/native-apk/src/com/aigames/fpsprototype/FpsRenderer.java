@@ -151,6 +151,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float[][] roadGroups;                  // per-street colour groups {firstVert, vertCount, r,g,b}
     private float[][] treeList;                    // level-placed trees {x,z,scale}; null = none
     private java.util.List<float[]> clutterPts;    // barrel/crate/planter positions, so benches never spawn on top of them
+    // Recorded by buildWorldInto for the ground texture + vegetation bake (all null for .lvl worlds):
+    private java.util.List<float[]> pathStrokes;   // dirt footpaths {x0,z0,x1,z1,width}
+    private java.util.List<float[]> gardenSoil;    // tilled plots {cx,cz,w,d,yawDeg} painted + sprouted
+    private java.util.List<float[]> gardenTreePts; // fruit trees inside gardens {x,z,scale}
     private boolean hasCustomRoads;
     private float[] trimData;                      // window-sill boxes, built alongside the window mesh
     // {cx,cz,w,d,h,doorSide, rr,rg,rb, pitch,overhang, windows,winSize,
@@ -5050,6 +5054,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             o = vTree(d, o, x, terrainH(x, z), z, 1.0f + r.nextFloat() * 0.5f, true, r);
             n++;
         }
+        // kitchen-garden crops: leafy sprout rows along each tilled plot's furrows (collision-free —
+        // they live in the vegetation mesh, so the player wades through the beds like tall grass)
+        if (gardenSoil != null) for (float[] gd2 : gardenSoil) {
+            if (o > d.length - 40000) break;
+            float hw = gd2[2] * 0.5f, hd = gd2[3] * 0.5f;
+            double ga = Math.toRadians(gd2[4]);
+            float ca = (float) Math.cos(ga), sa = (float) Math.sin(ga);
+            for (float lx = -hw + 0.45f; lx < hw - 0.2f; lx += 0.55f) {
+                for (float lz = -hd + 0.4f; lz < hd - 0.2f; lz += 0.42f + r.nextFloat() * 0.18f) {
+                    float wx = gd2[0] + lx * ca + lz * sa, wz = gd2[1] - lx * sa + lz * ca;
+                    float by = terrainH(wx, wz);
+                    int kind = r.nextInt(5);
+                    if (kind < 3) {                          // leafy sprout: a few short blades in a tuft
+                        int blades = 3 + r.nextInt(3);
+                        for (int b = 0; b < blades; b++)
+                            o = vBlade(d, o, wx + (r.nextFloat() - 0.5f) * 0.10f, by, wz + (r.nextFloat() - 0.5f) * 0.10f,
+                                    r.nextFloat() * 6.2832f, 0.12f + r.nextFloat() * 0.14f, 0.025f, 0.05f, r.nextBoolean() ? ug1 : ug2);
+                    } else if (kind == 3) {                  // a ripening head (cabbage / pumpkin-ish dot)
+                        o = vBox(d, o, wx, by + 0.07f, wz, 0.09f + r.nextFloat() * 0.05f, 0.12f, 0.09f + r.nextFloat() * 0.05f,
+                                r.nextFloat() < 0.3f ? cell(8) : uBush);
+                    } else {                                 // a flowering plant between the rows
+                        o = vFlower(d, o, wx, by, wz, r.nextInt(5), r, uStem, uCtr, flowerCells);
+                    }
+                }
+                if (o > d.length - 20000) break;
+            }
+        }
         // forest ring around the level — hides the map edge / horizon
         float[] ringR = {44f, 48f, 52f, 56f, 60f};
         for (int ri = 0; ri < ringR.length; ri++) {
@@ -5080,23 +5111,80 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return false;
     }
 
-    private static final float[] STREETS = {-25f, -15f, -5f, 5f, 15f, 25f};   // road centrelines (10 m block pitch)
-    private static final float ROAD_HALF = 1.8f;     // asphalt half-width (4 m carriageway)
-    private static final float WALK_OUT = 2.9f;      // outer edge of the concrete sidewalk band
-    private static final float WALK_MID = 2.35f;     // centre of the sidewalk strip (where lamps/trees stand)
+    // ---- organic village road network -----------------------------------------------------------
+    // Hand-authored control points, Catmull-Rom sampled once into dense polylines. Everything keys off
+    // these curves: the painted ground texture, all placement queries, house orientation along the
+    // tangents, lamps/benches on the verges, and the front paths that march out to the nearest kerb.
+    private static final float SQ_X = 0f, SQ_Z = 3f;   // village square centre (the spawn plaza sits on it)
+    private static final float[][] ROAD_SPEC = {
+        // {asphalt halfWidth,  x0,z0, x1,z1, ...}  — the main road skirts the plaza's SOUTH edge, so the
+        // spawn corridor (0,9 facing the square) and its cover crates stay off the asphalt
+        {1.8f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},   // main road: a lazy S, west-east
+        {1.5f, 9,-36, 7,-26, 4,-16, 1,-8, 0,-2},                               // north approach to the junction
+        {1.3f, 0,-2, -5,3, -7,10, -4,18, 3,24, 11,28},                         // south lane, swings west of the plaza
+        {1.1f, -15,-4, -19,2, -25,7, -30,10},                                  // west dead-end lane
+        {1.1f, 17,-2, 20,6, 21,13, 20,19},                                     // east dead-end lane
+    };
+    private static final float[][][] ROAD_PTS;       // sampled centrelines [road][pt][x,z]
+    private static final float[] ROAD_HALFW;         // per-road asphalt half width
+    private static final float[][] ROAD_BB;          // per-road AABB {minX,minZ,maxX,maxZ} incl. width
+    private static final float VERGE = 1.0f;         // gravel shoulder outside the asphalt
+    static {
+        ROAD_PTS = new float[ROAD_SPEC.length][][];
+        ROAD_HALFW = new float[ROAD_SPEC.length];
+        ROAD_BB = new float[ROAD_SPEC.length][];
+        for (int r = 0; r < ROAD_SPEC.length; r++) {
+            float[] s = ROAD_SPEC[r];
+            ROAD_HALFW[r] = s[0];
+            int n = (s.length - 1) / 2;
+            float[][] cp = new float[n][2];
+            for (int i = 0; i < n; i++) { cp[i][0] = s[1 + i * 2]; cp[i][1] = s[2 + i * 2]; }
+            java.util.ArrayList<float[]> out = new java.util.ArrayList<float[]>();
+            for (int i = 0; i < n - 1; i++) {
+                float[] p0 = cp[Math.max(0, i - 1)], p1 = cp[i], p2 = cp[i + 1], p3 = cp[Math.min(n - 1, i + 2)];
+                float segLen = (float) Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+                int steps = Math.max(2, (int) (segLen / 1.1f));
+                for (int k = 0; k < steps; k++) {
+                    float t = k / (float) steps, t2 = t * t, t3 = t2 * t;
+                    out.add(new float[]{
+                        0.5f * (2f * p1[0] + (-p0[0] + p2[0]) * t + (2f * p0[0] - 5f * p1[0] + 4f * p2[0] - p3[0]) * t2 + (-p0[0] + 3f * p1[0] - 3f * p2[0] + p3[0]) * t3),
+                        0.5f * (2f * p1[1] + (-p0[1] + p2[1]) * t + (2f * p0[1] - 5f * p1[1] + 4f * p2[1] - p3[1]) * t2 + (-p0[1] + 3f * p1[1] - 3f * p2[1] + p3[1]) * t3)});
+                }
+            }
+            out.add(new float[]{cp[n - 1][0], cp[n - 1][1]});
+            ROAD_PTS[r] = out.toArray(new float[0][]);
+            float mnx = 1e9f, mnz = 1e9f, mxx = -1e9f, mxz = -1e9f;
+            for (float[] p : ROAD_PTS[r]) { mnx = Math.min(mnx, p[0]); mnz = Math.min(mnz, p[1]); mxx = Math.max(mxx, p[0]); mxz = Math.max(mxz, p[1]); }
+            float pad = ROAD_HALFW[r];
+            ROAD_BB[r] = new float[]{mnx - pad, mnz - pad, mxx + pad, mxz + pad};
+        }
+    }
 
-    /** True on the asphalt carriageway (NOT the sidewalk) — keeps the traffic lane clear, allows kerbside furniture. */
-    private static boolean onRoadXZ(float x, float z) {
-        for (float r : STREETS)
-            if (Math.abs(x - r) < ROAD_HALF || Math.abs(z - r) < ROAD_HALF) return true;
-        return false;
+    /** Signed distance from (x,z) to the nearest asphalt EDGE (<0 = on a carriageway). */
+    private static float roadSd(float x, float z) {
+        float best = 1e9f;
+        for (int r = 0; r < ROAD_PTS.length; r++) {
+            float[] bb = ROAD_BB[r];       // cheap reject: outside this road's box by more than `best`
+            float ox = Math.max(bb[0] - x, x - bb[2]), oz = Math.max(bb[1] - z, z - bb[3]);
+            if (Math.max(ox, oz) > best) continue;
+            float[][] P = ROAD_PTS[r];
+            float hw = ROAD_HALFW[r];
+            for (int i = 0; i + 1 < P.length; i++) {
+                float ax = P[i][0], az = P[i][1];
+                float abx = P[i + 1][0] - ax, abz = P[i + 1][1] - az;
+                float tt = ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz + 1e-6f);
+                tt = tt < 0f ? 0f : (tt > 1f ? 1f : tt);
+                float dx = x - (ax + abx * tt), dz = z - (az + abz * tt);
+                float d = (float) Math.sqrt(dx * dx + dz * dz) - hw;
+                if (d < best) best = d;
+            }
+        }
+        return best;
     }
-    /** True anywhere on a street footprint incl. its sidewalks — used to keep buildings off the streets. */
-    private static boolean onStreetXZ(float x, float z) {
-        for (float r : STREETS)
-            if (Math.abs(x - r) < WALK_OUT || Math.abs(z - r) < WALK_OUT) return true;
-        return false;
-    }
+    /** True on the asphalt carriageway (NOT the verge) — keeps the traffic lane clear, allows kerbside furniture. */
+    private static boolean onRoadXZ(float x, float z) { return roadSd(x, z) < 0f; }
+    /** True anywhere on a street footprint incl. its gravel verges — keeps buildings off the streets. */
+    private static boolean onStreetXZ(float x, float z) { return roadSd(x, z) < VERGE; }
 
     /** A tapered, slightly bent grass/leaf blade (2 triangles). */
     private static int vBlade(float[] d, int o, float cx, float by, float cz, float ang,
@@ -5438,10 +5526,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return b;
     }
 
-    /** Top-down city ground: concrete blocks, asphalt streets with sidewalk borders + lane dashes. */
-    private static Bitmap makeCityBitmap() {
+    /** Top-down village ground: meadow, a cobbled square, curved lanes with gravel verges + centre
+     *  dashes, worn dirt footpaths to every door, and tilled soil inside the kitchen gardens. */
+    private Bitmap makeCityBitmap() {
         int N = 2048;                                      // authored natively at POT: crisp kerbs/dashes, no resample
         float half = 35f;
+        float s = N / (2f * half);                         // world metres -> texels
         Bitmap bmp = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
         c.drawColor(0xFF3C6E24);                           // lawn / grass base
@@ -5453,43 +5543,84 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             p.setColor(0x66000000 | col);
             c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 12 + rnd.nextInt(64), p);
         }
-        for (float r : STREETS) {                          // sidewalk slabs (light concrete)
-            cityBand(c, p, r, WALK_OUT, half, N, true, 0xFFB3B5A8);
-            cityBand(c, p, r, WALK_OUT, half, N, false, 0xFFB3B5A8);
+        // the village square: a cobbled apron around the spawn plaza, under the road junction
+        float sqx = (SQ_X + half) * s, sqz = (SQ_Z + half) * s, sqr = 9.4f * s;
+        p.setColor(0xFF98928A);                            // cobble base
+        c.drawCircle(sqx, sqz, sqr, p);
+        p.setColor(0xFF8A8479);                            // outer ring wear
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(0.5f * s);
+        c.drawCircle(sqx, sqz, sqr - 0.25f * s, p);
+        p.setStyle(Paint.Style.FILL);
+        for (int k = 0; k < 420; k++) {                    // cobble speckle
+            float a = rnd.nextFloat() * 6.2832f, rr = (float) Math.sqrt(rnd.nextFloat()) * (sqr - 2f);
+            p.setColor((rnd.nextBoolean() ? 0x2E000000 : 0x24FFFFFF));
+            c.drawCircle(sqx + (float) Math.cos(a) * rr, sqz + (float) Math.sin(a) * rr, 1.5f + rnd.nextInt(3), p);
         }
-        // Sidewalk expansion joints + per-slab tone drift (real pavements are ~1.4 m slab rows, not one flat
-        // band). Drawn BEFORE the kerb/asphalt loops, which repaint every intersection zone over them.
-        {
-            Random jr = new Random(77); float inner = ROAD_HALF + 0.12f;
-            for (float r : STREETS) for (int side = -1; side <= 1; side += 2) {
-                float p0 = (r + side * inner + half) / (2f * half) * N, p1 = (r + side * WALK_OUT + half) / (2f * half) * N;
-                float a = Math.min(p0, p1), b2 = Math.max(p0, p1);
-                for (int vert = 0; vert < 2; vert++)
-                    for (float t = -half; t < half; t += 1.4f) {
-                        float t0 = (t + half) / (2f * half) * N;
-                        int tone = jr.nextInt(3);
-                        if (tone != 1) {
-                            float t1 = (t + 1.4f + half) / (2f * half) * N;
-                            p.setColor(tone == 0 ? 0x12000000 : 0x10FFFFFF);
-                            if (vert == 1) c.drawRect(a, t0, b2, t1, p); else c.drawRect(t0, a, t1, b2, p);
-                        }
-                        p.setColor(0x38000000);            // the joint itself
-                        if (vert == 1) c.drawRect(a, t0, b2, t0 + 1.5f, p); else c.drawRect(t0, a, t0 + 1.5f, b2, p);
-                    }
+        // curved lanes: gravel shoulder, kerb shade, asphalt — stroked along each sampled centreline
+        Paint rp = new Paint(Paint.ANTI_ALIAS_FLAG);
+        rp.setStyle(Paint.Style.STROKE);
+        rp.setStrokeCap(Paint.Cap.ROUND);
+        rp.setStrokeJoin(Paint.Join.ROUND);
+        for (int pass = 0; pass < 3; pass++) {
+            for (int r = 0; r < ROAD_PTS.length; r++) {
+                android.graphics.Path path = new android.graphics.Path();
+                float[][] P = ROAD_PTS[r];
+                path.moveTo((P[0][0] + half) * s, (P[0][1] + half) * s);
+                for (int i = 1; i < P.length; i++) path.lineTo((P[i][0] + half) * s, (P[i][1] + half) * s);
+                float hw = ROAD_HALFW[r];
+                if (pass == 0)      { rp.setColor(0xFFA79E8B); rp.setStrokeWidth((hw + 0.85f) * 2f * s); }  // gravel verge
+                else if (pass == 1) { rp.setColor(0xFF7E8076); rp.setStrokeWidth((hw + 0.14f) * 2f * s); }  // kerb shade
+                else                { rp.setColor(0xFF34373A); rp.setStrokeWidth(hw * 2f * s); }            // asphalt
+                c.drawPath(path, rp);
+            }
+            if (pass == 0 && pathStrokes != null) {        // worn dirt footpaths, under the kerb/asphalt passes
+                for (float[] st : pathStrokes) {
+                    rp.setColor(0xFF95815C); rp.setStrokeWidth(st[4] * s);
+                    c.drawLine((st[0] + half) * s, (st[1] + half) * s, (st[2] + half) * s, (st[3] + half) * s, rp);
+                    rp.setColor(0x2E4A3A22); rp.setStrokeWidth(st[4] * 0.45f * s);
+                    c.drawLine((st[0] + half) * s, (st[1] + half) * s, (st[2] + half) * s, (st[3] + half) * s, rp);
+                }
             }
         }
-        for (float r : STREETS) {                          // dark kerb line at the sidewalk/road edge
-            cityBand(c, p, r, ROAD_HALF + 0.12f, half, N, true, 0xFF82847A);
-            cityBand(c, p, r, ROAD_HALF + 0.12f, half, N, false, 0xFF82847A);
+        // centre dashes along the main roads (skip narrow lanes + the square itself)
+        p.setColor(0xFFD9C24E);
+        for (int r = 0; r < ROAD_PTS.length; r++) {
+            if (ROAD_HALFW[r] < 1.4f) continue;
+            float[][] P = ROAD_PTS[r];
+            float acc = 1.6f;
+            for (int i = 0; i + 1 < P.length; i++) {
+                float ax = P[i][0], az = P[i][1];
+                float tx = P[i + 1][0] - ax, tz = P[i + 1][1] - az;
+                float sl = (float) Math.sqrt(tx * tx + tz * tz);
+                acc -= sl;
+                if (acc > 0f) continue;
+                acc = 2.6f;
+                if (Math.hypot(ax - SQ_X, az - SQ_Z) < 10f) continue;
+                tx /= sl; tz /= sl;
+                float x0 = (ax + half) * s, z0 = (az + half) * s;
+                c.drawRect(Math.min(x0, x0 + tx * 1.1f * s) - 2f, Math.min(z0, z0 + tz * 1.1f * s) - 2f,
+                           Math.max(x0, x0 + tx * 1.1f * s) + 2f, Math.max(z0, z0 + tz * 1.1f * s) + 2f, p);
+            }
         }
-        for (float r : STREETS) {                          // asphalt carriageway
-            cityBand(c, p, r, ROAD_HALF, half, N, true, 0xFF34373A);
-            cityBand(c, p, r, ROAD_HALF, half, N, false, 0xFF34373A);
-        }
-        p.setColor(0xFFD9C24E);                            // dashed centre lines
-        for (float r : STREETS) {
-            cityDashes(c, p, r, half, N, true);
-            cityDashes(c, p, r, half, N, false);
+        // tilled garden soil: dark plot + row furrows, corner-transformed with each garden's yaw
+        if (gardenSoil != null) for (float[] gd : gardenSoil) {
+            float gx = gd[0], gz = gd[1], hw = gd[2] * 0.5f, hd = gd[3] * 0.5f;
+            double a = Math.toRadians(gd[4]);
+            float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+            android.graphics.Path soil = new android.graphics.Path();
+            for (int i = 0; i < 4; i++) {
+                float lx = (i == 0 || i == 3) ? -hw : hw, lz = i < 2 ? -hd : hd;
+                float wx = (gx + lx * ca + lz * sa + half) * s, wz = (gz - lx * sa + lz * ca + half) * s;
+                if (i == 0) soil.moveTo(wx, wz); else soil.lineTo(wx, wz);
+            }
+            soil.close();
+            p.setColor(0xFF6A5033); c.drawPath(soil, p);
+            rp.setColor(0xFF54402A); rp.setStrokeWidth(0.16f * s);   // furrow rows across the plot
+            for (float lx = -hw + 0.45f; lx < hw - 0.2f; lx += 0.55f) {
+                float x0 = (gx + lx * ca + (-hd + 0.3f) * sa + half) * s, z0 = (gz - lx * sa + (-hd + 0.3f) * ca + half) * s;
+                float x1 = (gx + lx * ca + (hd - 0.3f) * sa + half) * s, z1 = (gz - lx * sa + (hd - 0.3f) * ca + half) * s;
+                c.drawLine(x0, z0, x1, z1, rp);
+            }
         }
         int[] bed = {0xE03A3A, 0xF7D43A, 0xF06FB0, 0x9B4FE0, 0x4F7BF0, 0xF58A20, 0xF4F0E6};
         for (int k = 0; k < 70; k++) {                     // painted flower beds on the lawn (off the roads)
@@ -5509,22 +5640,6 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             c.drawRect(x, y, x + 1 + rnd.nextInt(2), y + 1, p);
         }
         return bmp;
-    }
-
-    private static void cityBand(Canvas c, Paint p, float center, float halfW, float half, int N, boolean vertical, int col) {
-        p.setColor(col);
-        float a = (center - halfW + half) / (2f * half) * N;
-        float b = (center + halfW + half) / (2f * half) * N;
-        if (vertical) c.drawRect(a, 0, b, N, p);
-        else c.drawRect(0, a, N, b, p);
-    }
-
-    private static void cityDashes(Canvas c, Paint p, float center, float half, int N, boolean vertical) {
-        float cpx = (center + half) / (2f * half) * N, w = 4f, dash = N / 50f;
-        for (float t = 0; t < N; t += dash * 2f) {
-            if (vertical) c.drawRect(cpx - w, t, cpx + w, t + dash, p);
-            else c.drawRect(t, cpx - w, t + dash, cpx + w, p);
-        }
     }
 
     /**
@@ -5670,192 +5785,361 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else if (k.equals("ground")     && t.length >= 5) { ground[0]=pf(t[2]); ground[1]=pf(t[3]); ground[2]=pf(t[4]); }
     }
 
+    /** True inside the spawn corridor (player start + first steps) — kept free of solid props. */
+    private static boolean inSpawnLane(float x, float z) {
+        return Math.abs(x) < 3.6f && z > 0.8f && z < 13.5f;
+    }
+
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         this.clutterPts = new java.util.ArrayList<float[]>();   // record props so benches don't spawn on top of them
-        // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two stone pillars
-        L.add(new float[]{-2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
-        L.add(new float[]{ 2.0f, 0.75f, 2.5f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
-        L.add(new float[]{-2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
-        L.add(new float[]{ 2.2f, 1.5f, -2.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
-        // Houses on a 10 m block grid, each set back behind the sidewalks so the streets + kerbs stay clear.
+        this.pathStrokes = new java.util.ArrayList<float[]>();
+        this.gardenSoil = new java.util.ArrayList<float[]>();
+        this.gardenTreePts = new java.util.ArrayList<float[]>();
+        // plaza cover (first COVER_BOXES entries get a shadow blob): two climbable crates, two stone
+        // pillars — arranged on the cobbled square, clear of the main road that skirts its south edge
+        L.add(new float[]{-2.1f, 0.75f, 3.4f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
+        L.add(new float[]{ 2.1f, 0.75f, 3.4f, 1.5f, 1.5f, 1.5f, 0.55f, 0.42f, 0.28f});
+        L.add(new float[]{-2.9f, 1.5f, 7.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
+        L.add(new float[]{ 2.9f, 1.5f, 7.2f, 1.2f, 3.0f, 1.2f, 0.72f, 0.72f, 0.70f});
+
+        // ---- houses strung along the curved lanes, each turned to face its road -------------------
+        // March each road by arclength; at irregular intervals drop a lot on one side (sometimes both),
+        // with a jittered setback and a small yaw wobble, so nothing lines up or repeats.
         Random rc = new Random(73);
-        float[] gs = {-30f, -20f, -10f, 0f, 10f, 20f, 30f};   // block centres; roads run between them at +/-5,15,25
-        for (int ix = 0; ix < gs.length; ix++) {
-            for (int iz = 0; iz < gs.length; iz++) {
-                float gx = gs[ix], gz = gs[iz];
-                if (gx * gx + gz * gz > 31f * 31f) continue;       // stay on the flat core (disc)
-                if (gx == 0f && gz >= 0f && gz < 15f) continue;    // keep the spawn plaza (rows 0 & 10) open
-                if (isMarketLot(gx, gz)) continue;                 // reserved open lots for the market square
-                if (rc.nextFloat() < 0.10f) continue;              // random empty lot -> irregular spacing
-
-                // Pick a building archetype by where it sits: shops + townhouses near the centre,
-                // cottages in the mid ring, bigger flats/blocks on the outskirts -> a believable town gradient.
-                float dist2 = gx * gx + gz * gz, roll = rc.nextFloat();
-                int arch;
-                if (dist2 > 26f * 26f)      arch = roll < 0.45f ? 2 : (roll < 0.80f ? 1 : 0);   // outskirts
-                else if (dist2 < 16f * 16f) arch = roll < 0.40f ? 3 : (roll < 0.75f ? 1 : 0);   // centre
-                else                        arch = roll < 0.60f ? 0 : (roll < 0.85f ? 1 : 3);   // mid ring
-
-                float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
-                int storeys, winDens; boolean chimney, trim; float[] rf;
-                if (arch == 0) {                                   // cottage: low, gabled
-                    w = 3.0f + rc.nextFloat() * 0.5f; d = 3.0f + rc.nextFloat() * 0.45f; h = 2.8f + rc.nextFloat() * 0.7f;
-                    storeys = 1; foundH = 0.22f + rc.nextFloat() * 0.10f; winDens = 2; chimney = true; trim = false;
-                    rf = ROOFS[new int[]{0, 0, 4, 7}[rc.nextInt(4)]];   // terracotta / clay / warm red tile
-                } else if (arch == 1) {                            // townhouse: tall, narrow, terraced
-                    w = 2.8f + rc.nextFloat() * 0.5f; d = 3.0f + rc.nextFloat() * 0.4f; h = 4.8f + rc.nextFloat() * 1.4f;
-                    storeys = 2 + (rc.nextFloat() < 0.6f ? 1 : 0); foundH = 0.28f + rc.nextFloat() * 0.10f; winDens = 3;
-                    chimney = true; trim = rc.nextFloat() < 0.45f; pitch = 1.3f + rc.nextFloat() * 0.5f;
-                    rf = ROOFS[new int[]{0, 1, 1, 7}[rc.nextInt(4)]];   // terracotta / slate / warm red tile
-                } else if (arch == 2) {                            // apartment block: tall, flat slate roof
-                    w = 3.1f + rc.nextFloat() * 0.45f; d = 3.1f + rc.nextFloat() * 0.45f; h = 5.4f + rc.nextFloat() * 1.6f;
-                    storeys = 3 + (rc.nextFloat() < 0.5f ? 1 : 0); foundH = 0.30f + rc.nextFloat() * 0.10f; winDens = 3;
-                    chimney = false; trim = rc.nextFloat() < 0.5f; pitch = 0.5f + rc.nextFloat() * 0.4f;
-                    rf = ROOFS[new int[]{1, 2, 5, 6}[rc.nextInt(4)]];   // slate / charcoal / mossy / blue-slate
-                } else {                                           // shop: low front, big door + windows, awning band
-                    w = 3.2f + rc.nextFloat() * 0.4f; d = 3.0f + rc.nextFloat() * 0.4f; h = 3.2f + rc.nextFloat() * 0.7f;
-                    storeys = 1; foundH = 0.24f + rc.nextFloat() * 0.10f; winDens = 3; winSize = 1.2f; chimney = false;
-                    trim = true; doorW = 2.2f + rc.nextFloat() * 0.4f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
+        java.util.List<float[]> gardens = new java.util.ArrayList<float[]>();   // {cx,cz,hw,hd,yaw}
+        for (int r = 0; r < ROAD_PTS.length; r++) {
+            float[][] P = ROAD_PTS[r];
+            float acc = 5.5f + rc.nextFloat() * 4f;                 // distance until the next lot
+            int lastSide = rc.nextBoolean() ? 1 : -1;
+            for (int i = 0; i + 1 < P.length; i++) {
+                float ax = P[i][0], az = P[i][1];
+                float tx = P[i + 1][0] - ax, tz = P[i + 1][1] - az;
+                float sl = (float) Math.sqrt(tx * tx + tz * tz);
+                acc -= sl;
+                if (acc > 0f) continue;
+                acc = 5.5f + rc.nextFloat() * 4.0f;                 // next lot 5.5-9.5 m further along
+                tx /= sl; tz /= sl;
+                float nxr = -tz, nzr = tx;                          // road normal (left of travel)
+                int nSides = rc.nextFloat() < 0.55f ? 2 : 1;        // often a lot on BOTH sides
+                int side = rc.nextFloat() < 0.72f ? -lastSide : lastSide;   // mostly alternate sides
+                for (int sI = 0; sI < nSides; sI++, side = -side) {
+                    lastSide = side;
+                    placeVillageHouse(L, doors, houses, gardens, rc, ax, az, tx, tz, nxr * side, nzr * side,
+                            ROAD_HALFW[r]);
                 }
-                // set the house back from the streets: keep its footprint within +/- 2.0 m of the block centre
-                float cx = gx + clamp((rc.nextFloat() - 0.5f) * 1.5f, -Math.max(0f, 2.1f - w * 0.5f), Math.max(0f, 2.1f - w * 0.5f));
-                float cz = gz + clamp((rc.nextFloat() - 0.5f) * 1.5f, -Math.max(0f, 2.1f - d * 0.5f), Math.max(0f, 2.1f - d * 0.5f));
-                int doorSide = rc.nextInt(4);
-                float[] p = PALETTE[rc.nextInt(PALETTE.length)];
-                float[] dc = DOORS[rc.nextInt(DOORS.length)];
-                float fR = 0.40f + rc.nextFloat() * 0.06f, fG = 0.38f + rc.nextFloat() * 0.06f, fB = 0.36f + rc.nextFloat() * 0.06f;
-                float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
-                int doorStyle = arch == 0 ? 1 : (arch == 1 ? 0 : (arch == 2 ? 2 : 3));   // plank / panel / glazed / shop
-                addBuilding(L, doors, cx, cz, w, d, h, doorSide, 1, p[0], p[1], p[2], chimney ? 1 : 0,
-                            doorW, doorH, dc[0], dc[1], dc[2], doorStyle, arch);   // arch -> facade material: 0 plaster·1 brick·2 stone·3 timber
-                houses.add(new float[]{cx, cz, w, d, h, doorSide, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
-                        GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys, doorW});  // [24] door width
-                if (rc.nextFloat() < 0.45f) {                      // a barrel / crate / planter tucked against a wall
-                    float ax = cx + (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.3f);
-                    float az = cz + (rc.nextBoolean() ? 1f : -1f) * (d * 0.5f + 0.3f);
-                    if (!onStreetXZ(ax, az) && !(Math.abs(ax) < 3f && az > 2f && az < 13f)
-                        && !blocksDoor(new float[]{cx, cz, w, d, 0f, doorSide}, ax, az)) {
-                        addClutter(L, rc, ax, az);
-                        clutterPts.add(new float[]{ax, az});
+            }
+        }
+        buildGardens(L, houses, gardens, rc);
+        buildFrontPaths(L, houses);
+        // trodden shortcuts BETWEEN the lanes: painted dirt polylines wandering through the green.
+        // Each polyline slides sideways until it clears every house + garden fence (or is dropped),
+        // so the layout can change without a path ever running through a building.
+        float[][] shortcuts = {
+            {-3.5f, 18.5f, 4f, 16.5f, 11f, 14f, 19f, 13.5f},        // south lane -> east lane, across the meadow
+            {-18.5f, 3.5f, -13f, 8f, -6.5f, 11.5f},                 // west lane -> south lane
+            {5.5f, -3.5f, 10f, -7f, 14.5f, -5f},                    // main road inner bend cut-off
+        };
+        for (float[] sc : shortcuts) {
+            for (float off : new float[]{0f, 2.2f, -2.2f, 4.4f, -4.4f, 6.6f, -6.6f}) {
+                boolean clear = true;
+                for (int i = 0; clear && i + 3 < sc.length; i += 2) {
+                    float x0 = sc[i], z0 = sc[i + 1], x1 = sc[i + 2], z1 = sc[i + 3];
+                    float dx = x1 - x0, dz = z1 - z0, ln = (float) Math.sqrt(dx * dx + dz * dz);
+                    float pxn = -dz / ln, pzn = dx / ln;
+                    for (float u = 0f; clear && u <= ln; u += 0.8f) {
+                        float x = x0 + dx * u / ln + pxn * off, z = z0 + dz * u / ln + pzn * off;
+                        if (!clearOfHouses(houses, x, z, 0.55f)) clear = false;
+                        for (int gi = 0; clear && gi < gardens.size(); gi++) {
+                            float[] g = gardens.get(gi);
+                            if (insideYawXZ(x, z, g[0], g[1], g[2] + 0.4f, g[3] + 0.4f, g[4])) clear = false;
+                        }
+                    }
+                }
+                if (!clear) continue;
+                for (int i = 0; i + 3 < sc.length; i += 2) {
+                    float dx = sc[i + 2] - sc[i], dz = sc[i + 3] - sc[i + 1];
+                    float ln = (float) Math.sqrt(dx * dx + dz * dz);
+                    float pxn = -dz / ln, pzn = dx / ln;
+                    pathStrokes.add(new float[]{sc[i] + pxn * off, sc[i + 1] + pzn * off,
+                            sc[i + 2] + pxn * off, sc[i + 3] + pzn * off, 1.05f});
+                }
+                break;
+            }
+        }
+        addAccessories(L, houses, rc);                              // lamps, benches, market square, scattered trees
+    }
+
+    /** One lot: pick an archetype by distance from the square, size it with real variance, face the road. */
+    private void placeVillageHouse(List<float[]> L, List<float[]> doors, List<float[]> houses,
+                                   List<float[]> gardens, Random rc,
+                                   float ax, float az, float tx, float tz, float nx, float nz, float roadHw) {
+        float distSq = (float) Math.hypot(ax - SQ_X, az - SQ_Z);
+        float roll = rc.nextFloat();
+        int arch;                                                   // 0 cottage · 1 townhouse · 2 block · 3 shop · 4 farmhouse
+        if (distSq < 11f)       arch = roll < 0.45f ? 3 : (roll < 0.80f ? 1 : 0);
+        else if (distSq < 21f)  arch = roll < 0.52f ? 0 : (roll < 0.72f ? 1 : (roll < 0.88f ? 4 : 3));
+        else                    arch = roll < 0.42f ? 0 : (roll < 0.68f ? 4 : (roll < 0.88f ? 1 : 2));
+        float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
+        int storeys, winDens; boolean chimney, trim; float[] rf; int mat; int doorStyle;
+        if (arch == 0) {                                            // cottage: low, gabled, squat-to-snug
+            w = 2.9f + rc.nextFloat() * 1.4f; d = 2.8f + rc.nextFloat() * 1.0f; h = 2.7f + rc.nextFloat() * 0.8f;
+            storeys = 1; foundH = 0.22f + rc.nextFloat() * 0.10f; winDens = 2; chimney = true; trim = false;
+            rf = ROOFS[new int[]{0, 0, 4, 7}[rc.nextInt(4)]]; mat = rc.nextFloat() < 0.7f ? 0 : 3; doorStyle = 1;
+        } else if (arch == 1) {                                     // townhouse: tall + narrow
+            w = 2.7f + rc.nextFloat() * 0.7f; d = 2.9f + rc.nextFloat() * 0.6f; h = 4.6f + rc.nextFloat() * 1.5f;
+            storeys = 2 + (rc.nextFloat() < 0.55f ? 1 : 0); foundH = 0.28f + rc.nextFloat() * 0.10f; winDens = 3;
+            chimney = true; trim = rc.nextFloat() < 0.45f; pitch = 1.3f + rc.nextFloat() * 0.5f;
+            rf = ROOFS[new int[]{0, 1, 1, 7}[rc.nextInt(4)]]; mat = 1; doorStyle = 0;
+        } else if (arch == 2) {                                     // block: rare big flat-roofed outskirt building
+            w = 3.4f + rc.nextFloat() * 0.9f; d = 3.2f + rc.nextFloat() * 0.7f; h = 5.4f + rc.nextFloat() * 1.5f;
+            storeys = 3 + (rc.nextFloat() < 0.4f ? 1 : 0); foundH = 0.30f + rc.nextFloat() * 0.10f; winDens = 3;
+            chimney = false; trim = rc.nextFloat() < 0.5f; pitch = 0.5f + rc.nextFloat() * 0.4f;
+            rf = ROOFS[new int[]{1, 2, 5, 6}[rc.nextInt(4)]]; mat = 2; doorStyle = 2;
+        } else if (arch == 3) {                                     // shop: wide front, big door, awning
+            w = 3.3f + rc.nextFloat() * 1.0f; d = 3.0f + rc.nextFloat() * 0.5f; h = 3.2f + rc.nextFloat() * 0.7f;
+            storeys = 1; foundH = 0.24f + rc.nextFloat() * 0.10f; winDens = 3; winSize = 1.2f; chimney = false;
+            trim = true; doorW = 2.2f + rc.nextFloat() * 0.4f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
+            mat = rc.nextFloat() < 0.5f ? 1 : 0; doorStyle = 3;
+        } else {                                                    // farmhouse: long, low, timbered
+            w = 4.6f + rc.nextFloat() * 1.5f; d = 3.0f + rc.nextFloat() * 0.7f; h = 3.0f + rc.nextFloat() * 0.9f;
+            storeys = 1 + (rc.nextFloat() < 0.35f ? 1 : 0); foundH = 0.26f + rc.nextFloat() * 0.10f; winDens = 2;
+            chimney = true; trim = false; pitch = 1.1f + rc.nextFloat() * 0.5f;
+            rf = ROOFS[new int[]{0, 4, 7, 7}[rc.nextInt(4)]]; mat = 3; doorStyle = 1;
+        }
+        // door wall (+z) faces the road: centre = station + normal * (verge + setback + half depth)
+        float setback = VERGE + 0.7f + rc.nextFloat() * 2.8f;
+        float cx = ax + nx * (roadHw + setback + d * 0.5f);
+        float cz = az + nz * (roadHw + setback + d * 0.5f);
+        float yawDeg = (float) Math.toDegrees(Math.atan2(-nx, -nz)) + (rc.nextFloat() - 0.5f) * 12f;
+        // rejection tests: core disc, spawn corridor, square keep-clear, road + neighbour clearance
+        if (cx * cx + cz * cz > 30.2f * 30.2f) return;
+        if (inSpawnLane(cx, cz)) return;
+        float dSq = (float) Math.hypot(cx - SQ_X, cz - SQ_Z);
+        if (dSq < (arch == 3 ? 7.2f : 8.8f)) return;                // shops may ring the square more tightly
+        double ya = Math.toRadians(yawDeg);
+        float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
+        for (int cIx = 0; cIx < 9; cIx++) {                         // 8 perimeter points + centre stay off the streets
+            float lx = (cIx % 3 - 1) * (w * 0.5f + 0.35f), lz = (cIx / 3 - 1) * (d * 0.5f + 0.35f);
+            float wx = cx + lx * ca + lz * sa, wz = cz - lx * sa + lz * ca;
+            if (roadSd(wx, wz) < 0.45f || wx * wx + wz * wz > 32.5f * 32.5f || inSpawnLane(wx, wz)) return;
+        }
+        for (float[] o : houses)                                    // never overlap a neighbour (OBB + breathing room)
+            if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, o[0], o[1], o[2] * 0.5f, o[3] * 0.5f,
+                    o.length > 25 ? o[25] : 0f, 1.3f)) return;
+        for (float[] g : gardens)
+            if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, g[0], g[1], g[2], g[3], g[4], 0.8f)) return;
+
+        float[] p = PALETTE[rc.nextInt(PALETTE.length)];
+        float[] dc = DOORS[rc.nextInt(DOORS.length)];
+        float fR = 0.40f + rc.nextFloat() * 0.06f, fG = 0.38f + rc.nextFloat() * 0.06f, fB = 0.36f + rc.nextFloat() * 0.06f;
+        float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
+        addBuilding(L, doors, cx, cz, w, d, h, 0, 1, p[0], p[1], p[2], chimney ? 1 : 0,
+                    doorW, doorH, dc[0], dc[1], dc[2], doorStyle, mat, yawDeg);
+        houses.add(new float[]{cx, cz, w, d, h, 0f, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
+                GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys, doorW,
+                yawDeg});                                            // [25] = house yaw (spins roof/windows/interior)
+        if (rc.nextFloat() < 0.45f) {                               // a barrel / crate / planter against a side wall
+            float lxo = (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.4f);
+            float lzo = (rc.nextFloat() - 0.3f) * d * 0.5f;
+            float axc = cx + lxo * ca + lzo * sa, azc = cz - lxo * sa + lzo * ca;
+            if (!onStreetXZ(axc, azc) && !inSpawnLane(axc, azc)
+                    && clearOfHouses(houses, axc, azc, 0.28f) && !blocksAnyDoor(houses, axc, azc)) {
+                addClutter(L, rc, axc, azc);
+                clutterPts.add(new float[]{axc, azc});
+            }
+        }
+    }
+
+    /** Fenced kitchen gardens tucked behind ~half the houses: post-and-rail fence with a gate gap, a
+     *  tilled soil plot (painted into the ground + sprouted by the vegetation bake), maybe a fruit tree. */
+    private void buildGardens(List<float[]> L, List<float[]> houses, List<float[]> gardens, Random rc) {
+        for (float[] h : houses) {
+            if (rc.nextFloat() > 0.55f) continue;
+            float w = h[2], d = h[3], yawDeg = h[25];
+            double ya = Math.toRadians(yawDeg);
+            float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
+            float gw = Math.max(2.6f, w * 0.85f + rc.nextFloat() * 1.2f), gd = 2.4f + rc.nextFloat() * 1.8f;
+            float lox = (rc.nextFloat() - 0.5f) * 1.2f, loz = -(d * 0.5f + 0.45f + gd * 0.5f);   // behind the house
+            float gx = h[0] + lox * ca + loz * sa, gz = h[1] - lox * sa + loz * ca;
+            boolean ok = gx * gx + gz * gz < 30.5f * 30.5f && !inSpawnLane(gx, gz)
+                    && (float) Math.hypot(gx - SQ_X, gz - SQ_Z) > 8f;
+            for (int cIx = 0; ok && cIx < 9; cIx++) {               // 8 perimeter points + centre (curves can bulge into edges)
+                float lx = (cIx % 3 - 1) * gw * 0.5f, lz = (cIx / 3 - 1) * gd * 0.5f;
+                float wx = gx + lx * ca + lz * sa, wz = gz - lx * sa + lz * ca;
+                if (roadSd(wx, wz) < 0.55f || wx * wx + wz * wz > 32.5f * 32.5f || inSpawnLane(wx, wz)) ok = false;
+            }
+            for (int oi = 0; ok && oi < houses.size(); oi++) {      // fence must not clip any OTHER house
+                float[] o = houses.get(oi);
+                if (o == h) continue;
+                if (obbOverlap(gx, gz, gw * 0.5f, gd * 0.5f, yawDeg, o[0], o[1], o[2] * 0.5f, o[3] * 0.5f,
+                        o.length > 25 ? o[25] : 0f, 0.5f)) ok = false;
+            }
+            for (int gi = 0; ok && gi < gardens.size(); gi++) {
+                float[] g = gardens.get(gi);
+                if (obbOverlap(gx, gz, gw * 0.5f, gd * 0.5f, yawDeg, g[0], g[1], g[2], g[3], g[4], 0.5f)) ok = false;
+            }
+            if (!ok) continue;
+            gardens.add(new float[]{gx, gz, gw * 0.5f, gd * 0.5f, yawDeg});
+            // post-and-rail fence: 4 corner + 2 gate posts, two rails per side, gate gap on one side wall
+            float fr = 0.42f, fg = 0.33f, fb = 0.24f;
+            int gateSide = rc.nextBoolean() ? 1 : -1;               // gate on the +x or -x side (near the house corner)
+            float gateAt = -gd * 0.5f + 0.9f + rc.nextFloat() * (gd - 1.8f), gateHalf = 0.55f;
+            for (int sIx = 0; sIx < 4; sIx++) {                     // 0 +x · 1 -x · 2 +z(house side) · 3 -z
+                boolean xSide = sIx < 2;
+                float sgn = sIx % 2 == 0 ? 1f : -1f;
+                float len = xSide ? gd : gw;
+                boolean gated = xSide && sgn == gateSide;
+                for (int rail = 0; rail < 2; rail++) {
+                    float ry = rail == 0 ? 0.26f : 0.56f;
+                    if (!gated) {
+                        float lx = xSide ? sgn * gw * 0.5f : 0f, lz = xSide ? 0f : sgn * gd * 0.5f;
+                        addYawBox(L, gx, gz, ca, sa, lx, lz, ry, xSide ? 0.06f : len, 0.055f, xSide ? len : 0.06f, fr, fg, fb, yawDeg);
+                    } else {                                        // two rail runs leaving the gate gap
+                        float a0 = -gd * 0.5f, a1 = gateAt - gateHalf, b0 = gateAt + gateHalf, b1 = gd * 0.5f;
+                        addYawBox(L, gx, gz, ca, sa, sgn * gw * 0.5f, (a0 + a1) * 0.5f, ry, 0.06f, 0.055f, Math.max(0.15f, a1 - a0), fr, fg, fb, yawDeg);
+                        addYawBox(L, gx, gz, ca, sa, sgn * gw * 0.5f, (b0 + b1) * 0.5f, ry, 0.06f, 0.055f, Math.max(0.15f, b1 - b0), fr, fg, fb, yawDeg);
                     }
                 }
             }
+            for (int cIx = 0; cIx < 4; cIx++)                       // corner posts
+                addYawBox(L, gx, gz, ca, sa, (cIx % 2 == 0 ? -1 : 1) * gw * 0.5f, (cIx < 2 ? -1 : 1) * gd * 0.5f,
+                        0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
+            addYawBox(L, gx, gz, ca, sa, gateSide * gw * 0.5f, gateAt - gateHalf, 0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
+            addYawBox(L, gx, gz, ca, sa, gateSide * gw * 0.5f, gateAt + gateHalf, 0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
+            gardenSoil.add(new float[]{gx, gz, gw - 0.75f, gd - 0.75f, yawDeg});   // tilled plot (texture + sprouts)
+            if (rc.nextFloat() < 0.30f) {                           // a fruit tree in one back corner
+                float lx = (rc.nextBoolean() ? 1f : -1f) * (gw * 0.5f - 0.8f), lz = -gd * 0.5f + 0.8f;
+                gardenTreePts.add(new float[]{gx + lx * ca + lz * sa, gz - lx * sa + lz * ca, 0.55f + rc.nextFloat() * 0.3f});
+            }
         }
-        addAccessories(L, houses, rc);                             // lamp posts, benches, a market + well, scattered trees
     }
 
-    /** Street furniture for the laid-out town: lamps + trees lining the sidewalks (now that the streets have
-     *  kerbs with room), benches on the sidewalk in front of houses, and a market square on the open lots. */
-    private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
-        java.util.List<float[]> placed = new java.util.ArrayList<float[]>();   // prop positions, for spacing
-        java.util.List<float[]> lampPts = new java.util.ArrayList<float[]>();   // lamp posts, so front-garden plants never wrap them
-        java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
-        // 1. lamps + street trees along the sidewalk strip of every street (kerbside, off the carriageway)
-        for (float r : STREETS) {
-            for (float t = -27f; t <= 27f; t += 6.5f) {
-                float[][] slots = {{r - WALK_MID, t}, {r + WALK_MID, t}, {t, r - WALK_MID}, {t, r + WALK_MID}};
-                for (float[] sl : slots) {
-                    float sx = sl[0], sz = sl[1];
-                    if (sx * sx + sz * sz > 30f * 30f) continue;
-                    if (Math.abs(sx) < 3.2f && sz > 1.5f && sz < 13f) continue;     // spawn lane
-                    if (onRoadXZ(sx, sz) || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
-                    if (blocksAnyDoor(houses, sx, sz)) continue;                    // never plant in front of a doorway
-                    boolean near = false;
-                    for (float[] pp : placed) if (Math.abs(pp[0] - sx) < 3f && Math.abs(pp[1] - sz) < 3f) { near = true; break; }
-                    if (near) continue;
-                    placed.add(new float[]{sx, sz});
-                    float pick = rc.nextFloat();
-                    if (pick < 0.26f)      { addLamp(L, sx, sz); lampPts.add(new float[]{sx, sz}); }   // a lamp every few slots
-                    else if (pick < 0.86f) {                                          // street tree — shrink near houses so the crown ends at the wall
-                        float ts = Math.min(0.8f + rc.nextFloat() * 0.7f, houseClearance(houses, sx, sz) / 1.9f);
-                        if (ts >= 0.5f && !blocksAnyDoorCrown(houses, sx, sz, 1.45f * ts)) trees.add(new float[]{sx, sz, ts}); }
-                    // else: leave a gap so it isn't a solid wall of furniture
-                }
-            }
-        }
-        // 1a. a bench out on the sidewalk beside ~1 in 6 houses' doors — placed BEFORE the gardens so the plants fill in around it
-        java.util.List<float[]> benchPts = new java.util.ArrayList<float[]>();
+    /** Add one yawed box given the garden/house local frame (centre gx,gz + precomputed cos/sin). */
+    private static void addYawBox(List<float[]> L, float gx, float gz, float ca, float sa,
+                                  float lx, float lz, float cy, float sx, float sy, float sz,
+                                  float r, float g, float b, float yawDeg) {
+        L.add(new float[]{gx + lx * ca + lz * sa, cy, gz - lx * sa + lz * ca, sx, sy, sz, r, g, b, yawDeg, 0f, 0f});
+    }
+
+    /** Flagstone front paths: door face -> nearest kerb, following the house yaw; recorded as a dirt
+     *  stroke so the ground texture shows a worn path underneath the slabs. */
+    private void buildFrontPaths(List<float[]> L, List<float[]> houses) {
+        java.util.Random pathRnd = new java.util.Random(99173);
         for (float[] h : houses) {
-            if (rc.nextFloat() >= 0.24f) continue;
-            int ds = (int) h[5]; float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f, bx, bz;
-            if (ds == 0)      { bx = cx; bz = cz + hd + 0.7f; }
-            else if (ds == 1) { bx = cx; bz = cz - hd - 0.7f; }
-            else if (ds == 2) { bx = cx + hw + 0.7f; bz = cz; }
-            else              { bx = cx - hw - 0.7f; bz = cz; }
-            float tnx = (ds == 0 || ds == 1) ? 1f : 0f, tnz = (ds == 2 || ds == 3) ? 1f : 0f;   // tangent along the wall
-            for (float sgn : new float[]{1f, -1f}) {                        // sit the bench BESIDE the door, never across it
-                float bxx = bx + tnx * sgn * 1.7f, bzz = bz + tnz * sgn * 1.7f;
-                if (Math.abs(bxx) < 3.2f && bzz > 1.5f && bzz < 13f) continue;
-                if (onRoadXZ(bxx, bzz) || !clearOfHouses(houses, bxx, bzz, 0.5f) || blocksDoor(h, bxx, bzz)) continue;
-                if (clutterPts != null && !clearOfPts(clutterPts, bxx, bzz, 1.15f)) continue;   // never sit on a barrel/crate/planter
-                if (!clearOfPts(trees, bxx, bzz, 1.0f)) continue;                                // nor on a street tree (gardens come later and dodge the bench)
-                if (!clearOfPts(benchPts, bxx, bzz, 1.7f)) continue;                             // nor on another bench
-                if (!clearOfPts(lampPts, bxx, bzz, 0.85f)) continue;                             // nor clipping a lamp base
-                addBench(L, bxx, bzz, ds); benchPts.add(new float[]{bxx, bzz}); break;
-            }
-        }
-        // 1b. front gardens: a paved path from each door to the street, plants flanking it + on the side grass
-        java.util.Random pathRnd = new java.util.Random(99173);   // dedicated stream so paving doesn't shift plant/bench RNG
-        for (float[] h : houses) {
-            float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f;
-            int ds = (int) h[5];
-            float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);   // door normal (outward)
-            float tnx = nz, tnz = nx;                                                                    // tangent along the wall
-            float fx = cx + nx * hw, fz = cz + nz * hd;                                                  // door face centre
-            float plen = frontPathLen(fx, fz, nx, nz);
-            // a flagstone front path: stone slabs evenly fitted between door and kerb (varied grey, grass gaps, slight jitter) -> paving, not a laid-out rug
-            float u0 = 0.22f, span = Math.max(0.3f, (plen - 0.22f) - u0), pw = 1.06f;
+            float d = h[3], yawDeg = h[25];
+            double ya = Math.toRadians(yawDeg);
+            float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
+            float dirX = sa, dirZ = ca;                             // local +z (door normal) in world
+            float fx = h[0] + dirX * d * 0.5f, fz = h[1] + dirZ * d * 0.5f;
+            float plen = pathLenToRoad(fx, fz, dirX, dirZ);
+            float u0 = 0.22f, span = Math.max(0.3f, (plen - 0.18f) - u0), pw = 1.06f;
             int nslab = Math.max(1, Math.round(span / 0.72f));
             float seg = span / nslab;
             for (int sIx = 0; sIx < nslab; sIx++) {
-                float u = u0 + (sIx + 0.5f) * seg;                           // slab centre, door -> kerb (stays off the asphalt)
-                float jx = (pathRnd.nextFloat() - 0.5f) * 0.06f;            // slight hand-laid lateral jitter
-                float scx = fx + nx * u + tnx * jx, scz = fz + nz * u + tnz * jx;
-                float sl = seg * 0.80f;                                      // ~20% grass gap between slabs
-                float g = 0.55f + pathRnd.nextFloat() * 0.17f;              // varied grey stone (slightly warm)
-                if (nx != 0f) L.add(new float[]{scx, 0.02f, scz, sl, 0.05f, pw, g, g * 0.98f, g * 0.93f, 0f, 0f, 0f});
-                else          L.add(new float[]{scx, 0.02f, scz, pw, 0.05f, sl, g, g * 0.98f, g * 0.93f, 0f, 0f, 0f});
+                float u = u0 + (sIx + 0.5f) * seg;
+                float jx = (pathRnd.nextFloat() - 0.5f) * 0.06f;    // slight hand-laid lateral jitter
+                float scx = fx + dirX * u + ca * jx, scz = fz + dirZ * u - sa * jx;
+                float slLen = seg * 0.80f;                          // ~20% grass gap between slabs
+                float g = 0.55f + pathRnd.nextFloat() * 0.17f;
+                L.add(new float[]{scx, 0.02f, scz, pw, 0.05f, slLen, g, g * 0.98f, g * 0.93f, yawDeg, 0f, 0f});
             }
-            // low hedge units flanking the path, left AND right, on the grass (just outside the door corridor)
-            float flankBase = (h.length > 24 ? h[24] : 1.9f) * 0.5f + 0.7f;   // just outside THIS door's real corridor + a low-hedge crown
-            for (int side = -1; side <= 1; side += 2) {
-                float off = flankBase * side;
-                for (float u = 0.7f; u <= plen + 0.25f; u += 0.8f) {
-                    float bx = fx + nx * u + tnx * off, bz = fz + nz * u + tnz * off;
-                    if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
-                    if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;                          // spawn lane
-                    if (!clearOfHouses(houses, bx, bz, 0.05f)) continue;
-                    float ss = Math.min(0.22f + rc.nextFloat() * 0.07f, houseClearance(houses, bx, bz) / 1.9f);
-                    if (ss < 0.18f) continue;
-                    if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                        // crown must never reach a doorway
-                    if (!clearOfPts(lampPts, bx, bz, 0.3f + 1.45f * ss)) continue;                       // never wrap a lamp post
-                    if (!clearOfPts(benchPts, bx, bz, 1.0f)) continue;                                   // nor grow into a bench
-                    trees.add(new float[]{bx, bz, ss});
+            pathStrokes.add(new float[]{fx + dirX * 0.1f, fz + dirZ * 0.1f,
+                    fx + dirX * (plen + 0.25f), fz + dirZ * (plen + 0.25f), 1.25f});
+        }
+    }
+
+    /** Village furniture: lamps + trees strung along the curved verges, benches beside some doors,
+     *  a market on the square around the spawn plaza, and loose trees filling the green between lanes. */
+    private void addAccessories(List<float[]> L, List<float[]> houses, Random rc) {
+        java.util.List<float[]> placed = new java.util.ArrayList<float[]>();    // prop positions, for spacing
+        java.util.List<float[]> lampPts = new java.util.ArrayList<float[]>();
+        java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
+        // 1. lamps + verge trees: walk each lane by arclength, slots on both shoulders
+        for (int r = 0; r < ROAD_PTS.length; r++) {
+            float[][] P = ROAD_PTS[r];
+            float acc = 3f;
+            for (int i = 0; i + 1 < P.length; i++) {
+                float ax = P[i][0], az = P[i][1];
+                float tx = P[i + 1][0] - ax, tz = P[i + 1][1] - az;
+                float sl = (float) Math.sqrt(tx * tx + tz * tz);
+                acc -= sl;
+                if (acc > 0f) continue;
+                acc = 6.0f + rc.nextFloat() * 3.5f;
+                tx /= sl; tz /= sl;
+                float off = ROAD_HALFW[r] + 0.55f;
+                for (int side = -1; side <= 1; side += 2) {
+                    float sx = ax - tz * off * side, sz = az + tx * off * side;
+                    if (sx * sx + sz * sz > 30f * 30f) continue;
+                    if (inSpawnLane(sx, sz)) continue;
+                    if (onRoadXZ(sx, sz) || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
+                    if (blocksAnyDoor(houses, sx, sz)) continue;
+                    if (!clearOfPts(placed, sx, sz, 3f)) continue;
+                    placed.add(new float[]{sx, sz});
+                    float pick = rc.nextFloat();
+                    if (pick < 0.30f)      { addLamp(L, sx, sz); lampPts.add(new float[]{sx, sz}); }
+                    else if (pick < 0.82f) {                       // verge tree, crown capped at the nearest wall
+                        float ts = Math.min(0.8f + rc.nextFloat() * 0.7f, houseClearance(houses, sx, sz) / 1.9f);
+                        if (ts >= 0.5f && !blocksAnyDoorCrown(houses, sx, sz, 1.45f * ts)) trees.add(new float[]{sx, sz, ts});
+                    }   // else: a deliberate gap
                 }
             }
-            // a couple of fuller shrubs out on the SIDE grass (off the door + path, crown sized to clear walls)
-            int n = 1 + rc.nextInt(2);
-            for (int b = 0; b < n; b++) {
-                float side = rc.nextBoolean() ? 1f : -1f;
-                float off = (Math.max(hw, hd) + 0.8f + rc.nextFloat() * 0.8f) * side;                    // out past the house side
-                float out = 0.3f + rc.nextFloat() * 1.6f;                                                // a bit toward the front
-                float bx = cx + tnx * off + nx * out, bz = cz + tnz * off + nz * out;
-                if (bx * bx + bz * bz > 30f * 30f || onRoadXZ(bx, bz)) continue;
-                if (Math.abs(bx) < 3.4f && bz > 1.0f && bz < 13f) continue;
-                float ss = Math.min(0.42f + rc.nextFloat() * 0.38f, houseClearance(houses, bx, bz) / 1.9f);
-                if (ss < 0.3f) continue;
-                if (blocksAnyDoorCrown(houses, bx, bz, 1.45f * ss)) continue;                            // crown (not just centre) must clear every doorway
-                if (!clearOfPts(lampPts, bx, bz, 0.3f + 1.45f * ss)) continue;                           // never wrap a lamp post
-                if (!clearOfPts(benchPts, bx, bz, 1.1f)) continue;                                       // nor grow into a bench
-                trees.add(new float[]{bx, bz, ss});
+        }
+        // 2. a bench beside ~1 in 4 doors (turned with the house), never across the doorway
+        java.util.List<float[]> benchPts = new java.util.ArrayList<float[]>();
+        for (float[] h : houses) {
+            if (rc.nextFloat() >= 0.26f) continue;
+            float yawDeg = h[25];
+            double ya = Math.toRadians(yawDeg);
+            float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
+            float doorW = h.length > 24 ? h[24] : 1.9f;
+            for (float sgn : new float[]{1f, -1f}) {
+                float lx = sgn * (doorW * 0.5f + 1.15f), lz = h[3] * 0.5f + 0.62f;   // beside the door, on the path apron
+                float bx = h[0] + lx * ca + lz * sa, bz = h[1] - lx * sa + lz * ca;
+                if (inSpawnLane(bx, bz) || bx * bx + bz * bz > 30f * 30f) continue;
+                if (roadSd(bx, bz) < 1.05f || blocksDoor(h, bx, bz)) continue;   // whole bench off the asphalt
+                if (clutterPts != null && !clearOfPts(clutterPts, bx, bz, 1.15f)) continue;
+                if (!clearOfPts(trees, bx, bz, 1.0f) || !clearOfPts(benchPts, bx, bz, 1.7f) || !clearOfPts(lampPts, bx, bz, 0.85f)) continue;
+                int b0 = L.size();
+                addBench(L, bx, bz, 1);                            // built facing -z, then spun with the house
+                for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, bx, bz, yawDeg);
+                benchPts.add(new float[]{bx, bz});
+                break;
             }
         }
+        // 3. garden fruit trees recorded during buildGardens + loose meadow trees between the lanes
+        if (gardenTreePts != null) trees.addAll(gardenTreePts);
+        for (int n = 0, tries = 0; n < 26 && tries < 400; tries++) {
+            float a = rc.nextFloat() * 6.2832f, rad = 6f + rc.nextFloat() * 24f;
+            float x = SQ_X + (float) Math.cos(a) * rad, z = SQ_Z + (float) Math.sin(a) * rad;
+            if (x * x + z * z > 29f * 29f || inSpawnLane(x, z)) continue;
+            if (roadSd(x, z) < 2.3f) continue;
+            if (!clearOfHouses(houses, x, z, 1.3f) || blocksAnyDoorCrown(houses, x, z, 1.6f)) continue;
+            if (!clearOfPts(trees, x, z, 3.4f) || !clearOfPts(lampPts, x, z, 1.2f) || !clearOfPts(benchPts, x, z, 1.4f)) continue;
+            boolean inGarden = false;
+            if (gardenSoil != null) for (float[] gLot : gardenSoil)
+                if (insideYawXZ(x, z, gLot[0], gLot[1], gLot[2] * 0.5f + 1.0f, gLot[3] * 0.5f + 1.0f, gLot[4])) { inGarden = true; break; }
+            if (inGarden) continue;
+            trees.add(new float[]{x, z, 0.8f + rc.nextFloat() * 0.6f});
+            n++;
+        }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
-        // 3. the reserved open lots form a market square: two stalls flanking a well
-        addStall(L, MARKET_LOTS[0][0], MARKET_LOTS[0][1], 0.78f, 0.32f, 0.27f);   // red awning
-        addWell (L, MARKET_LOTS[1][0], MARKET_LOTS[1][1]);
-        addStall(L, MARKET_LOTS[2][0], MARKET_LOTS[2][1], 0.34f, 0.46f, 0.32f);   // green awning
-        addFountain(L, 0f, 0f);                                                   // central plaza landmark
+        // 4. the market square rings the spawn plaza: fountain landmark + well + two stalls, nudged
+        //    off the asphalt automatically so a road tweak can never leave one stranded on the lane
+        addFountain(L, 6.0f, 5.4f);
+        float[][] marketSpots = {{7.2f, 9.8f, 14f}, {2.2f, 14.8f, -12f}, {4.4f, 10.6f, 8f}};
+        for (int mIx = 0; mIx < marketSpots.length; mIx++) {
+            float mx = marketSpots[mIx][0], mz = marketSpots[mIx][1], myaw = marketSpots[mIx][2];
+            for (int push = 0; push < 8 && (roadSd(mx, mz) < 1.1f || inSpawnLane(mx, mz)); push++) {
+                float away = (float) Math.hypot(mx - SQ_X, mz - SQ_Z) + 1e-3f;
+                mx += (mx - SQ_X) / away * 0.7f; mz += (mz - SQ_Z) / away * 0.7f;   // slide outward until clear
+            }
+            if (!clearOfHouses(houses, mx, mz, 1.0f)) continue;
+            int b0 = L.size();
+            if (mIx == 2) addWell(L, mx, mz);
+            else addStall(L, mx, mz, mIx == 0 ? 0.78f : 0.34f, mIx == 0 ? 0.32f : 0.46f, mIx == 0 ? 0.27f : 0.32f);
+            for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, mx, mz, myaw);
+            clutterPts.add(new float[]{mx, mz});
+        }
     }
 
     /** A stone fountain: an octagonal basin with water, a central pedestal, bowl and spout. */
@@ -5872,33 +6156,35 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 1.74f, z, 0.16f, 0.55f, 0.16f, sr, sg, sb, 0f});            // spout
     }
 
-    private static final float[][] MARKET_LOTS = {{-10f, -20f}, {0f, -20f}, {10f, -20f}};
-    private static boolean isMarketLot(float gx, float gz) {
-        for (float[] mlt : MARKET_LOTS) if (mlt[0] == gx && mlt[1] == gz) return true;
-        return false;
+    /** Rotate (x,z) into a house's local frame (about its centre, by -yaw). out = {lx,lz} relative to centre. */
+    private static void houseLocal(float[] h, float x, float z, float[] out) {
+        float yawH = h.length > 25 ? h[25] : 0f;
+        float dx = x - h[0], dz = z - h[1];
+        if (yawH != 0f) {
+            double a = Math.toRadians(yawH);
+            float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+            out[0] = dx * ca - dz * sa;         // inverse of the box rotation in rotateBoxAbout
+            out[1] = dx * sa + dz * ca;
+        } else { out[0] = dx; out[1] = dz; }
     }
+    private static final float[] hlTmp = new float[2];   // scratch for build-time queries (single-threaded)
 
-    /** True if (x,z) is well clear of every house footprint (plus margin) — used to keep props off buildings. */
-    /** True if (x,z) sits in the approach + swing corridor in front of a house's door — i.e. it would block the entrance. */
+    /** True if (x,z) sits in the approach + swing corridor in front of a house's door (yaw-aware). */
     private static boolean blocksDoor(float[] h, float x, float z) {
-        float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f; int ds = (int) h[5];
-        float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);
-        float fx = cx + nx * hw, fz = cz + nz * hd;              // door-wall face centre
-        float outD = (x - fx) * nx + (z - fz) * nz;             // metres out from the wall face (covers the swing arc)
-        float lat  = (x - fx) * (-nz) + (z - fz) * nx;          // metres sideways along the wall
-        float doorW = h.length > 24 ? h[24] : 1.9f;             // the real door width drives a tight, correct corridor
-        return outD > -0.25f && outD < doorW + 0.35f && Math.abs(lat) < doorW * 0.5f + 0.2f;
+        return blocksDoorCrown(h, x, z, 0f);
     }
     private static boolean blocksAnyDoor(List<float[]> houses, float x, float z) {
         for (float[] h : houses) if (blocksDoor(h, x, z)) return true;
         return false;
     }
-    /** Like blocksDoor but inflated by a crown radius cr — true if a plant's CROWN would reach into the doorway. */
+    /** Like blocksDoor but inflated by a crown radius cr — true if a plant's CROWN would reach the doorway. */
     private static boolean blocksDoorCrown(float[] h, float x, float z, float cr) {
-        float cx = h[0], cz = h[1], hw = h[2] * 0.5f, hd = h[3] * 0.5f; int ds = (int) h[5];
+        houseLocal(h, x, z, hlTmp);
+        float hw = h[2] * 0.5f, hd = h[3] * 0.5f; int ds = (int) h[5];
         float nx = ds == 2 ? 1f : (ds == 3 ? -1f : 0f), nz = ds == 0 ? 1f : (ds == 1 ? -1f : 0f);
-        float fx = cx + nx * hw, fz = cz + nz * hd;
-        float outD = (x - fx) * nx + (z - fz) * nz, lat = (x - fx) * (-nz) + (z - fz) * nx;
+        float fx = nx * hw, fz = nz * hd;                        // door-wall face centre (local)
+        float outD = (hlTmp[0] - fx) * nx + (hlTmp[1] - fz) * nz;
+        float lat  = (hlTmp[0] - fx) * (-nz) + (hlTmp[1] - fz) * nx;
         float doorW = h.length > 24 ? h[24] : 1.9f;
         return outD > -0.25f - cr && outD < doorW + 0.35f + cr && Math.abs(lat) < doorW * 0.5f + 0.2f + cr;
     }
@@ -5911,27 +6197,51 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (float[] p : pts) if (Math.abs(p[0] - x) < margin && Math.abs(p[1] - z) < margin) return false;
         return true;
     }
-    /** Gap from (x,z) to the nearest house footprint (>0 = outside). Used to cap a tree's crown so it ends at the wall. */
+    /** Gap from (x,z) to the nearest house footprint (>0 = outside), yaw-aware — caps a tree's crown at the wall. */
     private static float houseClearance(List<float[]> houses, float x, float z) {
         float m = 1e9f;
         for (float[] h : houses) {
-            float dx = Math.abs(x - h[0]) - h[2] * 0.5f, dz = Math.abs(z - h[1]) - h[3] * 0.5f;
+            houseLocal(h, x, z, hlTmp);
+            float dx = Math.abs(hlTmp[0]) - h[2] * 0.5f, dz = Math.abs(hlTmp[1]) - h[3] * 0.5f;
             m = Math.min(m, Math.max(dx, dz));
         }
         return m;
     }
-    /** Length of the front path: from a door face outward (along its normal) to the kerb of the street it faces. */
-    private static float frontPathLen(float fx, float fz, float nx, float nz) {
-        float coord = nx != 0f ? fx : fz, dir = nx != 0f ? nx : nz, best = 1e9f;
-        for (float s : STREETS) { float dd = (s - coord) * dir; if (dd > 0.2f) best = Math.min(best, dd); }
-        if (best > 1e8f) return 2.0f;                       // no street ahead (map edge)
-        return clamp(best - ROAD_HALF, 1.0f, 5.0f);         // run out to the road edge
+    private static boolean clearOfHouses(List<float[]> houses, float x, float z, float margin) {
+        for (float[] h : houses) {
+            houseLocal(h, x, z, hlTmp);
+            if (Math.abs(hlTmp[0]) < h[2] * 0.5f + margin && Math.abs(hlTmp[1]) < h[3] * 0.5f + margin) return false;
+        }
+        return true;
     }
 
-    private static boolean clearOfHouses(List<float[]> houses, float x, float z, float margin) {
-        for (float[] h : houses)
-            if (Math.abs(x - h[0]) < h[2] * 0.5f + margin && Math.abs(z - h[1]) < h[3] * 0.5f + margin) return false;
-        return true;
+    /** Do two yawed rectangles (centre, half sizes, yaw°) overlap when the first is inflated by margin?
+     *  Tested by sampling each rect's corners + edge midpoints + centre against the other (build-time only). */
+    private static boolean obbOverlap(float cx1, float cz1, float hw1, float hd1, float yaw1,
+                                      float cx2, float cz2, float hw2, float hd2, float yaw2, float margin) {
+        float rr = (float) Math.hypot(hw1 + margin, hd1 + margin) + (float) Math.hypot(hw2, hd2);
+        float dcx = cx2 - cx1, dcz = cz2 - cz1;
+        if (dcx * dcx + dcz * dcz > rr * rr) return false;                     // circumradius reject
+        return obbPtsInside(cx2, cz2, hw2, hd2, yaw2, cx1, cz1, hw1 + margin, hd1 + margin, yaw1)
+            || obbPtsInside(cx1, cz1, hw1 + margin, hd1 + margin, yaw1, cx2, cz2, hw2 + margin * 0.5f, hd2 + margin * 0.5f, yaw2);
+    }
+    private static boolean obbPtsInside(float cxA, float czA, float hwA, float hdA, float yawA,
+                                        float cxB, float czB, float hwB, float hdB, float yawB) {
+        double a = Math.toRadians(yawA);
+        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        for (int i = 0; i < 9; i++) {                                          // corners, edge mids, centre of A
+            float lx = (i % 3 - 1) * hwA, lz = (i / 3 - 1) * hdA;
+            float wx = cxA + lx * ca + lz * sa, wz = czA - lx * sa + lz * ca;  // A-local -> world (box convention)
+            if (insideYawXZ(wx, wz, cxB, czB, hwB, hdB, yawB)) return true;
+        }
+        return false;
+    }
+
+    /** March from the door face outward to the nearest asphalt edge: length of this house's front path. */
+    private static float pathLenToRoad(float fx, float fz, float dirX, float dirZ) {
+        for (float u = 0.4f; u <= 7.5f; u += 0.25f)
+            if (roadSd(fx + dirX * u, fz + dirZ * u) < 0.12f) return Math.max(1.0f, u);
+        return 2.2f;                                        // no road ahead within reach: a short stub path
     }
 
     private static void addClutter(List<float[]> L, Random r, float x, float z) {
