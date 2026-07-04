@@ -368,6 +368,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // player-toggleable options (settings panel)
     private boolean showSettings = false;
     private boolean optShake = true, optDmgNum = true, optRadar = true, optKillfeed = true;
+    // --- story campaign state ---
+    private int levelId = 0;                            // chapter 0..2 (persisted "levelSel")
+    private boolean worldDirty = false;                 // chapter switched in the hub -> rebuild world on the GL thread
+    private java.util.List<float[]> savedEditObjs;      // chapter-1 editor overlay parked while visiting ch. 2/3
+    private float storyTimer = 0f;                      // chapter briefing overlay at run start
+
     private int hubTab = 0;              // 0 = weapons, 1 = upgrades, 2 = abilities
     private int hubTabShown = -1;        // tab whose content-reveal is currently animating
     private float hubTabAnim = 1f;       // 0..1 content-reveal progress for the active tab
@@ -498,8 +504,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // Interactive doors. doorData[i] = cx, cy, cz, hw, hh, ht, axis(0=spansX,1=spansZ), hingeSign, r,g,b.
     private static final float INTERACT_DIST = 2.6f;
-    private final float[][] doorData;
-    private final float[] doorOpen, doorTarget;       // 0 = closed, 1 = open
+    private float[][] doorData;                       // non-final: a story-chapter switch rebuilds the town
+    private float[] doorOpen, doorTarget;             // 0 = closed, 1 = open
     private int nearDoor = -1;
     private final float[] obb2 = new float[2];         // scratch for oriented-box collision (rotated houses)
     // Openable window sashes (reachable ground-floor windows) — same record layout + hinge maths as doors:
@@ -540,12 +546,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.highScore = prefs.getInt("highscore", 0);
         this.sfx = new Sfx(ctx);
         loadMeta();
+        levelId = Math.max(0, Math.min(2, prefs.getInt("levelSel", 0)));
+        if (playerLevel < LV_UNLOCK[levelId]) levelId = 0;   // meta reset since last session: fall back
+        if (levelId != 0) buildRoads(LV_ROADS[levelId]);
+        applyLevelLook();
 
         ArrayList<float[]> bl = new ArrayList<float[]>();
         ArrayList<float[]> dl = new ArrayList<float[]>();
         ArrayList<float[]> hl = new ArrayList<float[]>();
-        // A custom level (placed via the web editor + adb push) overrides the procedural village.
-        if (!buildWorldFromFile(ctx, bl, dl, hl)) buildWorldInto(bl, dl, hl);
+        // A custom level (placed via the web editor + adb push) overrides the procedural village —
+        // it IS chapter 1's map; chapters 2/3 are always their own procedural towns.
+        if (levelId != 0 || !buildWorldFromFile(ctx, bl, dl, hl)) buildWorldInto(bl, dl, hl);
         furnishAll(bl, hl);                                 // walk-in interiors: furniture colliders + visual specs
         if (customFurniture != null)                        // level-authored furniture (editor furniture tool)
             for (float[] fu : customFurniture) addFurniture(bl, (int) fu[0], fu[1], fu[2], fu[3], fu[4]);
@@ -663,21 +674,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         terrainTex = uploadTexture(makeTerrainBitmap());
 
         cityGround = makeBuffer(makeFlatQuad(35f, 0.02f));
-        // Authored natively at 2048 (POT): safe for mipmaps+REPEAT on strict GLES2 drivers, and every kerb
-        // line / dash / joint stays pixel-crisp (the old 1536 bitmap needed a blurring POT rescale here).
-        cityTex = uploadTexture(makeCityBitmap());
         roadTex = uploadTexture(makeRoadBitmap());
-        if (hasCustomRoads) roadMesh = makeBuffer(makeRoadMesh());   // custom streets replace the default grid
-
-        vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
         vegTex = uploadPalette(makeVegPalette());
-        if (treeList != null) placedTrees = makeBuffer(makePlacedTrees());   // level-placed trees
-
-        roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
-        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData + winGroups + revealData)
-        trimMesh = makeBuffer(trimData);             // window sills
-        revealMesh = makeBuffer(revealData);         // dark recessed interior behind each pane
-        bandMesh = makeBuffer(makeBandMesh());       // per-house foundation / trim / storey bands (sets bandVerts)
         roofTex = uploadTexture(makeRoofBitmap());
         winTex = uploadTexture(makeWindowBitmap());
         winBackTex = uploadTexture(makeWinBackBitmap());
@@ -687,11 +685,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         sidingTex = uploadTexture(makeSidingBitmap());
         gravelTex = uploadTexture(makeGravelBitmap());
         woodTex = uploadTexture(makeWoodBitmap());
-        interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
-        buildOpenableWindows();                          // reachable ground-floor sashes (from the same window layout)
-        shadowMesh = makeBuffer(makeShadowMeshData());   // projected directional shadows for every static object
-        float[] wtr = makeWaterMeshData();               // fountain pools + overflow streams (animated shader water)
-        waterMesh = wtr.length > 0 ? makeBuffer(wtr) : null;
+        bakeWorldMeshes();                               // everything derived from the CURRENT chapter's world
 
         // The GL context can be re-created mid-session (Home + return, screen off). If that happens while in
         // the SANDBOX, the editObjs snapshot-swap must be unwound FIRST — otherwise the hub opens with the
@@ -711,6 +705,84 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, w, h);
         aspect = (float) w / height;
         Matrix.perspectiveM(proj, 0, 68f, aspect, 0.07f, 300f);   // near up from 0.05: more depth precision (gun stays well past 0.07)
+    }
+
+    /** Every GL bake derived from the current world (boxes/houses/roads/trees) — split out of
+     *  onSurfaceCreated so a story-chapter switch can rebuild the whole town at runtime. */
+    private void bakeWorldMeshes() {
+        if (cityTex != 0) GLES20.glDeleteTextures(1, new int[]{cityTex}, 0);   // repainted per chapter
+        // Authored natively at 2048 (POT): safe for mipmaps+REPEAT on strict GLES2 drivers, and every kerb
+        // line / dash / joint stays pixel-crisp (the old 1536 bitmap needed a blurring POT rescale here).
+        cityTex = uploadTexture(makeCityBitmap());
+        roadMesh = hasCustomRoads ? makeBuffer(makeRoadMesh()) : null;   // custom streets replace the default paint
+        vegetation = makeBuffer(makeVegetation());   // grass, flowers, bushes (sets vegVerts)
+        placedTrees = treeList != null ? makeBuffer(makePlacedTrees()) : null;   // level-placed trees
+        roofMesh = makeBuffer(makeRoofMesh());       // pitched gable roofs (sets roofVerts)
+        windowMesh = makeBuffer(makeWindowMesh());   // wall windows (sets windowVerts + trimData + winGroups + revealData)
+        trimMesh = makeBuffer(trimData);             // window sills
+        revealMesh = makeBuffer(revealData);         // dark recessed interior behind each pane
+        bandMesh = makeBuffer(makeBandMesh());       // per-house foundation / trim / storey bands (sets bandVerts)
+        interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
+        buildOpenableWindows();                          // reachable ground-floor sashes (from the same window layout)
+        shadowMesh = makeBuffer(makeShadowMeshData());   // projected directional shadows for every static object
+        float[] wtr = makeWaterMeshData();               // fountain pools + overflow streams (animated shader water)
+        waterMesh = wtr.length > 0 ? makeBuffer(wtr) : null;
+    }
+
+    /** Chapter base look: what the WX_SUN weather state reads (the other weathers blend over it). */
+    private void applyLevelLook() {
+        if (levelId == 1) {          // ASCHENHOF: dry late-summer haze over stubble fields
+            skyHorizon[0] = 0.85f; skyHorizon[1] = 0.80f; skyHorizon[2] = 0.68f;
+            skyZenith[0] = 0.34f;  skyZenith[1] = 0.48f;  skyZenith[2] = 0.68f;
+            fog[0] = 0.76f; fog[1] = 0.72f; fog[2] = 0.62f;
+            fogStart = 42f; fogEnd = 105f;
+            ground[0] = 1.08f; ground[1] = 1.00f; ground[2] = 0.80f;
+        } else if (levelId == 2) {   // STEINMARKT: cold hard light on old stone
+            skyHorizon[0] = 0.70f; skyHorizon[1] = 0.74f; skyHorizon[2] = 0.80f;
+            skyZenith[0] = 0.14f;  skyZenith[1] = 0.30f;  skyZenith[2] = 0.55f;
+            fog[0] = 0.60f; fog[1] = 0.65f; fog[2] = 0.72f;
+            fogStart = 45f; fogEnd = 115f;
+            ground[0] = 0.90f; ground[1] = 0.94f; ground[2] = 0.97f;
+        } else {                     // BRUNNENFELD: the classic clear village day
+            skyHorizon[0] = 0.76f; skyHorizon[1] = 0.85f; skyHorizon[2] = 0.95f;
+            skyZenith[0] = 0.16f;  skyZenith[1] = 0.41f;  skyZenith[2] = 0.74f;
+            fog[0] = 0.72f; fog[1] = 0.80f; fog[2] = 0.90f;
+            fogStart = 55f; fogEnd = 130f;
+            ground[0] = 1f; ground[1] = 1f; ground[2] = 1f;
+        }
+    }
+
+    /** Switch to the selected chapter's map at runtime (GL thread): rebuild roads/look/world lists,
+     *  park or restore the chapter-1 editor overlay, then rebake every world-derived mesh. */
+    private void rebuildWorldForLevel() {
+        buildRoads(LV_ROADS[levelId]);
+        applyLevelLook();
+        hasCustomRoads = false; roadSegs = null;
+        customFurniture = null;
+        if (levelId != 0 && savedEditObjs == null && !editObjs.isEmpty()) {   // park ch.1 editor objects
+            savedEditObjs = new java.util.ArrayList<float[]>(editObjs);
+            editObjs.clear();
+        } else if (levelId == 0 && savedEditObjs != null) {                    // restore them with ch.1
+            editObjs.clear(); editObjs.addAll(savedEditObjs);
+            savedEditObjs = null;
+        }
+        ArrayList<float[]> bl = new ArrayList<float[]>();
+        ArrayList<float[]> dl = new ArrayList<float[]>();
+        ArrayList<float[]> hl = new ArrayList<float[]>();
+        if (levelId != 0 || !buildWorldFromFile(appCtx, bl, dl, hl)) buildWorldInto(bl, dl, hl);
+        furnishAll(bl, hl);
+        if (customFurniture != null)
+            for (float[] fu : customFurniture) addFurniture(bl, (int) fu[0], fu[1], fu[2], fu[3], fu[4]);
+        boxes = bl.toArray(new float[0][]);
+        baseBoxes = boxes;
+        doorData = dl.toArray(new float[0][]);
+        houseRects = hl;
+        doorOpen = new float[doorData.length];
+        doorTarget = new float[doorData.length];
+        navBlocked = null;                     // walkability grid rebakes lazily for the new town
+        edHouseMeshDirty = true;
+        bakeWorldMeshes();
+        if (!editObjs.isEmpty()) rebuildOverlay();   // ch.1 overlay colliders/meshes back on top
     }
 
     /** (Re)build the offscreen scene + bloom targets to match the surface. True = post is usable this
@@ -969,6 +1041,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             drawWorld(cityGround, 6, 0f, wetA - 0.03f * wSnow, wetA - 0.03f * wSnow, wetAB - 0.03f * wSnow);
         }
 
+        if (worldDirty) { rebuildWorldForLevel(); worldDirty = false; }   // story-chapter switch (GL thread)
         if (editDirty) rebuildOverlay();                       // editor: rebake overlay colliders + plant mesh (GL thread)
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
@@ -1123,7 +1196,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (waveBreak <= 0f) beginWave(wave);
             return;
         }
-        float speed = ENEMY_SPEED * Math.min(2.2f, 1f + 0.03f * (wave - 1));   // faster every wave
+        float speed = ENEMY_SPEED * Math.min(2.2f, 1f + 0.03f * (wave - 1)) * (1f + 0.07f * levelId);   // faster every wave + chapter
         float dmgMul = Math.min(1.8f, 1f + 0.025f * (wave - 1));                // and they hit harder
         float sinYaw = (float) Math.sin(yaw), cosYaw = (float) Math.cos(yaw);
         navUpdate(dt);                                     // keep the flow field flooded from the player
@@ -1312,7 +1385,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enStuck[i] = 0f; enProgT[i] = 0f; enLastX[i] = enX[i]; enLastZ[i] = enZ[i];
                 enFaceType[i] = rng.nextInt(6);
                 enVar[i] = rng.nextFloat();                            // per-zombie skin/wear/wound variety
-                float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
+                float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1)) * (1f + 0.30f * levelId);   // tankier every wave + chapter
                 if (bossPending > 0) {
                     enBoss[i] = bossPending;
                     enType[i] = 0;
@@ -3602,6 +3675,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private void tickTimers(float dt) {
+        if (storyTimer > 0f) storyTimer -= dt;
         if (muzzleTimer > 0f) muzzleTimer -= dt;
         if (hitTimer > 0f) hitTimer -= dt;
         if (flashTimer > 0f) flashTimer -= dt;
@@ -3657,6 +3731,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void startRun() {
         preRunCash = cash; preRunXp = xp; preRunLevel = playerLevel;   // snapshot the bank so an ABORTED run can be un-counted
         restart();
+        storyTimer = 7f;                 // chapter briefing card over the first seconds
         state = ST_PLAYING;
         hubWasShown = false; hubTabShown = -1;   // replay hub entrance + content stagger next visit
     }
@@ -4002,6 +4077,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         // cash + xp: headshots worth +50%; cash scales with combo, wave (tougher = richer) and the Greed ability
         int baseGain = head ? 18 : 10;   // headshots pay better
+        baseGain = Math.round(baseGain * (1f + 0.30f * levelId));   // later chapters pay for their danger
         long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]) * (1f + 0.06f * (wave - 1)));
         cash += cashGain; runCash += cashGain;
         xp += baseGain; runXp += baseGain; runKills++;
@@ -4462,6 +4538,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+
+        if (storyTimer > 0f) {                                  // chapter briefing card, fading out
+            float sa = Math.min(1f, storyTimer / 1.1f) * Math.min(1f, (7f - storyTimer) * 2.5f);
+            float pw = Math.min(760f * us, width * 0.86f), ph2 = 168f * us, py2 = height * 0.30f;
+            drawRoundRect(width * 0.5f, py2, pw, ph2, 18f * us, 0.030f, 0.038f, 0.026f, 0.82f * sa);
+            drawRoundRect(width * 0.5f, py2 - ph2 * 0.5f + 3f * us, pw - 36f * us, 3f * us, 1.5f * us, AC_BLOOD[0], AC_BLOOD[1], AC_BLOOD[2], 0.85f * sa);
+            drawTextCentered(LV_TAG[levelId], width * 0.5f, py2 - ph2 * 0.5f + 30f * us, 19f, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], sa);
+            for (int li = 0; li < LV_BRIEF[levelId].length; li++)
+                drawTextCentered(LV_BRIEF[levelId][li], width * 0.5f, py2 - ph2 * 0.5f + (64f + li * 32f) * us, 14.5f,
+                        AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.92f * sa);
+        }
 
         GLES20.glUseProgram(progVig);
         quad.position(0);
@@ -4954,6 +5041,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float playH = 122f * us, playW = Math.min(520f * us, width * 0.88f), playRad = playH * 0.5f;
         float playY = height - 26f * us - playH * 0.5f;
         if (tapped && hitRect(cx, playY, playW, playH, tap[0], tap[1])) { startRun(); return; }
+
+        // --- story chapter selector: three chips riding on the PLAY slab, locked ones show their level gate ---
+        float chH = 56f * us, chGap = 10f * us;
+        float chW = (playW - 2f * chGap) / 3f;
+        float chY = playY - playH * 0.5f - 10f * us - chH * 0.5f;
+        for (int i = 0; i < 3; i++) {
+            float chX = cx - playW * 0.5f + chW * 0.5f + i * (chW + chGap);
+            boolean unlocked = playerLevel >= LV_UNLOCK[i];
+            boolean sel = levelId == i;
+            if (tapped && hitRect(chX, chY, chW, chH, tap[0], tap[1])) {
+                if (unlocked && levelId != i) {
+                    levelId = i; prefs.edit().putInt("levelSel", i).apply();
+                    worldDirty = true; sfx.swap();
+                }
+                tapped = false;
+            }
+            if (sel) drawRoundRect(chX, chY, chW + 8f * us, chH + 8f * us, chH * 0.5f + 4f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.22f);
+            drawRoundRect(chX, chY, chW, chH, chH * 0.5f, sel ? 0.145f : 0.078f, sel ? 0.285f : 0.088f, sel ? 0.085f : 0.062f, 0.95f);
+            if (unlocked) {
+                drawTextCentered(LV_NAME[i], chX, chY, 15.5f, sel ? 0.92f : 0.64f, sel ? 1f : 0.68f, sel ? 0.62f : 0.52f, 1f);
+            } else {
+                drawTextCentered(LV_NAME[i], chX, chY - 10f * us, 13f, 0.40f, 0.41f, 0.36f, 0.9f);
+                drawTextCentered("AB LV " + LV_UNLOCK[i], chX, chY + 13f * us, 12f, 0.72f, 0.30f, 0.16f, 0.95f);
+            }
+        }
+        drawTextCentered(LV_TAG[levelId], cx, chY - chH * 0.5f - 16f * us, 13f, 0.66f, 0.60f, 0.44f, 0.9f);
         float pb = pulse01(2.8f, 0f);
         drawRoundRect(cx, playY, playW + (20f + 16f * pb) * us, playH + (20f + 16f * pb) * us, playRad + (10f + 8f * pb) * us, 0.90f, 0.16f, 0.10f, 0.07f + 0.09f * pb);
         drawButton(cx, playY, playW, playH, playRad, 0.70f, 0.13f, 0.09f, 1f, true);
@@ -4961,13 +5074,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawTextCenteredShadow("PLAY", cx, playY, 48f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 1f);
         // BAUEN / EDITOR entry (bottom-left, aligned with PLAY) — military olive drab
         float ebW = 236f * us, ebH = 76f * us, ebX = 22f * us + ebW * 0.5f, ebY = playY;
-        if (tapped && hitRect(ebX, ebY, ebW, ebH, tap[0], tap[1])) { edEnter(); return; }
+        if (tapped && hitRect(ebX, ebY, ebW, ebH, tap[0], tap[1])) {
+            if (levelId != 0) { levelId = 0; prefs.edit().putInt("levelSel", 0).apply(); rebuildWorldForLevel(); }
+            edEnter(); return;   // the editor always edits chapter 1's village
+        }
         drawRoundRect(ebX, ebY, ebW, ebH, ebH * 0.5f, 0.24f, 0.29f, 0.13f, 0.96f);
         drawRoundRect(ebX, ebY - ebH * 0.5f + 2.6f * us, ebW - 2f * ebH * 0.5f, 2.6f * us, 1.3f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.55f);
         drawTextCentered("BAUEN", ebX, ebY, 30f, 0.93f, 0.95f, 0.85f, 1f);
         // SANDBOX entry (bottom-right, mirrors BAUEN): plague violet, peaceful build + roam.
         float sbW = 236f * us, sbH = 76f * us, sbX = width - 22f * us - sbW * 0.5f, sbY = playY;
-        if (tapped && hitRect(sbX, sbY, sbW, sbH, tap[0], tap[1])) { sandboxEnter(); return; }
+        if (tapped && hitRect(sbX, sbY, sbW, sbH, tap[0], tap[1])) {
+            if (levelId != 0) { levelId = 0; prefs.edit().putInt("levelSel", 0).apply(); rebuildWorldForLevel(); }
+            sandboxEnter(); return;   // sandbox builds on chapter 1's village too
+        }
         drawRoundRect(sbX, sbY, sbW, sbH, sbH * 0.5f, 0.28f, 0.15f, 0.32f, 0.96f);
         drawRoundRect(sbX, sbY - sbH * 0.5f + 2.6f * us, sbW - sbH, 2.6f * us, 1.3f * us, AC_TOXIC[0], AC_TOXIC[1], AC_TOXIC[2], 0.55f);
         drawTextCentered("SANDBOX", sbX, sbY, 30f, 0.94f, 0.90f, 0.96f, 1f);
@@ -4978,7 +5097,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (hubTab != hubTabShown) { hubTabShown = hubTab; hubTabAnim = 0f; }
         hubTabAnim = Math.min(1f, hubTabAnim + 0.06f);
 
-        float top = tabY + tabH * 0.5f + 18f * us, bottom = playY - playH * 0.5f - 18f * us;
+        float top = tabY + tabH * 0.5f + 18f * us, bottom = chY - chH * 0.5f - 34f * us;   // stop above the chapter chips
         if (hubTab == 0) hubWeapons(top, bottom, tapped);
         else if (hubTab == 1) hubUpgrades(top, bottom, tapped);
         else hubAbilities(top, bottom, tapped);
@@ -5937,16 +6056,57 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         {1.25f, -15,-4, -19,2, -25,7, -30,10},                                 // west dead-end lane (single track)
         {1.25f, 17,-2, 20,6, 21,13, 20,19},                                    // east dead-end lane (single track)
     };
-    private static final float[][][] ROAD_PTS;       // sampled centrelines [road][pt][x,z]
-    private static final float[] ROAD_HALFW;         // per-road asphalt half width
-    private static final float[][] ROAD_BB;          // per-road AABB {minX,minZ,maxX,maxZ} incl. width
+    private static float[][][] ROAD_PTS;             // sampled centrelines [road][pt][x,z] (per LEVEL, see buildRoads)
+    private static float[] ROAD_HALFW;               // per-road asphalt half width
+    private static float[][] ROAD_BB;                // per-road AABB {minX,minZ,maxX,maxZ} incl. width
     private static final float VERGE = 1.0f;         // gravel shoulder outside the asphalt
-    static {
-        ROAD_PTS = new float[ROAD_SPEC.length][][];
-        ROAD_HALFW = new float[ROAD_SPEC.length];
-        ROAD_BB = new float[ROAD_SPEC.length][];
-        for (int r = 0; r < ROAD_SPEC.length; r++) {
-            float[] s = ROAD_SPEC[r];
+
+    // ---- story campaign: three chapters, each its own map ------------------------------------------
+    // Kap. 1 spielt im vertrauten Dorf, Kap. 2 draussen auf den Hoefen, Kap. 3 in der alten Stadt.
+    // The farm keeps only the two main lanes (a sparse crossroads hamlet); the old town adds a sixth
+    // lane so the core packs tight. All specs keep the spawn plaza at (0,3)..(0,9) road-free.
+    private static final float[][][] LV_ROADS = {
+        ROAD_SPEC,
+        {   // ASCHENHOF: one country road + the north track — wide fields between the farms
+            {2.2f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},
+            {1.6f, 9,-36, 7,-26, 4,-16, 1,-8, 0,-2},
+            {1.25f, 0,-2, -5,3, -7,10, -4,18, 3,24},                     // short farm track past the yard
+        },
+        {   // STEINMARKT: the full five-lane net plus a sixth alley — a dense old trading town
+            {2.2f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},
+            {1.8f, 9,-36, 7,-26, 4,-16, 1,-8, 0,-2},
+            {1.6f, 0,-2, -5,3, -7,10, -4,18, 3,24, 11,28},
+            {1.25f, -15,-4, -19,2, -25,7, -30,10},
+            {1.25f, 17,-2, 20,6, 21,13, 20,19},
+            {1.25f, -30,10, -24,15, -16,18, -8,17},                      // back alley closing the west block
+        },
+    };
+    private static final String[] LV_NAME = {"BRUNNENFELD", "ASCHENHOF", "STEINMARKT"};
+    private static final int[] LV_UNLOCK = {1, 4, 8};                    // player level that opens the chapter
+    private static final String[] LV_TAG = {
+        "KAPITEL 1 - WO ALLES BEGANN",
+        "KAPITEL 2 - DIE HOEFE IM UMLAND",
+        "KAPITEL 3 - DAS NEST IN DER ALTSTADT",
+    };
+    private static final String[][] LV_BRIEF = {
+        {"TAG 47 DER HERBSTSEUCHE. DEIN DORF, LEER.",
+         "NUR DU, EINE ALTE PISTOLE - UND SIE.",
+         "JEDER KILL ZAHLT. JEDER DOLLAR WIRD ZU STAHL."},
+        {"DIE VORRAETE DER BAUERN RETTEN DEN WINTER.",
+         "ABER ZWISCHEN DEN FELDERN WANDERN DIE HERDEN.",
+         "OFFENES LAND. KEINE DECKUNG. LAUF ODER KAEMPF."},
+        {"DIE ALTE HANDELSSTADT: HIER SITZT DAS NEST.",
+         "ENGE GASSEN, HOHE HAEUSER, HORDEN OHNE ENDE.",
+         "OHNE VOLLES ARSENAL KOMMST DU NICHT ZURUECK."},
+    };
+
+    /** Sample a road spec (Catmull-Rom control polylines) into the working ROAD_* arrays. */
+    private static void buildRoads(float[][] spec) {
+        ROAD_PTS = new float[spec.length][][];
+        ROAD_HALFW = new float[spec.length];
+        ROAD_BB = new float[spec.length][];
+        for (int r = 0; r < spec.length; r++) {
+            float[] s = spec[r];
             ROAD_HALFW[r] = s[0];
             int n = (s.length - 1) / 2;
             float[][] cp = new float[n][2];
@@ -5971,6 +6131,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             ROAD_BB[r] = new float[]{mnx - pad, mnz - pad, mxx + pad, mxz + pad};
         }
     }
+    static { buildRoads(ROAD_SPEC); }                 // default: chapter 1 (also what every harness builds)
 
     /** Signed distance from (x,z) to the nearest asphalt EDGE (<0 = on a carriageway). */
     private static float roadSd(float x, float z) {
@@ -6638,6 +6799,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.pathStrokes = new java.util.ArrayList<float[]>();
         this.gardenSoil = new java.util.ArrayList<float[]>();
         this.gardenTreePts = new java.util.ArrayList<float[]>();
+        this.waterDiscs = null; this.waterStreams = null;       // re-registered by this build's fountain (if any)
         // No more loose cover blocks on the plaza — the market (fountain centrepiece + a ring of
         // stalls, see addAccessories) provides the spawn cover now.
         numCover = 0;
@@ -6657,10 +6819,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float sl = (float) Math.sqrt(tx * tx + tz * tz);
                 acc -= sl;
                 if (acc > 0f) continue;
-                acc = 4.6f + rc.nextFloat() * 3.0f;                 // next lot 4.6-7.6 m further along
+                // lot spacing tells each chapter's story: farms sit far apart, the old town packs tight
+                acc = levelId == 1 ? 8.5f + rc.nextFloat() * 5.5f
+                    : levelId == 2 ? 3.9f + rc.nextFloat() * 2.4f
+                    : 4.6f + rc.nextFloat() * 3.0f;
                 tx /= sl; tz /= sl;
                 float nxr = -tz, nzr = tx;                          // road normal (left of travel)
-                int nSides = rc.nextFloat() < 0.7f ? 2 : 1;         // usually a lot on BOTH sides
+                int nSides = rc.nextFloat() < (levelId == 1 ? 0.35f : levelId == 2 ? 0.80f : 0.7f) ? 2 : 1;
                 int side = rc.nextFloat() < 0.72f ? -lastSide : lastSide;   // mostly alternate sides
                 for (int sI = 0; sI < nSides; sI++, side = -side) {
                     lastSide = side;
@@ -6716,7 +6881,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float distSq = (float) Math.hypot(ax - SQ_X, az - SQ_Z);
         float roll = rc.nextFloat();
         int arch;                                                   // 0 cottage · 1 townhouse · 2 block · 3 shop · 4 farmhouse
-        if (distSq < 11f)       arch = roll < 0.45f ? 3 : (roll < 0.80f ? 1 : 0);
+        if (levelId == 1) {                                         // ASCHENHOF: long farmhouses + squat cottages
+            arch = roll < 0.52f ? 4 : (roll < 0.86f ? 0 : 1);
+        } else if (levelId == 2) {                                  // STEINMARKT: tall stone town, shops at the core
+            if (distSq < 13f) arch = roll < 0.50f ? 3 : (roll < 0.90f ? 1 : 2);
+            else              arch = roll < 0.40f ? 1 : (roll < 0.66f ? 2 : (roll < 0.88f ? 0 : 3));
+        } else if (distSq < 11f) arch = roll < 0.45f ? 3 : (roll < 0.80f ? 1 : 0);
         else if (distSq < 21f)  arch = roll < 0.52f ? 0 : (roll < 0.72f ? 1 : (roll < 0.88f ? 4 : 3));
         else                    arch = roll < 0.42f ? 0 : (roll < 0.68f ? 4 : (roll < 0.88f ? 1 : 2));
         float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
@@ -6746,8 +6916,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             chimney = true; trim = false; pitch = 1.1f + rc.nextFloat() * 0.5f;
             rf = ROOFS[new int[]{0, 4, 7, 7}[rc.nextInt(4)]]; mat = 3; doorStyle = 1;
         }
+        // chapter material/height accents: farm timber everywhere; old town stone/brick and taller
+        if (levelId == 1) {
+            if (rc.nextFloat() < 0.70f) mat = 3;                          // weathered timber
+            if (arch == 1) storeys = 2;                                   // no towers on a farm
+        } else if (levelId == 2) {
+            if (mat == 0 && rc.nextFloat() < 0.65f) mat = rc.nextBoolean() ? 1 : 2;   // plaster -> brick/stone
+            if (mat == 3) mat = 2;                                        // no timber in the stone town
+            if (arch == 1 && storeys < 3 && rc.nextFloat() < 0.5f) { storeys++; h += 1.3f; }
+        }
         // door wall (+z) faces the road: centre = station + normal * (verge + setback + half depth)
-        float setback = VERGE + 0.7f + rc.nextFloat() * 2.8f;
+        float setback = VERGE + (levelId == 1 ? 1.4f + rc.nextFloat() * 3.6f
+                              : levelId == 2 ? 0.5f + rc.nextFloat() * 1.6f
+                              : 0.7f + rc.nextFloat() * 2.8f);
         float cx = ax + nx * (roadHw + setback + d * 0.5f);
         float cz = az + nz * (roadHw + setback + d * 0.5f);
         float yawDeg = (float) Math.toDegrees(Math.atan2(-nx, -nz)) + (rc.nextFloat() - 0.5f) * 12f;
@@ -6925,7 +7106,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         java.util.List<float[]> lampPts = new java.util.ArrayList<float[]>();
         java.util.List<float[]> marketPts = new java.util.ArrayList<float[]>();
         java.util.List<float[]> trees = new java.util.ArrayList<float[]>();
-        placeMarket(L, houses, rc, marketPts);
+        if (levelId == 1) {                                 // ASCHENHOF: a farmyard well instead of a market
+            addWell(L, 0.8f, 5.4f);
+            clutterPts.add(new float[]{0.8f, 5.4f});
+            marketPts.add(new float[]{0.8f, 5.4f});
+            addWoodpile(L, rc, -2.6f, 6.8f); clutterPts.add(new float[]{-2.6f, 6.8f}); marketPts.add(new float[]{-2.6f, 6.8f});
+            addBarrel(L, 3.9f, 6.4f); clutterPts.add(new float[]{3.9f, 6.4f}); marketPts.add(new float[]{3.9f, 6.4f});
+        } else {
+            placeMarket(L, houses, rc, marketPts);          // village + old town keep their market ring
+        }
         for (float[] mp : marketPts) placed.add(mp);
         // 1. lamps on the verge + trees fully on the GRASS behind it: walk each lane by arclength
         for (int r = 0; r < ROAD_PTS.length; r++) {
@@ -6941,7 +7130,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 tx /= sl; tz /= sl;
                 for (int side = -1; side <= 1; side += 2) {
                     float pick = rc.nextFloat();
-                    boolean lamp = pick < 0.30f;
+                    boolean lamp = pick < (levelId == 1 ? 0.12f : levelId == 2 ? 0.40f : 0.30f);
                     if (!lamp && pick >= 0.82f) continue;          // a deliberate gap
                     float off = ROAD_HALFW[r] + (lamp ? 0.55f : VERGE + 0.9f);   // lamp on the verge, tree on grass
                     float sx = ax - tz * off * side, sz = az + tx * off * side;
@@ -6988,7 +7177,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         // 3. garden fruit trees recorded during buildGardens + loose meadow trees between the lanes
         if (gardenTreePts != null) trees.addAll(gardenTreePts);
-        for (int n = 0, tries = 0; n < 26 && tries < 500; tries++) {
+        int meadowTrees = levelId == 1 ? 42 : levelId == 2 ? 14 : 26;   // farms wooded, the town paved
+        for (int n = 0, tries = 0; n < meadowTrees && tries < 900; tries++) {
             float a = rc.nextFloat() * 6.2832f, rad = 6f + rc.nextFloat() * 24f;
             float x = SQ_X + (float) Math.cos(a) * rad, z = SQ_Z + (float) Math.sin(a) * rad;
             if (x * x + z * z > 29f * 29f || inSpawnLane(x, z)) continue;
