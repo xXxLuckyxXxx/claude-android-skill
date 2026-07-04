@@ -124,6 +124,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private java.nio.FloatBuffer shadowMesh; private int shadowVerts;
     private static final float SHX = LDX / -LDY, SHZ = LDZ / -LDY;   // ground offset per metre of caster height
 
+    // Fountain water: real animated surfaces (FRAG3 water mode) in their own translucent mesh —
+    // the old look was two coplanar water BOXES z-fighting each other and the basin rim.
+    private java.nio.FloatBuffer waterMesh; private int waterVerts;
+    private java.util.List<float[]> waterDiscs;     // {cx, y, cz, radius} pools, registered by addFountain
+    private java.util.List<float[]> waterStreams;   // {cx, yTop, cz, yBot, halfW} falling overflow streams
+
     private final float[] shotO = new float[3], shotD = new float[3];   // scratch for yaw-aware hitscan
     private float gunFlashAdd = 0f;   // warm light the muzzle flash throws onto the viewmodel this frame
     private final InputState input;
@@ -406,6 +412,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private final int[] enFaceType = new int[MAX_ENEMIES];
     private final boolean[] enAlive = new boolean[MAX_ENEMIES];
     private final float[] enScale = new float[MAX_ENEMIES];   // 1 = normal, >1 = (mini)boss
+
+    // Flow-field navigation: a walkability grid over the town + a BFS distance field flooded from the
+    // player a few times a second. Zombies descend the field instead of greedily probing straight at
+    // you, so fences, garden walls, market stalls and house corners no longer wedge them; a per-enemy
+    // progress watchdog shakes loose (then quietly relocates) anything that still snags.
+    private static final float NAV_CELL = 0.6f, NAV_ORG = -36.9f;   // world x/z of the grid's low edge
+    private static final int NAV_N = 123;                            // 123 cells * 0.6 m = 73.8 m span
+    private static final int[] NAV_DX = {1, -1, 0, 0, 1, 1, -1, -1};
+    private static final int[] NAV_DZ = {0, 0, 1, -1, 1, -1, 1, -1};
+    private boolean[] navBlocked;                                    // static bake from boxes (null = rebake)
+    private short[] navDist;                                         // BFS steps from the player (-1 unseen, -2 closed door)
+    private int[] navQ;                                              // both allocated with the first bake
+    private int[][] navDoorCells;                                    // per-door: cells a CLOSED leaf blocks
+    private boolean navFieldValid = false;
+    private float navTimer = 0f, navPx = 1e9f, navPz = 1e9f;
+    private final float[] navFlow = new float[2];
+    private final float[] enLastX = new float[MAX_ENEMIES], enLastZ = new float[MAX_ENEMIES];
+    private final float[] enStuck = new float[MAX_ENEMIES];          // seconds spent making no real progress
+    private final float[] enProgT = new float[MAX_ENEMIES];          // progress-check ticker
     private final int[] enBoss = new int[MAX_ENEMIES];        // 0 = normal, 1 = mini-boss, 2 = boss
     private float spawnTimer = 0f;
 
@@ -618,6 +643,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         interiorMesh = makeBuffer(makeInteriorMesh());   // baked walk-in interiors (floors/ceilings/furniture)
         buildOpenableWindows();                          // reachable ground-floor sashes (from the same window layout)
         shadowMesh = makeBuffer(makeShadowMeshData());   // projected directional shadows for every static object
+        float[] wtr = makeWaterMeshData();               // fountain pools + overflow streams (animated shader water)
+        waterMesh = wtr.length > 0 ? makeBuffer(wtr) : null;
 
         // The GL context can be re-created mid-session (Home + return, screen off). If that happens while in
         // the SANDBOX, the editObjs snapshot-swap must be unwound FIRST — otherwise the hub opens with the
@@ -710,7 +737,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uSunInt, effSunInt);
         GLES20.glUniform1f(uAmbient, effAmbient);
         GLES20.glUniform2f(uFogRange, effFogStart, effFogEnd);
-        GLES20.glUniform1f(uTime, timeAcc);
+        // Wrapped at 10*PI: every FRAG3 animation frequency is a multiple of 0.2 rad/s, so the wrap is
+        // seamless (integer cycles) — and uTime stays small enough that mediump/fp16 GPUs keep smooth
+        // phase precision instead of the water/pulse animations quantizing as timeAcc grows unbounded.
+        GLES20.glUniform1f(uTime, timeAcc % 31.415926f);
         GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
@@ -849,6 +879,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         drawDoors();
         drawWindows();
+        drawWater();          // before the horde: a zombie between you and the fountain must cover the water
         drawEnemies();
         drawParticles();
         drawWeather();
@@ -877,6 +908,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float speed = ENEMY_SPEED * Math.min(2.2f, 1f + 0.03f * (wave - 1));   // faster every wave
         float dmgMul = Math.min(1.8f, 1f + 0.025f * (wave - 1));                // and they hit harder
         float sinYaw = (float) Math.sin(yaw), cosYaw = (float) Math.cos(yaw);
+        navUpdate(dt);                                     // keep the flow field flooded from the player
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (enHurt[i] > 0f) enHurt[i] -= dt;
             if (!enAlive[i]) continue;
@@ -933,7 +965,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             } else if (d > 1e-4f) {
                 float typeMul = enBoss[i] > 0 ? 0.6f : (enType[i] == 1 ? 1.7f : (enType[i] == 2 ? 0.6f : 1f));
                 float es = speed * typeMul;                        // runners rush, brutes/bosses lumber
-                float a = steerDir(enX[i], enZ[i], (float) Math.atan2(dx, dz));  // navigate round buildings
+                // Route: close + clear line -> straight lunge; else descend the flow field (with the
+                // greedy probe as a local-clearance polish); else the old greedy steering alone.
+                float desired = (float) Math.atan2(dx, dz);
+                float a;
+                if (d < 3.2f && navLineClear(enX[i], enZ[i], px, pz)) a = desired;
+                else if (navFlowDir(enX[i], enZ[i], navFlow)) a = steerDir(enX[i], enZ[i], (float) Math.atan2(navFlow[0], navFlow[1]));
+                else a = steerDir(enX[i], enZ[i], desired);
                 enFace[i] = a;                            // face the way it actually moves
                 float step = es * dt * (enHurt[i] > 0f ? 0.4f : 1f);   // flinch: stagger briefly when shot
                 enX[i] += (float) Math.sin(a) * step;
@@ -942,6 +980,25 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 colTmp[0] = enX[i]; colTmp[1] = enZ[i];
                 collide(0.4f, 0f, false, colTmp);         // backstop: never pass through cover
                 enX[i] = colTmp[0]; enZ[i] = colTmp[1];
+                // Watchdog: no real ground covered for a while -> a sideways shove to pop it off the
+                // snag; still wedged, far away AND out of the player's view -> quiet relocation.
+                enProgT[i] += dt;
+                if (enProgT[i] >= 1.2f) {
+                    if (Math.abs(enX[i] - enLastX[i]) + Math.abs(enZ[i] - enLastZ[i]) < 0.30f) {
+                        enStuck[i] += enProgT[i];
+                        float facing = -dx * sinYaw + dz * cosYaw;
+                        if (enStuck[i] > 4.0f && d > 9f && facing < d * 0.45f && spawnPointNear(spawnTmp)) {
+                            enX[i] = spawnTmp[0]; enZ[i] = spawnTmp[1];
+                            enStuck[i] = 0f;
+                        } else {
+                            float ja = rng.nextFloat() * 6.2832f;
+                            enKx[i] += (float) Math.sin(ja) * 2.4f;
+                            enKz[i] += (float) Math.cos(ja) * 2.4f;
+                        }
+                    } else enStuck[i] = 0f;
+                    enLastX[i] = enX[i]; enLastZ[i] = enZ[i];
+                    enProgT[i] = 0f;
+                }
             }
         }
         spawnTimer -= dt;
@@ -1013,6 +1070,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (x * x + z * z > 34f * 34f) continue;                          // stay on the flat core
             if (Math.abs(x) > ARENA_LIMIT || Math.abs(z) > ARENA_LIMIT) continue;
             if (inBuildingXZ(x, z, 0.7f)) continue;                           // not inside a building
+            if (navFieldValid && tries < 20) {                                // never drop one into an enclosed pocket
+                // (soft after 20 tries: with the player sealed indoors the WHOLE outdoors is unreachable,
+                //  and a zombie waiting outside beats no zombie at all)
+                int cx = navIx(x), cz = navIx(z);
+                if (cx >= 0 && cz >= 0 && cx < NAV_N && cz < NAV_N && navDist[cz * NAV_N + cx] < 0) continue;
+            }
             out[0] = x; out[1] = z; return true;
         }
         return false;
@@ -1028,6 +1091,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enPhase[i] = rng.nextFloat() * 6.2832f;
                 enHurt[i] = 0f; enWind[i] = 0f;
                 enKx[i] = 0f; enKz[i] = 0f;
+                enStuck[i] = 0f; enProgT[i] = 0f; enLastX[i] = enX[i]; enLastZ[i] = enZ[i];
                 enFaceType[i] = rng.nextInt(6);
                 enVar[i] = rng.nextFloat();                            // per-zombie skin/wear/wound variety
                 float hpMul = Math.min(6f, 1f + 0.09f * (wave - 1));   // tankier every wave
@@ -1287,6 +1351,159 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         saveMeta();
         deathAnim = 1.5f;            // play the death sequence, then hand off to the summary
+    }
+
+    // --- flow-field navigation ---
+
+    private static int navIx(float w) { return (int) ((w - NAV_ORG) / NAV_CELL); }
+    private static float navCx(int i) { return NAV_ORG + (i + 0.5f) * NAV_CELL; }
+
+    /** Bake the static walkability grid: a cell is blocked when a box that would deflect a zombie
+     *  (same height-band criteria as clearOfBuildings) covers its centre, inflated by the zombie
+     *  radius. Doors are NOT baked — they are overlaid per BFS pass from their live open state. */
+    private void navBake() {
+        if (navDist == null) { navDist = new short[NAV_N * NAV_N]; navQ = new int[NAV_N * NAV_N]; }
+        boolean[] blk = new boolean[NAV_N * NAV_N];
+        float[][] bxs = boxes != null ? boxes : new float[0][];
+        for (float[] b : bxs) {
+            boolean interior = b.length > 10 && b[10] != 0f;
+            if (!interior && b[1] + b[4] * 0.5f < 0.5f) continue;   // low enough to shamble over
+            if (b[1] - b[4] * 0.5f >= 1.8f) continue;               // overhead: walks under
+            navMarkRect(blk, null, b[0], b[2], b[3] * 0.5f, b[5] * 0.5f, b.length > 9 ? b[9] : 0f);
+        }
+        int nd = doorData == null ? 0 : doorData.length;
+        navDoorCells = new int[nd][];
+        java.util.List<Integer> cells = new java.util.ArrayList<Integer>();
+        for (int i = 0; i < nd; i++) {
+            float[] dd = doorData[i];
+            float hx = dd[6] == 0f ? dd[3] : dd[5];
+            float hz = dd[6] == 0f ? dd[5] : dd[3];
+            cells.clear();
+            navMarkRect(null, cells, dd[0], dd[2], hx, hz, dd.length > 13 ? dd[13] : 0f);
+            int[] arr = new int[cells.size()];
+            for (int c = 0; c < arr.length; c++) arr[c] = cells.get(c);
+            navDoorCells[i] = arr;
+        }
+        navBlocked = blk;
+        navFieldValid = false;
+        navPx = 1e9f;                                                // force a BFS refresh on the next tick
+    }
+
+    /** Mark (or collect) every grid cell whose centre lies inside the yawed rect inflated by the
+     *  zombie radius. Conservative outer AABB first, exact insideYawXZ per cell. */
+    private static void navMarkRect(boolean[] blk, java.util.List<Integer> sink,
+                                    float cx, float cz, float hx, float hz, float yawDeg) {
+        float ihx = hx + 0.36f, ihz = hz + 0.36f;
+        double a = Math.toRadians(yawDeg);
+        float ca = Math.abs((float) Math.cos(a)), sa = Math.abs((float) Math.sin(a));
+        float ex = ihx * ca + ihz * sa, ez = ihx * sa + ihz * ca;    // world-axis extents of the rotated rect
+        int x0 = Math.max(0, navIx(cx - ex)), x1 = Math.min(NAV_N - 1, navIx(cx + ex));
+        int z0 = Math.max(0, navIx(cz - ez)), z1 = Math.min(NAV_N - 1, navIx(cz + ez));
+        for (int iz = z0; iz <= z1; iz++) for (int ix = x0; ix <= x1; ix++) {
+            if (!insideYawXZ(navCx(ix), navCx(iz), cx, cz, ihx, ihz, yawDeg)) continue;
+            if (blk != null) blk[iz * NAV_N + ix] = true;
+            if (sink != null) sink.add(iz * NAV_N + ix);
+        }
+    }
+
+    /** Re-flood the distance field from the player: closed doors become temporary walls, then a
+     *  plain 8-connected BFS (diagonals may not cut blocked corners) fills steps-to-player. */
+    private void navRefresh() {
+        java.util.Arrays.fill(navDist, (short) -1);
+        for (int i = 0; i < navDoorCells.length; i++) {
+            if (doorOpen[i] > 0.5f) continue;
+            for (int c : navDoorCells[i]) navDist[c] = -2;
+        }
+        int scx = Math.max(0, Math.min(NAV_N - 1, navIx(px)));
+        int scz = Math.max(0, Math.min(NAV_N - 1, navIx(pz)));
+        int start = -1;
+        for (int rad = 0; rad <= 3 && start < 0; rad++) {            // player may stand on a blocked cell edge
+            for (int dz = -rad; dz <= rad && start < 0; dz++) for (int dx = -rad; dx <= rad; dx++) {
+                int nx = scx + dx, nz = scz + dz;
+                if (nx < 0 || nz < 0 || nx >= NAV_N || nz >= NAV_N) continue;
+                int c = nz * NAV_N + nx;
+                if (!navBlocked[c] && navDist[c] == -1) { start = c; break; }
+            }
+        }
+        navFieldValid = start >= 0;
+        if (start < 0) return;
+        int head = 0, tail = 0;
+        navQ[tail++] = start; navDist[start] = 0;
+        while (head < tail) {
+            int c = navQ[head++];
+            int cx = c % NAV_N, cz = c / NAV_N;
+            short nd = (short) (navDist[c] + 1);
+            for (int k = 0; k < 8; k++) {
+                int nx = cx + NAV_DX[k], nz = cz + NAV_DZ[k];
+                if (nx < 0 || nz < 0 || nx >= NAV_N || nz >= NAV_N) continue;
+                int n = nz * NAV_N + nx;
+                if (navDist[n] != -1 || navBlocked[n]) continue;
+                if (k >= 4) {                                        // diagonal: both flanking cells must be open
+                    int n1 = cz * NAV_N + nx, n2 = nz * NAV_N + cx;
+                    if (navBlocked[n1] || navDist[n1] == -2 || navBlocked[n2] || navDist[n2] == -2) continue;
+                }
+                navDist[n] = nd;
+                navQ[tail++] = n;
+            }
+        }
+    }
+
+    /** Rebake/reflood as needed: cheap to call every frame while playing. */
+    private void navUpdate(float dt) {
+        if (navBlocked == null) navBake();
+        navTimer -= dt;
+        if (navTimer <= 0f || Math.abs(px - navPx) + Math.abs(pz - navPz) > 0.9f) {
+            navRefresh();
+            navTimer = 0.45f;
+            navPx = px; navPz = pz;
+        }
+    }
+
+    /** Descend the distance field at (ex,ez): out = normalized flow direction. False when the spot
+     *  is off-grid or the field can't see it (caller falls back to greedy steering + leash). */
+    private boolean navFlowDir(float ex, float ez, float[] out) {
+        if (!navFieldValid) return false;
+        int cx = navIx(ex), cz = navIx(ez);
+        if (cx < 1 || cz < 1 || cx >= NAV_N - 1 || cz >= NAV_N - 1) return false;
+        int c = cz * NAV_N + cx;
+        int dc = navDist[c];
+        if (dc == 0) return false;                                   // sharing the player's cell: walk straight
+        if (dc < 0) {                                                // wedged on a blocked cell: step to any seen neighbour
+            int best = -1, bd = Integer.MAX_VALUE;
+            for (int k = 0; k < 8; k++) {
+                int n = (cz + NAV_DZ[k]) * NAV_N + (cx + NAV_DX[k]);
+                if (navDist[n] >= 0 && navDist[n] < bd) { bd = navDist[n]; best = k; }
+            }
+            if (best < 0) return false;
+            float l = best >= 4 ? 0.7071f : 1f;
+            out[0] = NAV_DX[best] * l; out[1] = NAV_DZ[best] * l;
+            return true;
+        }
+        float fx = 0f, fz = 0f;
+        for (int k = 0; k < 8; k++) {                                // weighted downhill blend = smooth heading
+            int n = (cz + NAV_DZ[k]) * NAV_N + (cx + NAV_DX[k]);
+            if (navDist[n] < 0) continue;
+            float w = dc - navDist[n];
+            if (w <= 0f) continue;
+            float il = k >= 4 ? 0.7071f : 1f;
+            fx += NAV_DX[k] * w * il; fz += NAV_DZ[k] * w * il;
+        }
+        float l = (float) Math.sqrt(fx * fx + fz * fz);
+        if (l < 1e-4f) return false;
+        out[0] = fx / l; out[1] = fz / l;
+        return true;
+    }
+
+    /** A cheap straight-line probe (used to switch from field-following to a direct lunge). */
+    private boolean navLineClear(float x0, float z0, float x1, float z1) {
+        float dx = x1 - x0, dz = z1 - z0;
+        float len = (float) Math.sqrt(dx * dx + dz * dz);
+        int n = (int) (len / 0.5f) + 1;
+        for (int i = 1; i < n; i++) {
+            float u = i / (float) n;
+            if (!clearOfBuildings(x0 + dx * u, z0 + dz * u, 0.30f)) return false;
+        }
+        return true;
     }
 
     // Steering: try headings fanned out from "straight at the player" and take the first one whose
@@ -1743,6 +1960,71 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (axis == 0) { Matrix.translateM(model, 0, lt, lv, ld); Matrix.scaleM(model, 0, st, sv, sd); }
         else           { Matrix.translateM(model, 0, ld, lv, lt); Matrix.scaleM(model, 0, sd, sv, st); }
         drawWorld(cube, 36, mode, r, g, b);
+    }
+
+    // --- fountain water ---
+
+    /** Bake every registered pool/stream into one mesh for the animated-water shader branch.
+     *  Vertex encoding: UV.y picks the surface kind (0 pool, 1 falling stream, 2 basin floor);
+     *  UV.x is the radial coordinate (pools/floors, 0 centre -> 1 rim) or the fall parameter
+     *  (streams, 0 top -> 1 splash); a pool vertex's normal.xz carries the radial DIRECTION so
+     *  the fragment shader can slope ripple rings without knowing the disc centre. */
+    private float[] makeWaterMeshData() {
+        int discs = waterDiscs == null ? 0 : waterDiscs.size();
+        int strms = waterStreams == null ? 0 : waterStreams.size();
+        if (discs + strms == 0) { waterVerts = 0; return new float[0]; }
+        int SEG = 40;
+        float[] d = new float[(discs * 2 * SEG * 3 + strms * 12) * 8];
+        int o = 0;
+        for (int di = 0; di < discs; di++) {                 // opaque-ish floors FIRST (painter's order)
+            float[] w = waterDiscs.get(di);
+            if (w[3] > 0.6f) o = waterFan(d, o, w[0], 0.10f, w[2], w[3] + 0.06f, SEG, 2f);
+        }
+        for (int di = 0; di < discs; di++) {
+            float[] w = waterDiscs.get(di);
+            o = waterFan(d, o, w[0], w[1], w[2], w[3], SEG, 0f);
+        }
+        if (waterStreams != null) for (float[] s : waterStreams) {
+            for (int q = 0; q < 2; q++) {                    // two crossed vertical quads
+                float ux = q == 0 ? 1f : 0f, uz = q == 0 ? 0f : 1f;
+                float ax = s[0] - ux * s[4], az = s[2] - uz * s[4];
+                float bx = s[0] + ux * s[4], bz = s[2] + uz * s[4];
+                float nx = uz, nz = -ux;                     // any horizontal normal; the branch only shades by UV
+                o = put(d, o, ax, s[1], az, nx, 0f, nz, 0f, 1f);
+                o = put(d, o, bx, s[1], bz, nx, 0f, nz, 0f, 1f);
+                o = put(d, o, bx, s[3], bz, nx, 0f, nz, 1f, 1f);
+                o = put(d, o, ax, s[1], az, nx, 0f, nz, 0f, 1f);
+                o = put(d, o, bx, s[3], bz, nx, 0f, nz, 1f, 1f);
+                o = put(d, o, ax, s[3], az, nx, 0f, nz, 1f, 1f);
+            }
+        }
+        waterVerts = o / 8;
+        return o == d.length ? d : java.util.Arrays.copyOf(d, o);
+    }
+
+    /** One horizontal disc as a triangle fan (emitted as independent triangles). */
+    private static int waterFan(float[] d, int o, float cx, float y, float cz, float r, int seg, float kind) {
+        for (int k = 0; k < seg; k++) {
+            double a0 = k * Math.PI * 2.0 / seg, a1 = (k + 1) * Math.PI * 2.0 / seg;
+            float s0 = (float) Math.sin(a0), c0 = (float) Math.cos(a0);
+            float s1 = (float) Math.sin(a1), c1 = (float) Math.cos(a1);
+            o = put(d, o, cx, y, cz, 0f, 1f, 0f, 0f, kind);
+            o = put(d, o, cx + s0 * r, y, cz + c0 * r, s0, 1f, c0, 1f, kind);
+            o = put(d, o, cx + s1 * r, y, cz + c1 * r, s1, 1f, c1, 1f, kind);
+        }
+        return o;
+    }
+
+    private void drawWater() {
+        if (waterMesh == null || waterVerts <= 0) return;
+        GLES20.glUseProgram(prog3);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        GLES20.glDepthMask(false);
+        Matrix.setIdentityM(model, 0);
+        drawWorld(waterMesh, waterVerts, 6f, 0.030f, 0.105f, 0.125f);   // deep pool tint (linear, pre-ACES); shader adds sky + glints
+        GLES20.glDepthMask(true);
+        GLES20.glDisable(GLES20.GL_BLEND);
     }
 
     // --- weapon viewmodels ---
@@ -2640,6 +2922,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         boxes = merged;
         makeOverlayTrees();
         shadowMesh = makeBuffer(makeShadowMeshData());   // editor/sandbox objects cast baked shadows too
+        navBlocked = null;                               // colliders changed: rebake the walkability grid lazily
         editDirty = false;
     }
 
@@ -3100,7 +3383,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         nearDoor = -1;
         for (int i = 0; i < windowOpen.length; i++) { windowOpen[i] = 0f; windowTarget[i] = 0f; }
         nearWindow = -1;
-        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; enWind[i] = 0f; blipAge[i] = 999f; blipRel[i] = -1f; }
+        for (int i = 0; i < MAX_ENEMIES; i++) { enAlive[i] = false; enScale[i] = 1f; enBoss[i] = 0; enKx[i] = 0f; enKz[i] = 0f; enWind[i] = 0f; blipAge[i] = 999f; blipRel[i] = -1f; enStuck[i] = 0f; enProgT[i] = 0f; }
+        navTimer = 0f; navPx = 1e9f; navFieldValid = false;
         radarPrevT = -1f;
         for (int i = 0; i < MAX_PICKUPS; i++) pkLife[i] = 0f;
         hitStop = 0f;
@@ -6490,18 +6774,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** A stone fountain: an octagonal basin with water, a central pedestal, bowl and spout. */
-    private static void addFountain(List<float[]> L, float x, float z) {
+    /** A stone fountain: a REAL octagonal basin (eight rim segments around a sunken pool), a pedestal
+     *  carrying an overflowing upper bowl, and falling water streams. The water itself is no longer
+     *  boxes — the pools/streams are registered here and rendered as animated translucent shader
+     *  surfaces (drawWater). Rim/bowl heights are staggered so no two stone tops are ever coplanar
+     *  (the old two-box basin z-fought itself AND its flush water slabs). */
+    private void addFountain(List<float[]> L, float x, float z) {
         float sr = 0.73f, sg = 0.72f, sb = 0.68f;
-        L.add(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr, sg, sb, 0f});              // basin (octagon)
-        L.add(new float[]{x, 0.27f, z, 2.4f, 0.54f, 2.4f, sr - 0.05f, sg - 0.05f, sb - 0.05f, 45f});
-        L.add(new float[]{x, 0.50f, z, 1.9f, 0.08f, 1.9f, 0.34f, 0.52f, 0.62f, 0f});     // water surface
-        L.add(new float[]{x, 0.50f, z, 1.9f, 0.08f, 1.9f, 0.30f, 0.49f, 0.61f, 45f});
-        L.add(new float[]{x, 0.86f, z, 0.46f, 1.1f, 0.46f, sr, sg, sb, 0f});             // pedestal
-        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr, sg, sb, 0f});            // upper bowl
-        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr - 0.04f, sg - 0.04f, sb - 0.04f, 45f});
-        L.add(new float[]{x, 1.50f, z, 0.78f, 0.05f, 0.78f, 0.34f, 0.52f, 0.62f, 0f});   // bowl water
+        for (int k = 0; k < 8; k++) {                        // octagonal rim: 8 wall segments, alternating course height
+            double a = Math.toRadians(k * 45f);
+            float wx = x + (float) Math.sin(a) * 1.08f, wz = z + (float) Math.cos(a) * 1.08f;
+            float hgt = (k % 2 == 0) ? 0.54f : 0.52f;
+            float tint = (k % 2 == 0) ? 0f : -0.035f;
+            L.add(new float[]{wx, hgt * 0.5f, wz, 1.02f, hgt, 0.24f, sr + tint, sg + tint, sb + tint, k * 45f});
+        }
+        L.add(new float[]{x, 0.86f, z, 0.42f, 1.1f, 0.42f, sr, sg, sb, 0f});             // pedestal
+        L.add(new float[]{x, 1.42f, z, 0.95f, 0.16f, 0.95f, sr, sg, sb, 0f});            // upper bowl — tops AND
+        L.add(new float[]{x, 1.425f, z, 0.95f, 0.13f, 0.95f, sr - 0.04f, sg - 0.04f, sb - 0.04f, 45f});   // bottoms staggered
         L.add(new float[]{x, 1.74f, z, 0.16f, 0.55f, 0.16f, sr, sg, sb, 0f});            // spout
+        if (waterDiscs == null) waterDiscs = new java.util.ArrayList<float[]>();
+        if (waterStreams == null) waterStreams = new java.util.ArrayList<float[]>();
+        waterDiscs.add(new float[]{x, 0.42f, z, 1.05f});     // basin pool, sunk 10-12 cm below the rim courses
+        waterDiscs.add(new float[]{x, 1.515f, z, 0.36f});    // bowl filled to the brim
+        for (int k = 0; k < 4; k++) {                        // overflow: bowl rim -> basin pool
+            double a = Math.toRadians(45f + k * 90f);
+            waterStreams.add(new float[]{x + (float) Math.sin(a) * 0.40f, 1.47f,
+                                         z + (float) Math.cos(a) * 0.40f, 0.40f, 0.055f});
+        }
     }
 
     /** Rotate (x,z) into a house's local frame (about its centre, by -yaw). out = {lx,lz} relative to centre. */
@@ -8113,7 +8412,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    gl_FragColor=vec4(pow(aces(col),vec3(0.4545)),1.0); return;" +
         "  } else if(uMode<4.5){" +
         "    gl_FragColor=vec4(pow(min(uColor,vec3(1.0)),vec3(0.4545)),1.0); return;" +
-        "  } else {" +                                          // mode 5: real glass — reflects the sky, slightly see-through, frame stays solid
+        "  } else if(uMode<5.5){" +                             // mode 5: real glass — reflects the sky, slightly see-through, frame stays solid
         "    vec3 tex=texture2D(uTex,vUV).rgb; vec3 N2=normalize(vNormal);" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         "    float gx=step(0.20,vUV.x)*step(vUV.x,0.80)*step(0.20,vUV.y)*step(vUV.y,0.80);" +
@@ -8132,6 +8431,48 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float sunAmt=pow(max(dot(normalize(vWorld-uCamPos),normalize(uLightDir)),0.0),3.0);" +
         "    col2=mix(col2,uFogColor+vec3(0.12,0.05,0.0)*sunAmt*uSunInt,fog);" +
         "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)), mix(1.0,0.42,glass)); return;" +   // frame opaque, glass see-through (shows the dim room behind)
+        "  } else {" +                                          // mode 6: animated fountain water (pools / streams / basin floor by UV.y)
+        "    float d=vUV.x; float t=uTime;" +
+        "    float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
+        "    if(vUV.y>1.5){" +                                  // basin floor: painted stone seen through the pool, darker at the rim
+        "      vec3 fc=uColor*(2.3-1.1*d);" +
+        "      fc=mix(fc,uFogColor,fog);" +
+        "      gl_FragColor=vec4(pow(grade(aces(fc)),vec3(0.4545)),1.0); return;" +
+        "    }" +
+        "    if(vUV.y>0.5){" +                                  // falling stream: bright bands sliding down, splash at the foot
+        "      float band=0.35+0.65*smoothstep(-0.2,0.9,sin(d*19.0-t*15.0));" +
+        "      float splash=smoothstep(0.72,1.0,d)*(0.60+0.40*sin(t*9.0+vWorld.x*37.0+vWorld.z*29.0));" +
+        "      vec3 wc=mix(uColor*2.2,vec3(0.93,0.97,1.00),0.30*band+0.55*splash);" +
+        "      wc=mix(wc,uFogColor,fog);" +
+        "      gl_FragColor=vec4(pow(clamp(wc,0.0,1.0),vec3(0.4545)),0.30+0.28*band+0.34*splash); return;" +
+        "    }" +
+        // Pool surface. The vertex normal's xz is the radial direction, so concentric ripple rings can be
+        // sloped analytically; a churn ring sits where the overflow streams land (d~0.38), and a soft
+        // world-space chop breaks the symmetry. Shading mirrors the window glass: fresnel-weighted sky
+        // reflection that follows the weather, a hard sun glitter, foam lapping at the stone.
+        "    vec2 rn=vNormal.xz; float rl=length(rn); vec2 rd=rl>0.02?rn/rl:vec2(0.0,0.0);" +
+        "    float rq=(d-0.38)*9.0; float ring=exp(-rq*rq);" +   // NOT pow(): a negative base is UB in GLSL ES 1.00
+
+        "    float amp=0.12+0.22*ring;" +
+        "    float slope=amp*(cos(d*26.0-t*3.0)+0.55*cos(d*47.0-t*5.2));" +
+        "    float chx=0.09*cos(vWorld.x*7.0+t*1.4)*sin(vWorld.z*6.0-t*1.2);" +
+        "    float chz=0.09*sin(vWorld.x*6.5-t*1.2)*cos(vWorld.z*7.5+t*1.6);" +
+        "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
+        "    vec3 N2=normalize(vec3(slope*rd.x+chx,1.0,slope*rd.y+chz));" +
+        "    float fres=pow(1.0-max(dot(N2,V),0.0),3.0);" +
+        "    float clr=clamp((uSunInt-0.55)*2.2,0.0,1.0);" +
+        "    vec3 R=reflect(-V,N2);" +
+        "    vec3 skyR=mix(vec3(0.86,0.90,0.97),vec3(0.55,0.68,0.94),clamp(R.y*1.3+0.25,0.0,1.0));" +
+        "    vec3 col2=mix(uColor,mix(uFogColor,skyR,clr)*max(uSunInt,0.85),0.05+0.75*fres);" +
+        "    vec3 H=normalize(L+V);" +
+        "    col2+=pow(max(dot(N2,H),0.0),520.0)*vec3(2.2,2.1,1.8)*uSunInt;" +   // pinprick glitter, not a sheet: H is near-vertical over flat water
+        "    float foam=smoothstep(0.92,0.995,d)*(0.40+0.35*sin(d*70.0-t*2.2))" +
+        "              +ring*(0.16+0.16*sin(t*7.0+vWorld.x*23.0+vWorld.z*19.0));" +
+        "    foam=clamp(foam,0.0,1.0);" +
+        "    col2=mix(col2,vec3(0.93,0.97,1.00),foam*0.60);" +
+        "    float al=clamp(0.78+0.22*fres+0.25*foam,0.0,0.96);" +
+        "    col2=mix(col2,uFogColor,fog);" +
+        "    gl_FragColor=vec4(pow(grade(aces(col2)),vec3(0.4545)),al); return;" +
         "  }" +
         "  float dist=length(uCamPos-vWorld); float fog=clamp((dist-uFogRange.x)/max(uFogRange.y-uFogRange.x,0.001),0.0,0.82);" +
         // Sun-directional inscatter: fog warms toward the sun azimuth (matching the sky's halo) so distant
