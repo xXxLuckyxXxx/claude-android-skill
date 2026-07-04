@@ -145,7 +145,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // Dynamic point lights (FRAG3 lit branch): slot 0 = muzzle flash kicking warm light onto the world,
     // remaining slots = the nearest street lanterns during the ABENDROT (dusk) weather.
-    private int uPtLoc = -1, uPtCLoc = -1, uSwayLoc = -1;
+    private int uPtLoc = -1, uPtCLoc = -1, uSwayLoc = -1, uCharLoc = -1;
     private final float[] ptPos = new float[16];    // 4 x (x,y,z, 1/r^2)
     private final float[] ptCol = new float[12];    // 4 x premultiplied rgb (0 = slot off)
     private float wDusk = 0f;                       // dusk crossfade (like wRain/wSnow)
@@ -629,6 +629,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uPtLoc = GLES20.glGetUniformLocation(prog3, "uPt");        // dynamic point lights
         uPtCLoc = GLES20.glGetUniformLocation(prog3, "uPtC");
         uSwayLoc = GLES20.glGetUniformLocation(prog3, "uSway");    // vegetation wind
+        uCharLoc = GLES20.glGetUniformLocation(prog3, "uChar");    // character wrap lighting
 
         progBright = buildProgram(VERT_POST_SRC, FRAG_BRIGHT_SRC);
         aPBr = GLES20.glGetAttribLocation(progBright, "aP");
@@ -1837,6 +1838,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void drawEnemies() {
         GLES20.glUseProgram(prog3);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        GLES20.glUniform1f(uCharLoc, 1f);                 // wrap-lit characters (reset at the end)
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (!enAlive[i]) continue;
             float sw = (float) Math.sin(enPhase[i]);          // limb swing
@@ -1873,7 +1875,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 faceDy = -1.10f; faceDz = 0.38f;
                 enemyFace(enFaceType[i]);
                 faceDy = 0f; faceDz = 0f;
-                float aL = -64f + sw * 12f, aR = -64f - sw * 12f;                               // alternating crawl pull
+                enemyPart(0f, 0.09f, -0.68f, 0.16f, 0.10f, 0.22f, blR * 0.85f, blG, blB);        // dragged entrails
+                enemyPart(0.07f, 0.07f, -0.86f, 0.10f, 0.07f, 0.16f, blR * 0.7f, blG, blB);
+                float crAsym = (sv - 0.5f) * 10f;
+                float aL = -64f + crAsym + sw * 12f, aR = -64f - crAsym - sw * 12f;             // alternating crawl pull
                 enemyLimb(-0.27f, 0.34f, 0.22f, 0.14f, 0.13f, 0.28f, 0.16f, aL, shR, shG, shB); // sleeves
                 enemyLimb( 0.27f, 0.34f, 0.22f, 0.14f, 0.13f, 0.28f, 0.16f, aR, shR, shG, shB);
                 enemyLimb(-0.27f, 0.34f, 0.22f, 0.38f, 0.12f, 0.24f, 0.15f, aL, hdR, hdG, hdB); // bare forearms
@@ -1891,6 +1896,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enemyPart(0f, 1.24f, -0.09f, tw * 0.88f, 0.26f, 0.24f, shR * 0.86f, shG * 0.86f, shB * 0.86f); // hunched upper back
                 enemyPart(0f, 1.33f, 0.04f, 0.16f, 0.10f, 0.16f, hdR * 0.92f, hdG * 0.92f, hdB * 0.92f);       // neck
                 enemyPart(0f, 1.47f, 0.10f, 0.34f, 0.34f, 0.34f, hdR, hdG, hdB);                // head, jutting forward
+                enemyPart(0f, 1.60f, 0.125f, 0.325f, 0.07f, 0.29f, hdR * 0.84f, hdG * 0.84f, hdB * 0.84f);  // heavy brow ledge
+                enemyPart(0f, 1.355f, 0.115f, 0.295f, 0.115f, 0.295f, hdR * 0.90f, hdG * 0.88f, hdB * 0.86f); // sunken jaw step
                 faceDy = -0.03f; faceDz = 0.10f;
                 enemyFace(enFaceType[i]);
                 faceDy = 0f; faceDz = 0f;
@@ -1906,8 +1913,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enemyLimb( 0.14f, 0.70f, 0f, 0.35f, 0.18f, 0.70f, 0.22f, lR, paR, paG, paB);
                 enemyLimb(-0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f, lL, paR * 0.42f, paG * 0.38f, paB * 0.34f);
                 enemyLimb( 0.14f, 0.70f, 0.02f, 0.615f, 0.20f, 0.17f, 0.28f, lR, paR * 0.42f, paG * 0.38f, paB * 0.34f);
-                // the classic zombie reach: arms thrust forward, swaying slightly, rising during the telegraph
-                float aL = -74f + sw * 9f - wr * 16f, aR = -74f - sw * 9f - wr * 16f;
+                // the classic zombie reach: arms thrust forward, swaying slightly, rising during the telegraph.
+                // Per-zombie asymmetry: one arm hangs lower than the other, so the horde stops mirror-cloning.
+                float armAsym = (sv - 0.5f) * 16f;
+                float aL = -74f + armAsym + sw * 9f - wr * 16f, aR = -74f - armAsym * 0.6f - sw * 9f - wr * 16f;
                 enemyLimb(-0.33f, 1.28f, 0.02f, 0.16f, 0.13f, 0.32f, 0.16f, aL, shR, shG, shB); // sleeves
                 enemyLimb( 0.33f, 1.28f, 0.02f, 0.16f, 0.13f, 0.32f, 0.16f, aR, shR, shG, shB);
                 enemyLimb(-0.33f, 1.28f, 0.02f, 0.42f, 0.12f, 0.26f, 0.15f, aL, hdR, hdG, hdB); // bare forearms
@@ -1920,10 +1929,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enemyPart(0f, 0.635f, 0.175f, 0.09f, 0.055f, 0.02f, 0.55f, 0.50f, 0.34f);               // buckle
                 enemyPart(-0.245f, 1.235f, 0.03f, 0.13f, 0.09f, 0.28f, shR * 0.70f, shG * 0.70f, shB * 0.70f);  // torn shoulder seams
                 enemyPart( 0.245f, 1.235f, 0.03f, 0.13f, 0.09f, 0.28f, shR * 0.66f, shG * 0.66f, shB * 0.66f);
-                enemyPart(0f, 1.605f, 0.055f, 0.30f, 0.09f, 0.30f, 0.16f + 0.10f * sv, 0.11f, 0.06f);   // matted hair cap
-                enemyPart(0f, 1.545f, -0.055f, 0.34f, 0.16f, 0.10f, 0.14f + 0.10f * sv, 0.10f, 0.06f);  //   hanging at the back
+                if (wv < 0.72f) {                                                                        // most keep matted hair...
+                    enemyPart(0f, 1.605f, 0.055f, 0.30f, 0.09f, 0.30f, 0.16f + 0.10f * sv, 0.11f, 0.06f);
+                    enemyPart(0f, 1.545f, -0.055f, 0.34f, 0.16f, 0.10f, 0.14f + 0.10f * sv, 0.10f, 0.06f);
+                } else {                                                                                 // ...the rest went bald + scalp gash
+                    enemyPart(0.06f, 1.625f, 0.02f, 0.16f, 0.03f, 0.20f, blR * 0.8f, blG, blB);
+                }
+                enemyPart(0f, 1.315f, 0.00f, 0.32f, 0.09f, 0.30f, shR * 0.88f, shG * 0.88f, shB * 0.88f);   // shirt collar
+                if (wv > 0.45f) enemyPart(0.115f, 1.335f, 0.075f, 0.10f, 0.10f, 0.12f, blR, blG, blB);      // neck bite
+                if (sv > 0.55f) {                                                                        // ribs bared through the shirt
+                    enemyPart(-0.03f, 1.005f, 0.158f, 0.26f, 0.30f, 0.015f, 0.10f, 0.045f, 0.04f);       // dark cavity
+                    for (int rb = 0; rb < 3; rb++)
+                        enemyPart(-0.03f, 1.105f - rb * 0.085f, 0.166f, 0.24f, 0.032f, 0.012f, 0.80f, 0.75f, 0.62f);
+                }
+                enemyLimb(-0.14f, 0.70f, 0.02f, 0.30f, 0.20f, 0.13f, 0.245f, lL, paR * 0.88f, paG * 0.88f, paB * 0.88f);  // knee wraps
+                enemyLimb( 0.14f, 0.70f, 0.02f, 0.30f, 0.20f, 0.13f, 0.245f, lR, paR * 0.88f, paG * 0.88f, paB * 0.88f);
+                enemyLimb(-0.14f, 0.70f, 0.075f, 0.655f, 0.19f, 0.09f, 0.20f, lL, paR * 0.36f, paG * 0.33f, paB * 0.30f); // boot toes
+                enemyLimb( 0.14f, 0.70f, 0.075f, 0.655f, 0.19f, 0.09f, 0.20f, lR, paR * 0.36f, paG * 0.33f, paB * 0.30f);
+                enemyLimb(-0.33f, 1.28f, 0.02f, 0.335f, 0.15f, 0.055f, 0.175f, aL, shR * 0.72f, shG * 0.72f, shB * 0.72f); // sleeve cuffs
+                enemyLimb( 0.33f, 1.28f, 0.02f, 0.335f, 0.15f, 0.055f, 0.175f, aR, shR * 0.72f, shG * 0.72f, shB * 0.72f);
             }
         }
+        GLES20.glUniform1f(uCharLoc, 0f);                 // back to architectural lighting
     }
 
     /** Six undead faces (one chosen per enemy), drawn UNLIT (mode 4) for high contrast; local +z always
@@ -8880,6 +8907,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
         "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange; uniform float uWorldUV;" +
         "uniform vec4 uPt[4]; uniform vec3 uPtC[4];" +   // dynamic point lights: xyz + 1/r^2, premultiplied colour (0 = off)
+        "uniform float uChar;" +                          // 1 = character (zombie): wrap-lit so turning never blacks out
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
         "vec3 grade(vec3 c){ float l=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(l),c,1.20); return clamp((c-0.5)*1.08+0.5,0.0,1.0); }" +  // richer + a little more contrast
         "void main(){" +
@@ -8904,7 +8932,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "      N=normalize(N+(bT*(h0-hx)+bB*(h0-hy))*1.8);" +
         "    }" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
-        "    float df=max(dot(N,L),0.0);" +
+        // Characters get WRAP lighting: a zombie constantly turns, so hard N.L swung its skin from
+        // sun-bleached to near-black several times a second ("mal zu blass, mal zu dunkel"). The wrap
+        // carries warm key light around the form (back side keeps ~35%), capped slightly below the
+        // architectural key so skin never washes out.
+        "    float ndl=dot(N,L);" +
+        "    float df=mix(max(ndl,0.0), max((ndl+0.65)/1.65,0.0)*0.82, uChar);" +
         "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
