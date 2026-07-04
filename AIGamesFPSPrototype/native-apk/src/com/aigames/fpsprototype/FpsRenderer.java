@@ -8629,6 +8629,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
+        // Schlick fresnel on the Blinn lobe: on a FLAT wall every fragment shares one normal, so with the
+        // sun anywhere near the view axis the pow-48 lobe covered the WHOLE face and washed it out pale
+        // ("die Seite die ich anschaue ist viel zu blass"). Dielectric plaster/brick reflects ~5% at
+        // normal incidence — keep the grazing-angle sheen, kill the face-on mirror.
+        "    sp*=0.05+0.95*pow(1.0-max(dot(N,V),0.0),5.0);" +
         "    vec3 base=tex*uColor;" +
         // Shaded facades used to wash out to pale lavender: the only light on a sun-less face was the ambient +
         // sky-fill + rim terms, and all three were strongly blue, so they cancelled the material's own hue. Keep
@@ -8733,7 +8738,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // houses fade into a horizon that agrees with where the sun is, from every camera direction.
         "  float sunAmt=pow(max(dot(normalize(vWorld-uCamPos),normalize(uLightDir)),0.0),3.0);" +
         "  col=mix(col,uFogColor+vec3(0.12,0.05,0.0)*sunAmt*uSunInt,fog);" +
-        "  gl_FragColor=vec4(pow(grade(aces(col)),vec3(0.4545)),1.0);" +
+        // Hue-preserving tonemap for the LIT world: per-channel ACES lives in a shoulder that squashes
+        // channel ratios, so a fully sunlit facade (df near 1 when the sun is behind you) bleached from
+        // terracotta to cream — "die Seite die ich anschaue ist viel zu blass". Map the LUMINANCE through
+        // ACES and carry the colour with it, then blend 55/45 with the film-like per-channel curve:
+        // sunlit walls keep their paint, true highlights (flash/sky) still roll off toward white.
+        "  vec3 tm=aces(col);" +
+        "  float cl=dot(col,vec3(0.299,0.587,0.114));" +
+        "  vec3 hp=min(col*(aces(vec3(cl)).x/max(cl,0.0001)),vec3(1.0));" +
+        "  gl_FragColor=vec4(pow(grade(mix(tm,hp,0.55)),vec3(0.4545)),1.0);" +
         "}";
 
     // --- post-processing chain (fullscreen passes over the offscreen scene) ---
