@@ -137,7 +137,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     // re-introduce the B199 window moiré).
     private int progBright, aPBr, uBrTex;
     private int progBlur, aPBl, uBlTex, uBlDir;
-    private int progPost, aPPo, uPoScene, uPoBloom, uPoInvRes, uPoGrain;
+    private int progPost, aPPo, uPoScene, uPoBloom, uPoInvRes, uPoGrain, uPoSun, uPoFlare;
     private int sceneFboId, sceneColorTex, sceneDepthRb, bloomFboA, bloomTexA, bloomFboB, bloomTexB;
     private int postW = -1, postH = -1;             // built-for size (-1 = build on next frame)
     private boolean postOk = false, postDead = false;   // postDead: device can't do it, stop trying
@@ -632,6 +632,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uPoBloom = GLES20.glGetUniformLocation(progPost, "uBloom");
         uPoInvRes = GLES20.glGetUniformLocation(progPost, "uInvRes");
         uPoGrain = GLES20.glGetUniformLocation(progPost, "uGrainT");
+        uPoSun = GLES20.glGetUniformLocation(progPost, "uSunUV");
+        uPoFlare = GLES20.glGetUniformLocation(progPost, "uFlare");
         // A re-created GL context invalidates every GL object name: forget the old FBOs (do NOT delete
         // stale names — they could collide with fresh ones) and re-probe the device on the next frame.
         sceneFboId = 0; sceneColorTex = 0; sceneDepthRb = 0; bloomFboA = 0; bloomTexA = 0; bloomFboB = 0; bloomTexB = 0;
@@ -800,6 +802,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1i(uPoBloom, 1);
         GLES20.glUniform2f(uPoInvRes, 1f / width, 1f / height);
         GLES20.glUniform1f(uPoGrain, timeAcc % 10f);
+        // Sun screen position for the flare/god-ray package: project the (infinite) sun direction with
+        // this frame's proj*view; the flare window fades in as the sun enters the screen and dies with
+        // overcast weather. Occlusion (a house in front of the sun) is handled in the shader itself.
+        Matrix.multiplyMM(tmpA, 0, proj, 0, view, 0);
+        float scw = tmpA[3] * sunDir[0] + tmpA[7] * sunDir[1] + tmpA[11] * sunDir[2];
+        float flare = 0f, su = 0.5f, sv = 0.5f;
+        if (scw > 0.001f) {
+            su = (tmpA[0] * sunDir[0] + tmpA[4] * sunDir[1] + tmpA[8] * sunDir[2]) / scw * 0.5f + 0.5f;
+            sv = (tmpA[1] * sunDir[0] + tmpA[5] * sunDir[1] + tmpA[9] * sunDir[2]) / scw * 0.5f + 0.5f;
+            float m = Math.min(Math.min(su, 1f - su), Math.min(sv, 1f - sv));
+            flare = clamp(0.35f + 3.2f * m, 0f, 1f)                    // fades out ~11% past the screen edge
+                  * clamp((effSunInt - 0.62f) * 3f, 0f, 1f);           // clear skies only
+        }
+        GLES20.glUniform2f(uPoSun, su, sv);
+        GLES20.glUniform1f(uPoFlare, flare);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bloomTexA);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
@@ -8589,16 +8606,24 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "void main(){" +
         "  vec3 N=normalize(vNormal); vec3 col;" +
         "  if(uMode<0.5){" +
-        "    vec2 uv=vUV; float ao=1.0;" +
+        "    vec2 uv=vUV; float ao=1.0; vec3 bT=vec3(0.0); vec3 bB=vec3(0.0);" +
         "    if(uWorldUV>0.5){" +                                        // facades: tile by world position (not the stretched 0..1 cube UV)
         "      vec3 an=abs(N);" +
-        "      if(an.y>an.x&&an.y>an.z) uv=vWorld.xz;" +                 // top/bottom
-        "      else if(an.x>an.z)       uv=vWorld.zy;" +                 // +/-X wall
-        "      else                     uv=vWorld.xy;" +                 // +/-Z wall
+        "      if(an.y>an.x&&an.y>an.z){ uv=vWorld.xz; bT=vec3(1.0,0.0,0.0); bB=vec3(0.0,0.0,1.0); }" +   // top/bottom
+        "      else if(an.x>an.z)      { uv=vWorld.zy; bT=vec3(0.0,0.0,1.0); bB=vec3(0.0,1.0,0.0); }" +   // +/-X wall
+        "      else                    { uv=vWorld.xy; bT=vec3(1.0,0.0,0.0); bB=vec3(0.0,1.0,0.0); }" +   // +/-Z wall
         "      uv*=0.5;" +                                               // ~2 m per texture tile
         "      if(abs(N.y)<0.5) ao=mix(0.55,1.0,smoothstep(0.0,0.6,vWorld.y));" +   // contact shade on WALLS only (not floors/paths)
         "    }" +
         "    vec3 tex=texture2D(uTex,uv).rgb;" +
+        "    if(uWorldUV>0.5){" +
+        // Fake relief: the facade texture's OWN luminance gradient tilts the normal, so brick joints
+        // sink and stones catch the sun — normal-map look for two extra taps, no normal maps needed.
+        "      float h0=dot(tex,vec3(0.333));" +
+        "      float hx=dot(texture2D(uTex,uv+vec2(0.03,0.0)).rgb,vec3(0.333));" +
+        "      float hy=dot(texture2D(uTex,uv+vec2(0.0,0.03)).rgb,vec3(0.333));" +
+        "      N=normalize(N+(bT*(h0-hx)+bB*(h0-hy))*1.8);" +
+        "    }" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         "    float df=max(dot(N,L),0.0);" +
         "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
@@ -8739,6 +8764,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final String FRAG_POST_SRC =
         "precision mediump float; varying vec2 vUV;" +
         "uniform sampler2D uScene; uniform sampler2D uBloom; uniform vec2 uInvRes; uniform float uGrainT;" +
+        "uniform vec2 uSunUV; uniform float uFlare;" +   // sun screen pos + flare window (0 = sun off-screen/overcast)
         "float lum(vec3 c){ return dot(c,vec3(0.299,0.587,0.114)); }" +
         "void main(){" +
         "  vec3 rgbNW=texture2D(uScene,vUV+vec2(-1.0,-1.0)*uInvRes).rgb;" +
@@ -8758,6 +8784,27 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  float lB=lum(rgbB);" +
         "  vec3 col=(lB<lMin||lB>lMax)?rgbA:rgbB;" +
         "  col+=texture2D(uBloom,vUV).rgb*0.55;" +
+        // Sun flare package, all screen-space: the scene texture at the sun's spot gates everything
+        // (a building in front of the sun = dark pixel = no flare/rays); the quarter-res bloom texture
+        // (already bright-passed + blurred) is the radiance source for the god-ray march.
+        "  if(uFlare>0.002){" +
+        "    float occ=smoothstep(0.50,0.85,lum(texture2D(uScene,uSunUV).rgb));" +
+        "    float fl=uFlare*occ;" +
+        "    if(fl>0.002){" +
+        "      vec2 d=uSunUV-vUV;" +
+        "      vec2 stp=d*0.0833; vec2 sp=vUV+stp; float ray=0.0; float wgt=1.0;" +   // 12-tap march toward the sun
+        "      for(int i=0;i<12;i++){ ray+=lum(texture2D(uBloom,sp).rgb)*wgt; sp+=stp; wgt*=0.84; }" +
+        "      col+=vec3(1.0,0.82,0.55)*(ray*0.050*fl);" +
+        "      vec2 asp=vec2(uInvRes.y/uInvRes.x,1.0);" +                              // isotropic screen distances
+        "      float ds=length(d*asp);" +
+        "      col+=vec3(1.0,0.88,0.66)*exp(-ds*ds*9.0)*0.22*fl;" +                    // broad halo around the sun
+        "      vec2 ax=vec2(0.5)-uSunUV;" +                                            // ghost chain: sun -> centre -> beyond
+        "      float g1=exp(-pow(length((vUV-(uSunUV+ax*0.8))*asp)*9.0,2.0));" +
+        "      float g2=exp(-pow(length((vUV-(uSunUV+ax*1.4))*asp)*16.0,2.0));" +
+        "      float g3=exp(-pow(length((vUV-(uSunUV+ax*1.9))*asp)*22.0,2.0));" +
+        "      col+=(vec3(0.9,0.55,0.30)*g1*0.10+vec3(0.35,0.65,0.9)*g2*0.08+vec3(0.55,0.9,0.6)*g3*0.06)*fl;" +
+        "    }" +
+        "  }" +
         "  float g=fract(sin(dot(vUV*vec2(917.0,533.0),vec2(12.9898,78.233))+uGrainT*7.0)*43758.547);" +
         "  col+=(g-0.5)*0.016;" +
         "  gl_FragColor=vec4(col,1.0); }";
