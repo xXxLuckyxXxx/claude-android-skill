@@ -1807,6 +1807,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enemyLimb( 0.27f, 0.34f, 0.22f, 0.38f, 0.12f, 0.24f, 0.15f, aR, hdR, hdG, hdB);
                 enemyLimb(-0.27f, 0.34f, 0.22f, 0.50f, 0.13f, 0.11f, 0.16f, aL, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f); // hands
                 enemyLimb( 0.27f, 0.34f, 0.22f, 0.50f, 0.13f, 0.11f, 0.16f, aR, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f);
+                enemyLimb(-0.27f, 0.34f, 0.22f, 0.575f, 0.11f, 0.05f, 0.13f, aL, hdR * 0.60f, hdG * 0.58f, hdB * 0.52f); // clawing fingertips
+                enemyLimb( 0.27f, 0.34f, 0.22f, 0.575f, 0.11f, 0.05f, 0.13f, aR, hdR * 0.60f, hdG * 0.58f, hdB * 0.52f);
+                enemyPart(0f, 0.585f, 0.40f, 0.30f, 0.10f, 0.26f, 0.16f + 0.10f * sv, 0.11f, 0.06f);   // matted hair
+                enemyPart(0f, 0.335f, -0.02f, 0.10f, 0.06f, 0.62f, shR * 0.62f, shG * 0.62f, shB * 0.62f);  // spine ridge tear
             } else {
                 // ===== WALKER / BRUTE: hunched shamble, arms reaching for the player =====
                 float tw = enType[i] == 2 ? 0.56f : 0.50f;                                      // brutes are broader
@@ -1837,6 +1841,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 enemyLimb( 0.33f, 1.28f, 0.02f, 0.42f, 0.12f, 0.26f, 0.15f, aR, hdR, hdG, hdB);
                 enemyLimb(-0.33f, 1.28f, 0.02f, 0.585f, 0.13f, 0.11f, 0.16f, aL, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f); // hands
                 enemyLimb( 0.33f, 1.28f, 0.02f, 0.585f, 0.13f, 0.11f, 0.16f, aR, hdR * 0.85f, hdG * 0.85f, hdB * 0.85f);
+                enemyLimb(-0.33f, 1.28f, 0.02f, 0.660f, 0.11f, 0.045f, 0.10f, aL, hdR * 0.60f, hdG * 0.58f, hdB * 0.52f); // grasping fingertips
+                enemyLimb( 0.33f, 1.28f, 0.02f, 0.660f, 0.11f, 0.045f, 0.10f, aR, hdR * 0.60f, hdG * 0.58f, hdB * 0.52f);
+                enemyPart(0f, 0.635f, 0.02f, tw * 0.98f, 0.075f, 0.315f, 0.16f, 0.11f, 0.07f);          // leather belt
+                enemyPart(0f, 0.635f, 0.175f, 0.09f, 0.055f, 0.02f, 0.55f, 0.50f, 0.34f);               // buckle
+                enemyPart(-0.245f, 1.235f, 0.03f, 0.13f, 0.09f, 0.28f, shR * 0.70f, shG * 0.70f, shB * 0.70f);  // torn shoulder seams
+                enemyPart( 0.245f, 1.235f, 0.03f, 0.13f, 0.09f, 0.28f, shR * 0.66f, shG * 0.66f, shB * 0.66f);
+                enemyPart(0f, 1.605f, 0.055f, 0.30f, 0.09f, 0.30f, 0.16f + 0.10f * sv, 0.11f, 0.06f);   // matted hair cap
+                enemyPart(0f, 1.545f, -0.055f, 0.34f, 0.16f, 0.10f, 0.14f + 0.10f * sv, 0.10f, 0.06f);  //   hanging at the back
             }
         }
     }
@@ -2289,6 +2301,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, -0.058f, 0.030f, 0.016f, 0.034f, 0.018f, 0.05f, 0.05f, 0.06f); // trigger
         gunPartR(0f, -0.150f, 0.100f, 0.056f, 0.195f, 0.075f, 13f, fr + 0.02f, fg + 0.02f, fb + 0.02f); // raked grip
         gunPartR(0f, -0.250f, 0.122f, 0.060f, 0.028f, 0.080f, 13f, 0.07f, 0.07f, 0.08f);  // magazine base
+        for (int s = 0; s < 3; s++)                                               // rear slide serrations
+            gunPart(0f, 0.032f, 0.085f + s * 0.022f, 0.064f, 0.052f, 0.008f, dk * 0.55f, dg * 0.55f, dd * 0.55f);
+        gunPart(0.0305f, 0.045f, 0.035f, 0.004f, 0.030f, 0.085f, 0.05f, 0.05f, 0.06f);   // ejection port (right)
+        gunPart(0f, -0.049f, -0.135f, 0.046f, 0.012f, 0.100f, 0.07f, 0.07f, 0.09f);      // accessory rail
+        gunPartR(0f, -0.100f, 0.052f, 0.040f, 0.050f, 0.020f, 13f, fr * 0.7f, fg * 0.7f, fb * 0.7f);  // mag release
         drawSights();
         return -0.24f;
     }
@@ -2308,6 +2325,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, 0.0f, 0.27f, 0.040f, 0.055f, 0.16f, bk, bg, bb);             // stock arm
         gunPart(0f, -0.015f, 0.38f, 0.048f, 0.085f, 0.05f, bk + 0.02f, bg + 0.02f, bb + 0.02f); // butt pad
         gunPart(-0.052f, 0.045f, -0.10f, 0.018f, 0.018f, 0.06f, mk + 0.06f, mg + 0.06f, mb + 0.06f); // cocking handle
+        gunPart(0f, -0.02f, -0.145f, 0.058f, 0.066f, 0.014f, mk * 0.8f, mg * 0.8f, mb * 0.8f);   // shroud ring
+        gunPart(0f, -0.02f, -0.265f, 0.058f, 0.066f, 0.014f, mk * 0.8f, mg * 0.8f, mb * 0.8f);   // shroud ring
+        gunPart(0f, 0.062f, 0.145f, 0.030f, 0.030f, 0.030f, mk * 0.6f, mg * 0.6f, mb * 0.6f);    // rear sight drum
+        gunPart(0f, -0.038f, 0.30f, 0.036f, 0.020f, 0.14f, bk * 0.85f, bg * 0.85f, bb * 0.85f);  // lower stock strut
+        gunPart(0.045f, -0.055f, 0.10f, 0.012f, 0.030f, 0.024f, mk * 0.7f, mg * 0.7f, mb * 0.7f);// mag release lever
         drawSights();
         return -0.50f;
     }
@@ -2323,6 +2345,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPartR(0f, -0.030f, 0.28f, 0.052f, 0.085f, 0.22f, -7f, wr, wg, wb);    // stock (wood, slight drop)
         gunPart(0f, -0.062f, 0.40f, 0.058f, 0.105f, 0.05f, wr * 0.9f, wg * 0.9f, wb * 0.9f); // butt pad
         gunPart(0f, -0.062f, 0.05f, 0.038f, 0.026f, 0.06f, mk, mg, mb);          // trigger guard
+        gunPart(-0.033f, -0.016f, -0.05f, 0.008f, 0.012f, 0.22f, mk * 0.75f, mg * 0.75f, mb * 0.75f);  // action bars
+        gunPart(0.033f, -0.016f, -0.05f, 0.008f, 0.012f, 0.22f, mk * 0.75f, mg * 0.75f, mb * 0.75f);
+        gunPart(0f, 0.008f, -0.545f, 0.034f, 0.048f, 0.020f, mk * 0.8f, mg * 0.8f, mb * 0.8f);   // barrel/mag clamp
+        gunPart(-0.038f, 0.012f, 0.10f, 0.008f, 0.052f, 0.10f, 0.10f, 0.10f, 0.11f);             // side-saddle plate
+        for (int s = 0; s < 3; s++) {                                                            // spare shells (red + brass)
+            gunPart(-0.045f, 0.020f, 0.065f + s * 0.032f, 0.014f, 0.036f, 0.015f, 0.68f, 0.12f, 0.08f);
+            gunPart(-0.045f, -0.004f, 0.065f + s * 0.032f, 0.015f, 0.014f, 0.016f, 0.72f, 0.58f, 0.22f);
+        }
         drawSights();
         return -0.66f;
     }
@@ -2346,6 +2376,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         gunPart(0f, sc, -0.01f, 0.034f, 0.034f, 0.34f, 0.05f, 0.05f, 0.06f);     // scope tube
         gunPart(0f, sc, -0.20f, 0.040f, 0.040f, 0.03f, 0.04f, 0.04f, 0.05f);     // objective lens housing
         gunPart(0f, sc, 0.18f, 0.038f, 0.038f, 0.03f, 0.04f, 0.04f, 0.05f);      // ocular housing
+        gunPart(0f, sc + 0.032f, -0.01f, 0.022f, 0.026f, 0.030f, 0.07f, 0.07f, 0.08f);   // elevation turret
+        gunPart(0.034f, sc, -0.01f, 0.026f, 0.022f, 0.030f, 0.07f, 0.07f, 0.08f);        // windage turret
+        gunPart(0f, -0.045f, 0.16f, 0.048f, 0.026f, 0.10f, bk + 0.04f, bg + 0.04f, bb + 0.04f);  // cheek riser
+        gunPartR(-0.022f, -0.055f, -0.62f, 0.014f, 0.15f, 0.016f, 14f, mk * 0.75f, mg * 0.75f, mb * 0.75f);  // folded bipod legs
+        gunPartR(0.022f, -0.055f, -0.62f, 0.014f, 0.15f, 0.016f, 14f, mk * 0.75f, mg * 0.75f, mb * 0.75f);
+        gunPart(0.085f, 0.030f, 0.14f, 0.022f, 0.022f, 0.022f, mk + 0.08f, mg + 0.08f, mb + 0.08f);  // bolt knob ball
         gunBeadPart(0f, sc, -0.18f, 0.009f, 1.4f, 0.22f, 0.22f);                 // red reticle dot (centres on ADS)
         return -0.86f;
     }
@@ -5777,7 +5813,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float ug0 = cell(0), ug1 = cell(1), ug2 = cell(2), uStem = cell(3), uCtr = cell(11), uBush = cell(12);
         int[] flowerCells = {4, 5, 6, 7, 8, 9, 10};
 
-        for (int n = 0, tries = 0; n < 900 && tries < 12000; tries++) {     // grass tufts
+        for (int n = 0, tries = 0; n < 1200 && tries < 16000; tries++) {    // grass tufts (denser meadows)
             if (o > d.length - 9000) break;
             float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 40f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
@@ -5792,7 +5828,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
             n++;
         }
-        for (int n = 0, tries = 0; n < 450 && tries < 9000; tries++) {     // flowers (5 varied types)
+        for (int n = 0, tries = 0; n < 560 && tries < 11000; tries++) {    // flowers (5 varied types)
             if (o > d.length - 9000) break;
             float a = r.nextFloat() * 6.2832f, rad = r.nextFloat() * 40f;
             float x = (float) Math.cos(a) * rad, z = (float) Math.sin(a) * rad;
@@ -6166,6 +6202,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         o = vBox(d, o, x, by + 0.07f, z, tw * 1.8f, 0.14f, tw * 1.8f, uTrunk);   // root collar grounds the trunk
         float cy = by + trunkH + 0.30f * scale, crad = (0.9f + r.nextFloat() * 0.5f) * scale;
         if (detail) {
+            // two boughs reaching from the trunk crown into the canopy (visible from underneath)
+            o = vBox(d, o, x + crad * 0.32f, by + trunkH * 0.94f, z, crad * 0.70f, tw * 0.55f, tw * 0.55f, uTrunk);
+            o = vBox(d, o, x, by + trunkH * 0.80f, z - crad * 0.28f, tw * 0.55f, tw * 0.55f, crad * 0.60f, uTrunk);
             // dark under-canopy mass FIRST so the lighter core/lobes overdraw its top -- only the shaded
             // underside/skirt stays visible, which makes the blob foliage read as a volume
             o = vBox(d, o, x, cy - crad * 0.60f, z, crad * 1.15f, crad * 0.45f, crad * 1.15f, cell(0));
@@ -7124,13 +7163,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         else             addWoodpile(L, r, x, z);
     }
 
-    // A wooden barrel: a square + a 45°-rotated twin make a round-ish 8-sided body, plus two iron hoops + a lid.
+    // A wooden barrel: a square + a 45°-rotated twin make a round-ish 8-sided body, three iron
+    // hoops (the brighter belly band widest), a lid and a little bung block on top.
     private static void addBarrel(List<float[]> L, float x, float z) {
         L.add(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.46f, 0.33f, 0.21f, 0f});
         L.add(new float[]{x, 0.42f, z, 0.42f, 0.66f, 0.42f, 0.44f, 0.31f, 0.19f, 45f});
         L.add(new float[]{x, 0.25f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f});   // lower hoop
+        L.add(new float[]{x, 0.43f, z, 0.52f, 0.05f, 0.52f, 0.28f, 0.26f, 0.24f, 0f});   // belly band (widest, catches light)
         L.add(new float[]{x, 0.60f, z, 0.50f, 0.07f, 0.50f, 0.24f, 0.22f, 0.20f, 0f});   // upper hoop
         L.add(new float[]{x, 0.78f, z, 0.34f, 0.05f, 0.34f, 0.40f, 0.28f, 0.18f, 0f});   // lid
+        L.add(new float[]{x + 0.09f, 0.815f, z - 0.06f, 0.09f, 0.04f, 0.09f, 0.30f, 0.20f, 0.12f, 0f});  // bung block
     }
 
     // A crate: lighter plank panels framed by four dark corner posts plus a bottom rail and a lid.
@@ -7161,20 +7203,38 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x + 0.02f, 0.73f, z + 0.13f, 0.08f, 0.08f, 0.08f, 0.82f, 0.50f, 0.78f, 0f});   // violet bloom
     }
 
+    // A woodpile: three stacked logs with pale end-grain caps, a short splitting log on top and a
+    // leaning axe-handle stick — reads as a working pile, not three brown bars.
     private static void addWoodpile(List<float[]> L, Random r, float x, float z) {
         float yaw = r.nextInt(30) - 15f;
+        double ya = Math.toRadians(yaw);
+        float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
         L.add(new float[]{x, 0.16f, z, 0.95f, 0.20f, 0.24f, 0.50f, 0.36f, 0.22f, yaw});
         L.add(new float[]{x, 0.37f, z, 0.95f, 0.20f, 0.24f, 0.46f, 0.33f, 0.20f, yaw});
         L.add(new float[]{x, 0.30f, z + 0.26f, 0.95f, 0.20f, 0.24f, 0.48f, 0.35f, 0.21f, yaw});
+        for (int side = -1; side <= 1; side += 2) {           // pale end-grain discs on the two long logs
+            float ox = 0.47f * side * ca, oz = -0.47f * side * sa;
+            L.add(new float[]{x + ox, 0.16f, z + oz, 0.045f, 0.16f, 0.20f, 0.72f, 0.62f, 0.46f, yaw});
+            L.add(new float[]{x + ox, 0.37f, z + oz, 0.045f, 0.16f, 0.20f, 0.70f, 0.60f, 0.44f, yaw});
+        }
+        L.add(new float[]{x + 0.12f * ca, 0.53f, z - 0.12f * sa, 0.26f, 0.13f, 0.20f, 0.55f, 0.42f, 0.27f, yaw});  // chopping block on top
+        L.add(new float[]{x - 0.28f * ca, 0.50f, z + (0.26f + 0.28f * sa) * 1f, 0.06f, 0.55f, 0.06f, 0.38f, 0.28f, 0.17f, yaw + 24f});  // leaning stick
     }
 
-    // A street lamp: stone base, slim post, a glowing lantern head with a little cap (head + cap sit overhead -> no collision).
+    // A street lamp: stepped stone plinth, fluted post with a mid ring, lantern cage bars around the
+    // warm glass, a pyramid-ish cap and a finial ball (head parts sit overhead -> no collision).
     private static void addLamp(List<float[]> L, float x, float z) {
-        L.add(new float[]{x, 0.13f, z, 0.34f, 0.26f, 0.34f, 0.20f, 0.20f, 0.22f, 0f});   // base
+        L.add(new float[]{x, 0.05f, z, 0.44f, 0.10f, 0.44f, 0.17f, 0.17f, 0.19f, 0f});   // plinth step
+        L.add(new float[]{x, 0.18f, z, 0.32f, 0.20f, 0.32f, 0.20f, 0.20f, 0.22f, 45f});  // base (turned octagon)
         L.add(new float[]{x, 1.55f, z, 0.12f, 2.60f, 0.12f, 0.23f, 0.23f, 0.26f, 0f});   // post
+        L.add(new float[]{x, 1.55f, z, 0.10f, 2.50f, 0.10f, 0.20f, 0.20f, 0.23f, 45f});  // flute (8-sided shaft)
+        L.add(new float[]{x, 2.05f, z, 0.18f, 0.06f, 0.18f, 0.17f, 0.17f, 0.19f, 45f});  // mid ring
         L.add(new float[]{x, 2.92f, z, 0.30f, 0.10f, 0.30f, 0.20f, 0.20f, 0.22f, 0f});   // collar
         L.add(new float[]{x, 3.14f, z, 0.26f, 0.34f, 0.26f, 0.99f, 0.90f, 0.62f, 0f});   // warm lantern glass
+        L.add(new float[]{x, 3.14f, z, 0.30f, 0.30f, 0.30f, 0.16f, 0.16f, 0.18f, 45f});  // cage bars catch the corners
         L.add(new float[]{x, 3.38f, z, 0.36f, 0.12f, 0.36f, 0.19f, 0.19f, 0.21f, 0f});   // cap
+        L.add(new float[]{x, 3.47f, z, 0.24f, 0.08f, 0.24f, 0.18f, 0.18f, 0.20f, 45f});  // cap taper
+        L.add(new float[]{x, 3.56f, z, 0.09f, 0.10f, 0.09f, 0.24f, 0.24f, 0.27f, 0f});   // finial ball
     }
 
     // A park bench: two solid end frames, a slatted seat, and a two-rail backrest carried on vertical end posts.
@@ -7194,6 +7254,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float rw = ax ? 1.45f : 0.06f, rd = ax ? 0.06f : 1.45f;
         L.add(new float[]{x + bX, 0.68f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});       // back rails
         L.add(new float[]{x + bX, 0.88f, z + bZ, rw, 0.10f, rd, 0.48f, 0.34f, 0.22f, 0f});
+        // armrests at both ends (bridging backrest to seat front) + a pale seat-edge slat in front
+        if (ax) {
+            L.add(new float[]{x - 0.58f, 0.575f, z + bZ * 0.5f, 0.07f, 0.045f, 0.30f, 0.52f, 0.38f, 0.25f, 0f});
+            L.add(new float[]{x + 0.58f, 0.575f, z + bZ * 0.5f, 0.07f, 0.045f, 0.30f, 0.52f, 0.38f, 0.25f, 0f});
+            L.add(new float[]{x, 0.515f, z - bZ * 1.1f, 1.40f, 0.035f, 0.045f, 0.56f, 0.42f, 0.28f, 0f});
+        } else {
+            L.add(new float[]{x + bX * 0.5f, 0.575f, z - 0.58f, 0.30f, 0.045f, 0.07f, 0.52f, 0.38f, 0.25f, 0f});
+            L.add(new float[]{x + bX * 0.5f, 0.575f, z + 0.58f, 0.30f, 0.045f, 0.07f, 0.52f, 0.38f, 0.25f, 0f});
+            L.add(new float[]{x - bX * 1.1f, 0.515f, z, 0.045f, 0.035f, 1.40f, 0.56f, 0.42f, 0.28f, 0f});
+        }
     }
 
     // A market stall: a wooden counter with four posts and a striped awning roof (awning overhead -> no collision).
@@ -7206,6 +7276,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x + 0.9f, 1.55f, z - 0.45f, 0.08f, 1.50f, 0.08f, 0.40f, 0.30f, 0.20f, 0f});
         L.add(new float[]{x, 2.18f, z, 2.10f, 0.10f, 1.30f, ar, ag, ab, 0f});            // awning
         L.add(new float[]{x, 2.30f, z, 0.55f, 0.12f, 1.30f, ar * 1.12f, ag * 1.12f, ab * 1.12f, 0f});  // awning crest
+        L.add(new float[]{x, 2.06f, z + 0.66f, 2.10f, 0.16f, 0.05f, ar * 0.80f, ag * 0.80f, ab * 0.80f, 0f});  // scalloped hem
+        L.add(new float[]{x, 0.30f, z + 0.52f, 1.80f, 0.50f, 0.06f, 0.44f, 0.33f, 0.21f, 0f});  // apron board under the counter
+        // goods on the counter: two produce crates + a stacked cheese/bread board (front = +z, spun by the caller)
+        L.add(new float[]{x - 0.55f, 1.20f, z + 0.10f, 0.42f, 0.16f, 0.34f, 0.40f, 0.29f, 0.18f, 0f});  // crate L
+        L.add(new float[]{x - 0.55f, 1.30f, z + 0.10f, 0.34f, 0.10f, 0.26f, 0.82f, 0.31f, 0.24f, 0f});  //   tomatoes
+        L.add(new float[]{x + 0.45f, 1.20f, z - 0.06f, 0.42f, 0.16f, 0.34f, 0.40f, 0.29f, 0.18f, 8f});  // crate R
+        L.add(new float[]{x + 0.45f, 1.30f, z - 0.06f, 0.34f, 0.10f, 0.26f, 0.42f, 0.62f, 0.26f, 8f});  //   greens
+        L.add(new float[]{x + 0.02f, 1.17f, z + 0.28f, 0.30f, 0.07f, 0.22f, 0.62f, 0.48f, 0.28f, -6f}); // bread board
+        L.add(new float[]{x + 0.02f, 1.24f, z + 0.28f, 0.20f, 0.08f, 0.14f, 0.86f, 0.68f, 0.34f, -6f}); //   loaf
+        L.add(new float[]{x - 0.90f, 1.62f, z + 0.50f, 0.05f, 0.30f, 0.05f, 0.30f, 0.24f, 0.20f, 0f});  // hanging scale arm
     }
 
     // A roofed stone well: a square stone kerb ring, two posts and a little gable roof (roof overhead -> no collision).
@@ -7216,8 +7296,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x - 0.55f, 0.40f, z, 0.18f, 0.80f, 1.20f, 0.52f, 0.51f, 0.48f, 0f});  // kerb -x
         L.add(new float[]{x - 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f});  // post
         L.add(new float[]{x + 0.50f, 1.50f, z, 0.10f, 1.40f, 0.10f, 0.46f, 0.33f, 0.21f, 0f});  // post
+        L.add(new float[]{x, 1.72f, z, 1.10f, 0.16f, 0.16f, 0.42f, 0.30f, 0.19f, 0f});          // windlass drum
+        L.add(new float[]{x, 1.72f, z, 1.06f, 0.20f, 0.12f, 0.38f, 0.27f, 0.17f, 45f});         //   (rounded by the twin)
+        L.add(new float[]{x + 0.62f, 1.62f, z + 0.12f, 0.05f, 0.26f, 0.05f, 0.24f, 0.22f, 0.20f, 0f});  // crank arm
+        L.add(new float[]{x + 0.62f, 1.50f, z + 0.20f, 0.05f, 0.05f, 0.18f, 0.30f, 0.26f, 0.22f, 0f});  // crank handle
+        L.add(new float[]{x, 1.28f, z, 0.035f, 0.75f, 0.035f, 0.60f, 0.54f, 0.42f, 0f});        // rope down the shaft
+        L.add(new float[]{x, 0.94f, z, 0.26f, 0.20f, 0.26f, 0.34f, 0.26f, 0.18f, 22.5f});       // hanging bucket
+        L.add(new float[]{x, 1.05f, z, 0.30f, 0.04f, 0.30f, 0.22f, 0.20f, 0.18f, 22.5f});       //   bucket rim hoop
         L.add(new float[]{x, 1.95f, z, 0.10f, 0.10f, 0.70f, 0.30f, 0.24f, 0.20f, 0f});          // crossbeam
         L.add(new float[]{x, 2.25f, z, 1.50f, 0.12f, 0.95f, 0.34f, 0.27f, 0.22f, 0f});          // roof
+        L.add(new float[]{x, 2.36f, z, 1.10f, 0.12f, 0.60f, 0.31f, 0.245f, 0.20f, 0f});         // upper roof course (gable-ish)
+        L.add(new float[]{x, 2.47f, z, 0.62f, 0.12f, 0.28f, 0.28f, 0.22f, 0.18f, 0f});          // ridge cap
     }
 
     /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
