@@ -130,6 +130,27 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private java.util.List<float[]> waterDiscs;     // {cx, y, cz, radius} pools, registered by addFountain
     private java.util.List<float[]> waterStreams;   // {cx, yTop, cz, yBot, halfW} falling overflow streams
 
+    // Post-processing (the AAA pass): the 3D scene renders into an offscreen target, then a bright-pass +
+    // quarter-res separable gaussian builds a bloom layer, and one fullscreen composite applies FXAA
+    // (replacing MSAA, which offscreen targets lose), adds the bloom, and lays a whisper of film grain.
+    // Falls back to direct rendering when the device lacks a 24-bit FBO depth format (16-bit would
+    // re-introduce the B199 window moiré).
+    private int progBright, aPBr, uBrTex;
+    private int progBlur, aPBl, uBlTex, uBlDir;
+    private int progPost, aPPo, uPoScene, uPoBloom, uPoInvRes, uPoGrain;
+    private int sceneFboId, sceneColorTex, sceneDepthRb, bloomFboA, bloomTexA, bloomFboB, bloomTexB;
+    private int postW = -1, postH = -1;             // built-for size (-1 = build on next frame)
+    private boolean postOk = false, postDead = false;   // postDead: device can't do it, stop trying
+    private static final int BLOOM_DIV = 4;
+
+    // Dynamic point lights (FRAG3 lit branch): slot 0 = muzzle flash kicking warm light onto the world,
+    // remaining slots = the nearest street lanterns during the ABENDROT (dusk) weather.
+    private int uPtLoc = -1, uPtCLoc = -1, uSwayLoc = -1;
+    private final float[] ptPos = new float[16];    // 4 x (x,y,z, 1/r^2)
+    private final float[] ptCol = new float[12];    // 4 x premultiplied rgb (0 = slot off)
+    private float wDusk = 0f;                       // dusk crossfade (like wRain/wSnow)
+    private float[][] lampWorld;                    // street-lamp positions {x,z} for lights + glowing bulbs
+
     private final float[] shotO = new float[3], shotD = new float[3];   // scratch for yaw-aware hitscan
     private float gunFlashAdd = 0f;   // warm light the muzzle flash throws onto the viewmodel this frame
     private final InputState input;
@@ -496,9 +517,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private float sunInt = 1f, ambient = 1f, fogStart = 55f, fogEnd = 130f;   // clear days: the whole village crisp, only the world edge fades
 
     // --- Weather: auto-cycles Sun -> Rain -> Fog -> Snow with smooth crossfades, plus rain/snow particles ---
-    private static final int WX_SUN = 0, WX_FOG = 1, WX_RAIN = 2, WX_SNOW = 3;
-    private static final int[] WX_ORDER = {WX_SUN, WX_RAIN, WX_FOG, WX_SNOW};   // rain & snow never adjacent -> particle pool is only ever one kind
-    private static final String[] WX_NAME = {"SONNE", "NEBEL", "REGEN", "SCHNEE"};
+    private static final int WX_SUN = 0, WX_FOG = 1, WX_RAIN = 2, WX_SNOW = 3, WX_DUSK = 4;
+    // rain & snow never adjacent -> particle pool is only ever one kind; dusk right after rain =
+    // golden-hour light over wet streets (the prettiest transition the cycle has)
+    private static final int[] WX_ORDER = {WX_SUN, WX_RAIN, WX_DUSK, WX_FOG, WX_SNOW};
+    private static final String[] WX_NAME = {"SONNE", "NEBEL", "REGEN", "SCHNEE", "ABENDROT"};
     private static final float WX_HOLD = 55f;          // seconds each weather lingers before the next
     private int wxIdx = 0;                              // index into WX_ORDER
     private float wxTimer = 20f, weatherLabelT = 0f;    // first change comes a bit sooner, then settle into WX_HOLD
@@ -592,6 +615,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uUVscaleT = GLES20.glGetUniformLocation(progText, "uUVscale");
         uFontTex = GLES20.glGetUniformLocation(progText, "uFont");
 
+        uPtLoc = GLES20.glGetUniformLocation(prog3, "uPt");        // dynamic point lights
+        uPtCLoc = GLES20.glGetUniformLocation(prog3, "uPtC");
+        uSwayLoc = GLES20.glGetUniformLocation(prog3, "uSway");    // vegetation wind
+
+        progBright = buildProgram(VERT_POST_SRC, FRAG_BRIGHT_SRC);
+        aPBr = GLES20.glGetAttribLocation(progBright, "aP");
+        uBrTex = GLES20.glGetUniformLocation(progBright, "uTex");
+        progBlur = buildProgram(VERT_POST_SRC, FRAG_BLUR_SRC);
+        aPBl = GLES20.glGetAttribLocation(progBlur, "aP");
+        uBlTex = GLES20.glGetUniformLocation(progBlur, "uTex");
+        uBlDir = GLES20.glGetUniformLocation(progBlur, "uDir");
+        progPost = buildProgram(VERT_POST_SRC, FRAG_POST_SRC);
+        aPPo = GLES20.glGetAttribLocation(progPost, "aP");
+        uPoScene = GLES20.glGetUniformLocation(progPost, "uScene");
+        uPoBloom = GLES20.glGetUniformLocation(progPost, "uBloom");
+        uPoInvRes = GLES20.glGetUniformLocation(progPost, "uInvRes");
+        uPoGrain = GLES20.glGetUniformLocation(progPost, "uGrainT");
+        // A re-created GL context invalidates every GL object name: forget the old FBOs (do NOT delete
+        // stale names — they could collide with fresh ones) and re-probe the device on the next frame.
+        sceneFboId = 0; sceneColorTex = 0; sceneDepthRb = 0; bloomFboA = 0; bloomTexA = 0; bloomFboB = 0; bloomTexB = 0;
+        postW = -1; postH = -1; postOk = false; postDead = false;
+
         GLES20.glUseProgram(prog3);
         GLES20.glUniform1i(uTex, 0);
 
@@ -666,6 +711,140 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.perspectiveM(proj, 0, 68f, aspect, 0.07f, 300f);   // near up from 0.05: more depth precision (gun stays well past 0.07)
     }
 
+    /** (Re)build the offscreen scene + bloom targets to match the surface. True = post is usable this
+     *  frame. Requires a 24-bit FBO depth (OES_depth24): a 16-bit offscreen depth would re-introduce
+     *  the B199 window moiré, so devices without it simply render directly, exactly as before. */
+    private boolean ensurePostTargets() {
+        if (postDead) return false;
+        if (postW == width && postH == height) return postOk;
+        String ext = GLES20.glGetString(GLES20.GL_EXTENSIONS);
+        if (ext == null || !ext.contains("GL_OES_depth24")) { postDead = true; return false; }
+        if (sceneFboId != 0) {                    // same context, size changed: release the old set
+            GLES20.glDeleteFramebuffers(3, new int[]{sceneFboId, bloomFboA, bloomFboB}, 0);
+            GLES20.glDeleteTextures(3, new int[]{sceneColorTex, bloomTexA, bloomTexB}, 0);
+            GLES20.glDeleteRenderbuffers(1, new int[]{sceneDepthRb}, 0);
+        }
+        int bw = Math.max(1, width / BLOOM_DIV), bh = Math.max(1, height / BLOOM_DIV);
+        int[] id = new int[1];
+        sceneColorTex = makePostTex(width, height);
+        GLES20.glGenRenderbuffers(1, id, 0); sceneDepthRb = id[0];
+        GLES20.glBindRenderbuffer(GLES20.GL_RENDERBUFFER, sceneDepthRb);
+        GLES20.glRenderbufferStorage(GLES20.GL_RENDERBUFFER, 0x81A6 /* DEPTH_COMPONENT24_OES */, width, height);
+        GLES20.glGenFramebuffers(1, id, 0); sceneFboId = id[0];
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, sceneFboId);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, sceneColorTex, 0);
+        GLES20.glFramebufferRenderbuffer(GLES20.GL_FRAMEBUFFER, GLES20.GL_DEPTH_ATTACHMENT, GLES20.GL_RENDERBUFFER, sceneDepthRb);
+        boolean ok = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE;
+        bloomTexA = makePostTex(bw, bh);
+        GLES20.glGenFramebuffers(1, id, 0); bloomFboA = id[0];
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboA);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, bloomTexA, 0);
+        ok &= GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE;
+        bloomTexB = makePostTex(bw, bh);
+        GLES20.glGenFramebuffers(1, id, 0); bloomFboB = id[0];
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboB);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, bloomTexB, 0);
+        ok &= GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE;
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        postW = width; postH = height;
+        postOk = ok;
+        if (!ok) postDead = true;                 // a broken driver: stop probing, render directly forever
+        return postOk;
+    }
+
+    private static int makePostTex(int w, int h) {
+        int[] id = new int[1];
+        GLES20.glGenTextures(1, id, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id[0]);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        return id[0];
+    }
+
+    private void postQuad(int attrib) {
+        quad.position(0);
+        GLES20.glEnableVertexAttribArray(attrib);
+        GLES20.glVertexAttribPointer(attrib, 2, GLES20.GL_FLOAT, false, 8, quad);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+    }
+
+    /** Bright-pass -> quarter-res H blur -> V blur -> one composite (FXAA + bloom + grain) to screen. */
+    private void resolvePost() {
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glDepthMask(false);
+        int bw = Math.max(1, width / BLOOM_DIV), bh = Math.max(1, height / BLOOM_DIV);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glViewport(0, 0, bw, bh);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboA);
+        GLES20.glUseProgram(progBright);
+        GLES20.glUniform1i(uBrTex, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sceneColorTex);
+        postQuad(aPBr);
+        GLES20.glUseProgram(progBlur);
+        GLES20.glUniform1i(uBlTex, 0);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboB);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bloomTexA);
+        GLES20.glUniform2f(uBlDir, 1f / bw, 0f);
+        postQuad(aPBl);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboA);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bloomTexB);
+        GLES20.glUniform2f(uBlDir, 0f, 1f / bh);
+        postQuad(aPBl);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        GLES20.glViewport(0, 0, width, height);
+        GLES20.glUseProgram(progPost);
+        GLES20.glUniform1i(uPoScene, 0);
+        GLES20.glUniform1i(uPoBloom, 1);
+        GLES20.glUniform2f(uPoInvRes, 1f / width, 1f / height);
+        GLES20.glUniform1f(uPoGrain, timeAcc % 10f);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bloomTexA);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sceneColorTex);
+        postQuad(aPPo);
+        GLES20.glDepthMask(true);
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+    }
+
+    /** Fill the 4 dynamic light slots: slot 0 = the muzzle flash kicking warm light onto nearby walls,
+     *  the rest = the three nearest burning lanterns while the ABENDROT (dusk) weather holds. */
+    private void fillPointLights() {
+        int ln = 0;
+        if (muzzleTimer > 0f && state == ST_PLAYING) {
+            float mk = Math.min(1f, muzzleTimer / MUZZLE_TIME);
+            ptPos[0] = px + camFwd[0] * 1.3f; ptPos[1] = py - 0.1f; ptPos[2] = pz + camFwd[2] * 1.3f;
+            ptPos[3] = 1f / (8.5f * 8.5f);
+            ptCol[0] = 2.4f * mk; ptCol[1] = 1.5f * mk; ptCol[2] = 0.55f * mk;
+            ln = 1;
+        }
+        if (wDusk > 0.04f && lampWorld != null) {
+            int n1 = -1, n2 = -1, n3 = -1; float d1 = 1e9f, d2 = 1e9f, d3 = 1e9f;
+            for (int i = 0; i < lampWorld.length; i++) {
+                float dx = lampWorld[i][0] - px, dz = lampWorld[i][1] - pz;
+                float d = dx * dx + dz * dz;
+                if (d < d1)      { d3 = d2; n3 = n2; d2 = d1; n2 = n1; d1 = d; n1 = i; }
+                else if (d < d2) { d3 = d2; n3 = n2; d2 = d;  n2 = i; }
+                else if (d < d3) { d3 = d;  n3 = i; }
+            }
+            float li = 1.15f * Math.min(1f, wDusk);
+            for (int s = 0; s < 3 && ln < 4; s++) {
+                int pick = s == 0 ? n1 : s == 1 ? n2 : n3;
+                if (pick < 0) break;
+                ptPos[ln * 4] = lampWorld[pick][0]; ptPos[ln * 4 + 1] = 3.05f; ptPos[ln * 4 + 2] = lampWorld[pick][1];
+                ptPos[ln * 4 + 3] = 1f / (7.5f * 7.5f);
+                ptCol[ln * 3] = 1.35f * li; ptCol[ln * 3 + 1] = 0.92f * li; ptCol[ln * 3 + 2] = 0.50f * li;
+                ln++;
+            }
+        }
+        for (int s = ln; s < 4; s++) {
+            ptCol[s * 3] = 0f; ptCol[s * 3 + 1] = 0f; ptCol[s * 3 + 2] = 0f;
+            ptPos[s * 4 + 3] = 1f;                    // benign falloff for dead slots
+        }
+    }
+
     @Override
     public void onDrawFrame(GL10 gl) {
         long now = System.nanoTime();
@@ -706,6 +885,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             Matrix.perspectiveM(proj, 0, fov, aspect, 0.05f, 300f);
         }
 
+        boolean postThis = ensurePostTargets();               // AAA post: the 3D scene renders offscreen...
+        if (postThis) GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, sceneFboId);
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
         // Sky
@@ -742,6 +923,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // phase precision instead of the water/pulse animations quantizing as timeAcc grows unbounded.
         GLES20.glUniform1f(uTime, timeAcc % 31.415926f);
         GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
+        fillPointLights();                                     // muzzle flash + ABENDROT lanterns
+        GLES20.glUniform4fv(uPtLoc, 4, ptPos, 0);
+        GLES20.glUniform3fv(uPtCLoc, 4, ptCol, 0);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
         // Weather ground grade: rain DARKENS the ground (wet albedo -- asphalt hardest, grass less, blue kept
@@ -772,9 +956,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vegTex);    // grass / flowers / bushes
         Matrix.setIdentityM(model, 0);
+        GLES20.glUniform1f(uSwayLoc, 1f);                      // plants lean into the wind (vertex sway)
         drawWorld(vegetation, vegVerts, 0f, 1f, 1f, 1f);
         if (placedTrees != null) drawWorld(placedTrees, placedTreeVerts, 0f, 1f, 1f, 1f);   // level-placed trees (same atlas)
         if (overlayTrees != null) { Matrix.setIdentityM(model, 0); drawWorld(overlayTrees, overlayTreeVerts, 0f, 1f, 1f, 1f); }   // editor-placed plants
+        GLES20.glUniform1f(uSwayLoc, 0f);                      // everything else stands still
 
         drawShadows();
 
@@ -877,6 +1063,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawOverlayFurniture();                                // editor-placed furniture (drawn every frame, all states)
         if (state == ST_EDIT || state == ST_SANDBOX) drawEditGizmos();   // selection ring around the picked object (3D)
 
+        if (wDusk > 0.04f && lampWorld != null) {              // ABENDROT: the lantern glass burns bright
+            GLES20.glUseProgram(prog3);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+            float glow = Math.min(1f, wDusk * 1.4f);
+            for (float[] lp : lampWorld) {
+                float ldx = lp[0] - px, ldz = lp[1] - pz;
+                if (ldx * ldx + ldz * ldz > 48f * 48f) continue;
+                Matrix.setIdentityM(model, 0);
+                Matrix.translateM(model, 0, lp[0], 3.14f, lp[1]);
+                Matrix.scaleM(model, 0, 0.28f, 0.36f, 0.28f);
+                drawWorld(cube, 36, 4f, 1.00f * glow, 0.86f * glow, 0.52f * glow);   // unlit-bright -> blooms
+            }
+        }
         drawDoors();
         drawWindows();
         drawWater();          // before the horde: a zombie between you and the fountain must cover the water
@@ -887,6 +1086,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         if (state == ST_PLAYING) drawGun();
+
+        if (postThis) resolvePost();                           // ...and lands on screen with FXAA + bloom + grain
 
         if (state == ST_PLAYING) drawHud();
         else if (state == ST_SUMMARY) drawSummary();
@@ -1199,7 +1400,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         int w = clearForEdit ? WX_SUN : WX_ORDER[wxIdx];
         // per-weather targets (Sun reads the level's base look so clear days are unchanged)
-        float tHr, tHg, tHb, tZr, tZg, tZb, tFr, tFg, tFb, tOver, tFs, tFe, tSun, tAmb, tRain, tSnow;
+        float tHr, tHg, tHb, tZr, tZg, tZb, tFr, tFg, tFb, tOver, tFs, tFe, tSun, tAmb, tRain, tSnow, tDusk = 0f;
         if (w == WX_SUN) {
             tHr = skyHorizon[0]; tHg = skyHorizon[1]; tHb = skyHorizon[2];
             tZr = skyZenith[0];  tZg = skyZenith[1];  tZb = skyZenith[2];
@@ -1212,6 +1413,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         } else if (w == WX_RAIN) {
             tHr = 0.50f; tHg = 0.53f; tHb = 0.58f; tZr = 0.39f; tZg = 0.43f; tZb = 0.49f;
             tFr = 0.54f; tFg = 0.57f; tFb = 0.62f; tOver = 1f; tFs = 16f; tFe = 72f; tSun = 0.55f; tAmb = 0.90f; tRain = 1f; tSnow = 0f;
+        } else if (w == WX_DUSK) {
+            // Golden hour: burning horizon under a deepening blue zenith, warm haze, sun still strong but
+            // the ambient dropping — and the street lanterns come on (point lights + glowing bulbs + bloom).
+            tHr = 0.98f; tHg = 0.60f; tHb = 0.34f; tZr = 0.28f; tZg = 0.31f; tZb = 0.52f;
+            tFr = 0.68f; tFg = 0.53f; tFb = 0.46f; tOver = 0.12f; tFs = 38f; tFe = 105f; tSun = 0.95f; tAmb = 0.72f; tRain = 0f; tSnow = 0f;
+            tDusk = 1f;
         } else {
             tHr = 0.82f; tHg = 0.84f; tHb = 0.88f; tZr = 0.74f; tZg = 0.78f; tZb = 0.84f;
             tFr = 0.85f; tFg = 0.87f; tFb = 0.90f; tOver = 0.95f; tFs = 12f; tFe = 58f; tSun = 0.78f; tAmb = 1.10f; tRain = 0f; tSnow = 1f;
@@ -1222,7 +1429,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         effFog[0] += (tFr - effFog[0]) * k; effFog[1] += (tFg - effFog[1]) * k; effFog[2] += (tFb - effFog[2]) * k;
         wOvercast += (tOver - wOvercast) * k; effFogStart += (tFs - effFogStart) * k; effFogEnd += (tFe - effFogEnd) * k;
         effSunInt += (tSun - effSunInt) * k; effAmbient += (tAmb - effAmbient) * k;
-        wRain += (tRain - wRain) * k; wSnow += (tSnow - wSnow) * k;
+        wRain += (tRain - wRain) * k; wSnow += (tSnow - wSnow) * k; wDusk += (tDusk - wDusk) * k;
         if (clearForEdit) { effFogStart = tFs; effFogEnd = tFe; wOvercast = 0f; }   // snap: zero haze from the first editor frame
         updateWeatherParticles(dt);
     }
@@ -4212,9 +4419,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (weatherLabelT > 0f) {                          // brief name announced when the weather changes
             float a = Math.max(0f, Math.min(1f, Math.min(weatherLabelT, 4.5f - weatherLabelT) * 2f));
             int wc = WX_ORDER[wxIdx];
-            float lr = wc == WX_SUN ? 1.0f : wc == WX_RAIN ? 0.62f : wc == WX_SNOW ? 0.95f : 0.82f;
-            float lg = wc == WX_SUN ? 0.85f : wc == WX_RAIN ? 0.76f : wc == WX_SNOW ? 0.97f : 0.85f;
-            float lb = wc == WX_SUN ? 0.45f : wc == WX_RAIN ? 0.98f : wc == WX_SNOW ? 1.0f : 0.88f;
+            float lr = wc == WX_SUN ? 1.0f : wc == WX_RAIN ? 0.62f : wc == WX_SNOW ? 0.95f : wc == WX_DUSK ? 1.0f : 0.82f;
+            float lg = wc == WX_SUN ? 0.85f : wc == WX_RAIN ? 0.76f : wc == WX_SNOW ? 0.97f : wc == WX_DUSK ? 0.62f : 0.85f;
+            float lb = wc == WX_SUN ? 0.45f : wc == WX_RAIN ? 0.98f : wc == WX_SNOW ? 1.0f : wc == WX_DUSK ? 0.34f : 0.88f;
             drawTextCentered(WX_NAME[wc], width * 0.5f, height * 0.155f, 30f, lr, lg, lb, a * 0.92f);
         }
 
@@ -6737,6 +6944,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             n++;
         }
         this.treeList = trees.isEmpty() ? null : trees.toArray(new float[0][]);
+        this.lampWorld = lampPts.isEmpty() ? null : lampPts.toArray(new float[0][]);   // dusk lights + glowing bulbs
     }
 
     /** The market: a fountain centrepiece on the square with stalls, the well and goods crates
@@ -8353,10 +8561,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     };
 
     private static final String VERT3_SRC =
-        "uniform mat4 uMVP; uniform mat4 uModel;" +
+        "uniform mat4 uMVP; uniform mat4 uModel; uniform float uSway; uniform mediump float uTime;" +   // mediump: must match FRAG3's default precision or the link fails
         "attribute vec4 aPos; attribute vec3 aNormal; attribute vec2 aUV;" +
         "varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUV;" +
-        "void main(){ vWorld=(uModel*aPos).xyz; vNormal=aNormal; vUV=aUV; gl_Position=uMVP*aPos; }";
+        "void main(){" +
+        "  vec4 p=aPos;" +
+        // Wind: vegetation/tree vertices lean with height (roots pinned) on two beating sine bands —
+        // grass tips shiver, bush tops rock, tree crowns sway. All frequencies are multiples of 0.2
+        // so the 10*PI uTime wrap stays seamless. uSway is 0 for everything that is not a plant.
+        "  if(uSway>0.5){" +
+        "    float w=clamp((aPos.y-0.15)*0.5,0.0,1.3);" +
+        "    float ph=aPos.x*0.35+aPos.z*0.45;" +
+        "    p.x+=(sin(uTime*1.6+ph)+0.35*sin(uTime*3.4+ph*1.7))*w*0.045;" +
+        "    p.z+=cos(uTime*1.4+ph*1.3)*w*0.03;" +
+        "  }" +
+        "  vWorld=(uModel*p).xyz; vNormal=aNormal; vUV=aUV; gl_Position=uMVP*p; }";
 
     private static final String FRAG3_SRC =
         "precision mediump float;" +
@@ -8364,6 +8583,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "uniform vec3 uColor; uniform float uMode; uniform vec3 uLightDir;" +
         "uniform vec3 uCamPos; uniform vec3 uFogColor; uniform float uTime; uniform sampler2D uTex;" +
         "uniform float uSunInt; uniform float uAmbient; uniform vec2 uFogRange; uniform float uWorldUV;" +
+        "uniform vec4 uPt[4]; uniform vec3 uPtC[4];" +   // dynamic point lights: xyz + 1/r^2, premultiplied colour (0 = off)
         "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }" +
         "vec3 grade(vec3 c){ float l=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(l),c,1.20); return clamp((c-0.5)*1.08+0.5,0.0,1.0); }" +  // richer + a little more contrast
         "void main(){" +
@@ -8400,6 +8620,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    vec3 spC=mix(vec3(0.55,0.58,0.64),vec3(0.90,0.81,0.67),sw);" +
         "    col=(base*(uAmbient*hemi+uSunInt*df*sunC+fl*vec3(0.26,0.27,0.30))" +
         "        +sp*spC*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +
+        // Dynamic point lights: soft wrap-diffuse falloff — the muzzle flash licks warm light over the
+        // nearest walls/ground, and the ABENDROT lanterns pool warm circles onto the street.
+        "    vec3 pl=vec3(0.0);" +
+        "    for(int i=0;i<4;i++){" +
+        "      vec3 dl=uPt[i].xyz-vWorld;" +
+        "      float at=max(0.0,1.0-dot(dl,dl)*uPt[i].w); at*=at;" +
+        "      pl+=uPtC[i]*(at*(0.35+0.65*max(dot(N,normalize(dl+vec3(0.0,0.001,0.0))),0.0)));" +
+        "    }" +
+        "    col+=base*pl;" +
         "  } else if(uMode<2.5){" +
         "    vec3 V=normalize(uCamPos-vWorld); float fr=pow(1.0-max(dot(N,V),0.0),2.0);" +
         "    float pulse=0.80+0.20*sin(uTime*5.0);" +
@@ -8481,6 +8710,57 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "  col=mix(col,uFogColor+vec3(0.12,0.05,0.0)*sunAmt*uSunInt,fog);" +
         "  gl_FragColor=vec4(pow(grade(aces(col)),vec3(0.4545)),1.0);" +
         "}";
+
+    // --- post-processing chain (fullscreen passes over the offscreen scene) ---
+
+    private static final String VERT_POST_SRC =
+        "attribute vec2 aP; varying vec2 vUV; void main(){ vUV=aP*0.5+0.5; gl_Position=vec4(aP,0.0,1.0); }";
+
+    // Bright-pass into the quarter-res bloom chain: only genuinely hot pixels (sun, muzzle flash,
+    // water glints, lantern bulbs, sun-struck whites) pass, with a soft knee so nothing pops.
+    private static final String FRAG_BRIGHT_SRC =
+        "precision mediump float; varying vec2 vUV; uniform sampler2D uTex;" +
+        "void main(){ vec3 c=texture2D(uTex,vUV).rgb;" +
+        "  float l=dot(c,vec3(0.299,0.587,0.114));" +
+        "  gl_FragColor=vec4(c*smoothstep(0.82,1.0,l),1.0); }";
+
+    // One dimension of a 9-tap gaussian in 5 fetches (linear-filter pair trick); run twice (H then V).
+    private static final String FRAG_BLUR_SRC =
+        "precision mediump float; varying vec2 vUV; uniform sampler2D uTex; uniform vec2 uDir;" +
+        "void main(){" +
+        "  vec3 c=texture2D(uTex,vUV).rgb*0.227027;" +
+        "  vec2 o1=uDir*1.3846154; vec2 o2=uDir*3.2307692;" +
+        "  c+=(texture2D(uTex,vUV+o1).rgb+texture2D(uTex,vUV-o1).rgb)*0.3162162;" +
+        "  c+=(texture2D(uTex,vUV+o2).rgb+texture2D(uTex,vUV-o2).rgb)*0.0702703;" +
+        "  gl_FragColor=vec4(c,1.0); }";
+
+    // Final composite: FXAA over the scene (offscreen targets lose MSAA — this wins it back and more),
+    // additive bloom, and a whisper of animated film grain to break up flat gradients.
+    private static final String FRAG_POST_SRC =
+        "precision mediump float; varying vec2 vUV;" +
+        "uniform sampler2D uScene; uniform sampler2D uBloom; uniform vec2 uInvRes; uniform float uGrainT;" +
+        "float lum(vec3 c){ return dot(c,vec3(0.299,0.587,0.114)); }" +
+        "void main(){" +
+        "  vec3 rgbNW=texture2D(uScene,vUV+vec2(-1.0,-1.0)*uInvRes).rgb;" +
+        "  vec3 rgbNE=texture2D(uScene,vUV+vec2( 1.0,-1.0)*uInvRes).rgb;" +
+        "  vec3 rgbSW=texture2D(uScene,vUV+vec2(-1.0, 1.0)*uInvRes).rgb;" +
+        "  vec3 rgbSE=texture2D(uScene,vUV+vec2( 1.0, 1.0)*uInvRes).rgb;" +
+        "  vec3 rgbM =texture2D(uScene,vUV).rgb;" +
+        "  float lNW=lum(rgbNW),lNE=lum(rgbNE),lSW=lum(rgbSW),lSE=lum(rgbSE),lM=lum(rgbM);" +
+        "  float lMin=min(lM,min(min(lNW,lNE),min(lSW,lSE)));" +
+        "  float lMax=max(lM,max(max(lNW,lNE),max(lSW,lSE)));" +
+        "  vec2 dir=vec2(-((lNW+lNE)-(lSW+lSE)),((lNW+lSW)-(lNE+lSE)));" +
+        "  float dirReduce=max((lNW+lNE+lSW+lSE)*0.03125,0.0078125);" +
+        "  float rcpDir=1.0/(min(abs(dir.x),abs(dir.y))+dirReduce);" +
+        "  dir=clamp(dir*rcpDir,vec2(-8.0),vec2(8.0))*uInvRes;" +
+        "  vec3 rgbA=0.5*(texture2D(uScene,vUV+dir*(-0.166667)).rgb+texture2D(uScene,vUV+dir*0.166667).rgb);" +
+        "  vec3 rgbB=rgbA*0.5+0.25*(texture2D(uScene,vUV+dir*-0.5).rgb+texture2D(uScene,vUV+dir*0.5).rgb);" +
+        "  float lB=lum(rgbB);" +
+        "  vec3 col=(lB<lMin||lB>lMax)?rgbA:rgbB;" +
+        "  col+=texture2D(uBloom,vUV).rgb*0.55;" +
+        "  float g=fract(sin(dot(vUV*vec2(917.0,533.0),vec2(12.9898,78.233))+uGrainT*7.0)*43758.547);" +
+        "  col+=(g-0.5)*0.016;" +
+        "  gl_FragColor=vec4(col,1.0); }";
 
     private static final String VERT_SKY_SRC =
         "attribute vec2 aP; varying vec2 vP; void main(){ vP=aP; gl_Position=vec4(aP,0.999,1.0); }";
