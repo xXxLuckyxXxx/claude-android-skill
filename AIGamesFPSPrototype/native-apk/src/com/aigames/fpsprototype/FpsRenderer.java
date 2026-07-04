@@ -737,7 +737,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform1f(uSunInt, effSunInt);
         GLES20.glUniform1f(uAmbient, effAmbient);
         GLES20.glUniform2f(uFogRange, effFogStart, effFogEnd);
-        GLES20.glUniform1f(uTime, timeAcc);
+        // Wrapped at 10*PI: every FRAG3 animation frequency is a multiple of 0.2 rad/s, so the wrap is
+        // seamless (integer cycles) — and uTime stays small enough that mediump/fp16 GPUs keep smooth
+        // phase precision instead of the water/pulse animations quantizing as timeAcc grows unbounded.
+        GLES20.glUniform1f(uTime, timeAcc % 31.415926f);
         GLES20.glUniform1f(uWorldUV, 0f);                      // ground/roads/veg use their baked mesh UVs
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 
@@ -876,8 +879,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         drawDoors();
         drawWindows();
+        drawWater();          // before the horde: a zombie between you and the fountain must cover the water
         drawEnemies();
-        drawWater();          // translucent animated pools/streams blend over the world AND the horde
         drawParticles();
         drawWeather();
         drawPickups();
@@ -8437,8 +8440,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "      gl_FragColor=vec4(pow(grade(aces(fc)),vec3(0.4545)),1.0); return;" +
         "    }" +
         "    if(vUV.y>0.5){" +                                  // falling stream: bright bands sliding down, splash at the foot
-        "      float f=fract(d*3.0-t*2.4);" +
-        "      float band=0.35+0.65*smoothstep(0.10,0.85,f);" +
+        "      float band=0.35+0.65*smoothstep(-0.2,0.9,sin(d*19.0-t*15.0));" +
         "      float splash=smoothstep(0.72,1.0,d)*(0.60+0.40*sin(t*9.0+vWorld.x*37.0+vWorld.z*29.0));" +
         "      vec3 wc=mix(uColor*2.2,vec3(0.93,0.97,1.00),0.30*band+0.55*splash);" +
         "      wc=mix(wc,uFogColor,fog);" +
@@ -8449,11 +8451,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // world-space chop breaks the symmetry. Shading mirrors the window glass: fresnel-weighted sky
         // reflection that follows the weather, a hard sun glitter, foam lapping at the stone.
         "    vec2 rn=vNormal.xz; float rl=length(rn); vec2 rd=rl>0.02?rn/rl:vec2(0.0,0.0);" +
-        "    float ring=exp(-pow((d-0.38)*9.0,2.0));" +
+        "    float rq=(d-0.38)*9.0; float ring=exp(-rq*rq);" +   // NOT pow(): a negative base is UB in GLSL ES 1.00
+
         "    float amp=0.12+0.22*ring;" +
-        "    float slope=amp*(cos(d*26.0-t*3.0)+0.55*cos(d*47.0-t*5.1));" +
-        "    float chx=0.09*cos(vWorld.x*7.0+t*1.35)*sin(vWorld.z*6.0-t*1.10);" +
-        "    float chz=0.09*sin(vWorld.x*6.5-t*1.20)*cos(vWorld.z*7.5+t*1.45);" +
+        "    float slope=amp*(cos(d*26.0-t*3.0)+0.55*cos(d*47.0-t*5.2));" +
+        "    float chx=0.09*cos(vWorld.x*7.0+t*1.4)*sin(vWorld.z*6.0-t*1.2);" +
+        "    float chz=0.09*sin(vWorld.x*6.5-t*1.2)*cos(vWorld.z*7.5+t*1.6);" +
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         "    vec3 N2=normalize(vec3(slope*rd.x+chx,1.0,slope*rd.y+chz));" +
         "    float fres=pow(1.0-max(dot(N2,V),0.0),3.0);" +
@@ -8463,7 +8466,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    vec3 col2=mix(uColor,mix(uFogColor,skyR,clr)*max(uSunInt,0.85),0.05+0.75*fres);" +
         "    vec3 H=normalize(L+V);" +
         "    col2+=pow(max(dot(N2,H),0.0),520.0)*vec3(2.2,2.1,1.8)*uSunInt;" +   // pinprick glitter, not a sheet: H is near-vertical over flat water
-        "    float foam=smoothstep(0.92,0.995,d)*(0.40+0.35*sin(d*70.0-t*2.1))" +
+        "    float foam=smoothstep(0.92,0.995,d)*(0.40+0.35*sin(d*70.0-t*2.2))" +
         "              +ring*(0.16+0.16*sin(t*7.0+vWorld.x*23.0+vWorld.z*19.0));" +
         "    foam=clamp(foam,0.0,1.0);" +
         "    col2=mix(col2,vec3(0.93,0.97,1.00),foam*0.60);" +
