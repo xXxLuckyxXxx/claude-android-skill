@@ -1628,14 +1628,32 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int i = 0; i < MAX_PICKUPS; i++) {
             if (pkLife[i] <= 0f) continue;
             float fade = pkLife[i] < 2f ? Math.max(0.25f, pkLife[i] / 2f) : 1f;   // dim out near despawn
-            Matrix.setIdentityM(model, 0);
-            Matrix.translateM(model, 0, pkX[i], pkY[i] + bob, pkZ[i]);
-            Matrix.rotateM(model, 0, spin, 0f, 1f, 0f);
-            Matrix.rotateM(model, 0, 32f, 1f, 0f, 0.35f);
-            Matrix.scaleM(model, 0, 0.22f, 0.22f, 0.22f);
-            if (pkType[i] == 0) drawWorld(cube, 36, 3f, 0.95f * fade, 0.22f * fade, 0.24f * fade);   // health: red
-            else                drawWorld(cube, 36, 3f, 0.98f * fade, 0.8f * fade, 0.22f * fade);    // ammo: gold
+            Matrix.setIdentityM(winBase, 0);                       // reuse the window hinge scratch as pickup base
+            Matrix.translateM(winBase, 0, pkX[i], pkY[i] + bob, pkZ[i]);
+            Matrix.rotateM(winBase, 0, spin, 0f, 1f, 0f);
+            Matrix.rotateM(winBase, 0, 24f, 1f, 0f, 0.30f);
+            if (pkType[i] == 0) {                                  // HEALTH: a white medkit with a red cross + latch
+                pkBit(0f, 0f, 0f, 0.30f, 0.20f, 0.22f, 0.92f * fade, 0.92f * fade, 0.90f * fade);
+                pkBit(0f, 0.005f, 0.115f, 0.056f, 0.16f, 0.012f, 0.90f * fade, 0.12f * fade, 0.12f * fade);   // cross |
+                pkBit(0f, 0.005f, 0.115f, 0.16f, 0.056f, 0.012f, 0.90f * fade, 0.12f * fade, 0.12f * fade);   // cross -
+                pkBit(0f, 0.105f, 0f, 0.31f, 0.02f, 0.23f, 0.70f * fade, 0.70f * fade, 0.68f * fade);         // lid seam
+                pkBit(0f, 0.045f, -0.115f, 0.10f, 0.05f, 0.012f, 0.45f * fade, 0.45f * fade, 0.47f * fade);   // latch
+            } else {                                               // AMMO: an olive crate with brass tips poking out
+                pkBit(0f, -0.02f, 0f, 0.30f, 0.16f, 0.22f, 0.30f * fade, 0.32f * fade, 0.18f * fade);
+                pkBit(0f, 0.065f, 0f, 0.31f, 0.025f, 0.23f, 0.20f * fade, 0.215f * fade, 0.12f * fade);       // lid rim
+                for (int s2 = -1; s2 <= 1; s2++)                                                              // cartridges
+                    pkBit(s2 * 0.085f, 0.105f, 0f, 0.045f, 0.09f, 0.045f, 0.85f * fade, 0.66f * fade, 0.25f * fade);
+                pkBit(0f, 0f, 0.115f, 0.20f, 0.05f, 0.012f, 0.75f * fade, 0.62f * fade, 0.22f * fade);        // stencil band
+            }
         }
+    }
+
+    /** One box of a pickup in its spin frame (offsets/sizes in metres, sizes full). */
+    private void pkBit(float lx, float ly, float lz, float sx, float sy, float sz, float r, float g, float b) {
+        System.arraycopy(winBase, 0, model, 0, 16);
+        Matrix.translateM(model, 0, lx, ly, lz);
+        Matrix.scaleM(model, 0, sx, sy, sz);
+        drawWorld(cube, 36, 3f, r, g, b);
     }
 
     private void triggerGameOver() {
@@ -7050,11 +7068,15 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     }
                 }
             }
-            for (int cIx = 0; cIx < 4; cIx++)                       // corner posts
-                addYawBox(L, gx, gz, ca, sa, (cIx % 2 == 0 ? -1 : 1) * gw * 0.5f, (cIx < 2 ? -1 : 1) * gd * 0.5f,
-                        0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
+            for (int cIx = 0; cIx < 4; cIx++) {                     // corner posts, each with a pointed cap
+                float plx = (cIx % 2 == 0 ? -1 : 1) * gw * 0.5f, plz = (cIx < 2 ? -1 : 1) * gd * 0.5f;
+                addYawBox(L, gx, gz, ca, sa, plx, plz, 0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
+                addYawBox(L, gx, gz, ca, sa, plx, plz, 0.775f, 0.075f, 0.06f, 0.075f, fr * 0.75f, fg * 0.75f, fb * 0.75f, yawDeg + 45f);
+            }
             addYawBox(L, gx, gz, ca, sa, gateSide * gw * 0.5f, gateAt - gateHalf, 0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
             addYawBox(L, gx, gz, ca, sa, gateSide * gw * 0.5f, gateAt + gateHalf, 0.375f, 0.09f, 0.75f, 0.09f, fr * 0.9f, fg * 0.9f, fb * 0.9f, yawDeg);
+            addYawBox(L, gx, gz, ca, sa, gateSide * gw * 0.5f, gateAt - gateHalf, 0.775f, 0.075f, 0.06f, 0.075f, fr * 0.75f, fg * 0.75f, fb * 0.75f, yawDeg + 45f);
+            addYawBox(L, gx, gz, ca, sa, gateSide * gw * 0.5f, gateAt + gateHalf, 0.775f, 0.075f, 0.06f, 0.075f, fr * 0.75f, fg * 0.75f, fb * 0.75f, yawDeg + 45f);
             gardenSoil.add(new float[]{gx, gz, gw - 0.75f, gd - 0.75f, yawDeg});   // tilled plot (texture + sprouts)
             if (rc.nextFloat() < 0.30f) {                           // a fruit tree in one back corner
                 float lx = (rc.nextBoolean() ? 1f : -1f) * (gw * 0.5f - 0.8f), lz = -gd * 0.5f + 0.8f;
