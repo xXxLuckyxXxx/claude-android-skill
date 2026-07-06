@@ -171,7 +171,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int prog2, aP2, uScale2, uOff2, uCol2;
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
 
-    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex;
+    private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex, clothTex;
     private int brickTex, stoneTex, sidingTex, gravelTex, winBackTex;   // per-archetype facade materials, gravel path + dark window-interior
 
     private FloatBuffer cube, floor, sphere, quad, circle, terrain, cityGround, vegetation, textQuad, roofMesh, windowMesh, trimMesh, roadMesh, placedTrees, bandMesh, interiorMesh, revealMesh;
@@ -668,6 +668,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
         floorTex = uploadTexture(makeFloorBitmap());
         metalTex = uploadTexture(makeMetalBitmap());
+        clothTex = uploadTexture(makeClothBitmap());
         fontTex = uploadFontTexture(makeFontAtlas());
 
         float[] terr = makeTerrain(100, 140f);
@@ -1856,7 +1857,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private void drawEnemies() {
         GLES20.glUseProgram(prog3);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        // Cloth, not gunmetal: the old metalTex bind multiplied every zombie part by a ~0.2 dark plate
+        // texture — outfits crushed toward black (backlit they WERE black) and its panel stripes/bands
+        // striped across faces and torsos. The cloth map is a light neutral weave, so outfit colours
+        // finally render at their authored brightness.
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clothTex);
         GLES20.glUniform1f(uCharLoc, 1f);                 // wrap-lit characters (reset at the end)
         for (int i = 0; i < MAX_ENEMIES; i++) {
             if (!enAlive[i]) continue;
@@ -1868,10 +1873,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 bob += 0.18f + 0.05f * (float) Math.sin(timeAcc * 12f);
                 wr = 0.58f + 0.32f * (float) Math.sin(timeAcc * 18f);   // pulsing but always strongly red
             }
-            // Per-zombie variety: pale sickly skin graded from greenish to grey, clothing wear, wound layout.
+            // Per-zombie variety: sickly green-grey skin, clothing wear, wound layout. These albedos are
+            // authored for the LIGHT cloth map — under the old dark metal bind they had been inflated to
+            // compensate, which is why swapping the texture without retuning read cream-white and cheery.
             float sv = enVar[i], wv = (sv * 7.31f) % 1f;
-            float wear = 0.76f + 0.34f * wv;
-            float skR = 0.64f + 0.16f * sv, skG = 0.74f - 0.04f * sv, skB = 0.44f + 0.14f * sv;
+            float wear = 0.58f + 0.28f * wv;
+            float skR = 0.42f + 0.10f * sv, skG = 0.60f - 0.03f * sv, skB = 0.33f + 0.09f * sv;
             float[] o = OUTFITS[enOutfit[i]];
             float shR = (o[0] * wear + hf) * (1f - wr) + 1.00f * wr, shG = (o[1] * wear + hf) * (1f - wr) + 0.16f * wr, shB = (o[2] * wear + hf) * (1f - wr) + 0.13f * wr;
             float paR = (o[3] * wear + hf) * (1f - wr) + 1.00f * wr, paG = (o[4] * wear + hf) * (1f - wr) + 0.16f * wr, paB = (o[5] * wear + hf) * (1f - wr) + 0.13f * wr;
@@ -1959,7 +1966,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 if (sv > 0.55f) {                                                                        // ribs bared through the shirt
                     enemyPart(-0.03f, 1.005f, 0.158f, 0.26f, 0.30f, 0.015f, 0.10f, 0.045f, 0.04f);       // dark cavity
                     for (int rb = 0; rb < 3; rb++)
-                        enemyPart(-0.03f, 1.105f - rb * 0.085f, 0.166f, 0.24f, 0.032f, 0.012f, 0.80f, 0.75f, 0.62f);
+                        enemyPart(-0.03f, 1.105f - rb * 0.085f, 0.166f, 0.24f, 0.032f, 0.012f, 0.58f, 0.54f, 0.44f);
                 }
                 enemyLimb(-0.14f, 0.70f, 0.02f, 0.30f, 0.20f, 0.13f, 0.245f, lL, paR * 0.88f, paG * 0.88f, paB * 0.88f);  // knee wraps
                 enemyLimb( 0.14f, 0.70f, 0.02f, 0.30f, 0.20f, 0.13f, 0.245f, lR, paR * 0.88f, paG * 0.88f, paB * 0.88f);
@@ -5826,6 +5833,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return b;
     }
 
+    /** Character multiplier map: a LIGHT neutral weave (~0.86 mean) with faint threads and worn
+     *  smudges. Multiplied under the outfit/skin colours it keeps them at their authored brightness
+     *  while adding fabric-grain interest up close — unlike the dark plate metal it replaces. */
+    private static Bitmap makeClothBitmap() {
+        int N = 256;
+        Bitmap b = Bitmap.createBitmap(N, N, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        Paint p = new Paint();
+        Random rnd = new Random(11);
+        for (int y = 0; y < N; y += 2) {                       // horizontal weave rows, gently uneven
+            int v = 0xD2 + rnd.nextInt(0x14);
+            p.setColor(0xFF000000 | (v << 16) | ((v - 3) << 8) | (v - 9));
+            c.drawLine(0, y, N, y, p);
+            p.setColor(0xFF000000 | ((v - 10) << 16) | ((v - 13) << 8) | (v - 19));
+            c.drawLine(0, y + 1, N, y + 1, p);
+        }
+        p.setColor(0x16FFFFFF);                                 // barely-there vertical threads
+        for (int x = 0; x < N; x += 3) c.drawLine(x, 0, x, N, p);
+        for (int k = 0; k < 26; k++) {                          // worn grime patches, very low contrast
+            p.setColor(0x12000000 | (rnd.nextInt(2) == 0 ? 0x201810 : 0x2A2418));
+            c.drawCircle(rnd.nextInt(N), rnd.nextInt(N), 8 + rnd.nextInt(22), p);
+        }
+        return b;
+    }
+
     // --- geometry (pos3, normal3, uv2) ---
 
     private static int put(float[] d, int o, float x, float y, float z, float nx, float ny, float nz, float u, float v) {
@@ -9033,23 +9065,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    vec3 V=normalize(uCamPos-vWorld); vec3 L=normalize(uLightDir);" +
         // Characters get WRAP lighting: a zombie constantly turns, so hard N.L swung its skin from
         // sun-bleached to near-black several times a second ("mal zu blass, mal zu dunkel"). The wrap
-        // carries warm key light around the form (back side keeps ~35%), capped slightly below the
-        // architectural key so skin never washes out.
+        // softens the terminator (key reaches around to N.L=-0.65, zero beyond), capped slightly below
+        // the architectural key so skin never washes out; the camera fill + doubled character ambient
+        // below carry the fully sun-less side.
         "    float ndl=dot(N,L);" +
         "    float df=mix(max(ndl,0.0), max((ndl+0.65)/1.65,0.0)*0.82, uChar);" +
-        "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
+        // Characters swap the world's FIXED fill direction for a camera-follow fill: with the sun behind
+        // a zombie its whole camera side had N.L past the wrap (df=0) AND could face away from the fixed
+        // fill too, leaving only 0.17 ambient — dark albedo outfits crushed to a black cut-out. Keying the
+        // fill on V guarantees the side the player actually sees is always gently lit, and it moves
+        // smoothly with the camera instead of flipping ("je nach Bewegung normal oder blass/schwarz").
+        "    float fl=max(dot(N,normalize(mix(vec3(0.5,0.25,0.6),V,uChar))),0.0);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
         // Rim is a VIEW-dependent term, and on a flat facade every fragment shares one normal — so at a
         // grazing view the whole wall flipped to pale blue-grey at once and slid back as you moved
         // ("je nach Bewegung mal normal, mal blass": measured 183/128/98 side-on vs 147/141/160 grazing).
-        // Facades keep only 15% rim; props/characters (mesh UVs) keep their full edge sheen.
-        "    rim*=1.0-0.85*uWorldUV;" +
+        // Facades keep only 15% rim — and so do CHARACTERS: a zombie is flat boxes too, so entire limb
+        // faces flashed pale blue-grey as they swung near-perpendicular to the view. Props keep the sheen.
+        "    rim*=1.0-0.85*max(uWorldUV,uChar);" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         // Schlick fresnel on the Blinn lobe: on a FLAT wall every fragment shares one normal, so with the
         // sun anywhere near the view axis the pow-48 lobe covered the WHOLE face and washed it out pale
         // ("die Seite die ich anschaue ist viel zu blass"). Dielectric plaster/brick reflects ~5% at
         // normal incidence — keep the grazing-angle sheen, kill the face-on mirror.
         "    sp*=0.05+0.95*pow(1.0-max(dot(N,V),0.0),5.0);" +
+        // Cloth and dead skin are matte: the pow-48 gloss lobe lit whole limb faces white when a backlit
+        // zombie's box normals lined up with the half-vector (grazing + sun opposite the view). Keep 20%.
+        "    sp*=1.0-0.80*uChar;" +
         "    vec3 base=tex*uColor;" +
         // Shaded facades used to wash out to pale lavender: the only light on a sun-less face was the ambient +
         // sky-fill + rim terms, and all three were strongly blue, so they cancelled the material's own hue. Keep
@@ -9064,7 +9106,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float sw=clamp((uSunInt-0.55)*2.222,0.0,1.0);" +
         "    vec3 sunC=mix(vec3(1.08,1.11,1.16),vec3(1.30,1.17,0.95),sw);" +
         "    vec3 spC=mix(vec3(0.55,0.58,0.64),vec3(0.90,0.81,0.67),sw);" +
-        "    col=(base*(uAmbient*hemi+uSunInt*df*sunC+fl*vec3(0.26,0.27,0.30))" +
+        // Characters get DOUBLE hemispheric ambient (a film-style character fill): a small dynamic figure
+        // must stay readable against bright streets even on its sun-less side; buildings keep 1x.
+        "    col=(base*(uAmbient*hemi*(1.0+1.0*uChar)+uSunInt*df*sunC+fl*vec3(0.26,0.27,0.30))" +
         "        +sp*spC*tex.r+rim*vec3(0.12,0.13,0.16))*ao;" +
         // Dynamic point lights: soft wrap-diffuse falloff — the muzzle flash licks warm light over the
         // nearest walls/ground, and the ABENDROT lanterns pool warm circles onto the street.
