@@ -5792,12 +5792,46 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawCircle(muzX, muzY, 1.8f * s, weaponR(w), weaponG(w), weaponB(w), a);  // accent muzzle cap
     }
 
-    /** A polished round touch button: edge shadow, bright thin ring, tinted fill, inner top gloss. */
+    /** A soft-edged light pool: circle fan whose alpha fades from the centre to zero at the rim
+     *  (per-vertex alpha via the halo program) — a gradient highlight with no visible edge. */
+    private void drawSoftDisc(float cx, float cy, float rPx, float r, float g, float b, float a) {
+        if (haloBuf == null) {
+            java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocateDirect((4 * (RR_SEG + 1) + 1) * 2 * 3 * 4);
+            bb.order(java.nio.ByteOrder.nativeOrder());
+            haloBuf = bb.asFloatBuffer();
+        }
+        int seg = 24;
+        float cxN = cx / width * 2f - 1f, cyN = 1f - cy / height * 2f;
+        haloBuf.position(0);
+        haloBuf.put(cxN).put(cyN).put(1f);                     // bright centre
+        for (int k = 0; k <= seg; k++) {
+            double ang = Math.PI * 2.0 * k / seg;
+            haloBuf.put(cxN + rPx * (float) Math.cos(ang) / width * 2f)
+                   .put(cyN + rPx * (float) Math.sin(ang) / height * 2f).put(0f);
+        }
+        GLES20.glUseProgram(progHalo);
+        GLES20.glUniform2f(uScaleHalo, 1f, 1f);
+        GLES20.glUniform2f(uOffHalo, 0f, 0f);
+        GLES20.glUniform4f(uColHalo, r, g, b, a);
+        haloBuf.position(0);
+        GLES20.glEnableVertexAttribArray(aPHalo);
+        GLES20.glVertexAttribPointer(aPHalo, 2, GLES20.GL_FLOAT, false, 12, haloBuf);
+        haloBuf.position(2);
+        GLES20.glEnableVertexAttribArray(aAHalo);
+        GLES20.glVertexAttribPointer(aAHalo, 1, GLES20.GL_FLOAT, false, 12, haloBuf);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, seg + 2);
+        GLES20.glDisableVertexAttribArray(aAHalo);
+        GLES20.glUseProgram(prog2);
+    }
+
+    /** A polished round touch button: edge shadow, bright thin ring, tinted fill, soft top light.
+     *  (The old "gloss" was a hard-edged white disc at 10% alpha — it read as a bright dot stamped
+     *  into every button. The soft gradient pool has no visible edge.) */
     private void drawPad(float cx, float cy, float rPx, float r, float g, float b, float fillA) {
         drawCircle(cx, cy + 3f * us, rPx + 3f * us, 0f, 0f, 0f, 0.20f);                      // drop shadow
         drawCircle(cx, cy, rPx + 2.5f * us, Math.min(1f, r + 0.32f), Math.min(1f, g + 0.32f), Math.min(1f, b + 0.32f), fillA * 0.85f); // ring
         drawCircle(cx, cy, rPx, r, g, b, fillA);                                            // fill
-        drawCircle(cx, cy - rPx * 0.33f, rPx * 0.55f, 1f, 1f, 1f, 0.10f);                   // inner top gloss
+        drawSoftDisc(cx, cy - rPx * 0.38f, rPx * 0.80f, 1f, 1f, 1f, 0.16f);                 // soft top light
     }
 
     /** A solid circular ring (annulus) — one strip through the halo program with constant alpha.
@@ -7109,6 +7143,115 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
         }
         addAccessories(L, houses, rc);                              // lamps, benches, market square, scattered trees
+        addChapterTheme(L, houses, rc);                             // per-chapter landmark structures + ground features
+    }
+
+    // ---- per-chapter theme features: what makes each map its own place, not a re-skinned village ----
+
+    /** True if (x,z) is a legal spot for a free-standing theme structure of footprint radius `fr`:
+     *  inside the map, off the spawn corridor, clear of the asphalt, clear of every house, and `spacing`
+     *  away from every theme structure already dropped this build (recorded in themePts). */
+    private java.util.List<float[]> themePts;
+    private boolean themeSpotOk(List<float[]> houses, float x, float z, float fr, float roadClr, float spacing) {
+        if (x * x + z * z > 29.5f * 29.5f) return false;
+        if (inSpawnLane(x, z)) return false;
+        for (int c = 0; c < 8; c++) {                               // whole footprint off the asphalt + inside the map
+            double a = c * Math.PI / 4.0;
+            float wx = x + (float) Math.cos(a) * fr, wz = z + (float) Math.sin(a) * fr;
+            if (roadSd(wx, wz) < roadClr || wx * wx + wz * wz > 31f * 31f) return false;
+        }
+        if (!clearOfHouses(houses, x, z, fr + 0.6f)) return false;
+        if (themePts != null) for (float[] p : themePts) if (Math.hypot(x - p[0], z - p[1]) < spacing + fr) return false;
+        return true;
+    }
+    private void themeMark(float x, float z) {
+        if (themePts == null) themePts = new java.util.ArrayList<float[]>();
+        themePts.add(new float[]{x, z});
+        if (clutterPts != null) clutterPts.add(new float[]{x, z});   // keep loose props from spawning on top
+    }
+
+    /** Chapter 2 = open FARMLAND (windmill, grain silos, hay bales, big crop fields, an orchard);
+     *  chapter 3 = a walled OLD TOWN (corner watchtowers, a market monument, street barricades).
+     *  Chapter 1 (the village) adds nothing here. All structures pass themeSpotOk so nav/road/spawn
+     *  invariants hold, and orchard trees + field plots feed the existing tree/soil bakes. */
+    private void addChapterTheme(List<float[]> L, List<float[]> houses, Random rc) {
+        themePts = new java.util.ArrayList<float[]>();
+        if (levelId == 1) {
+            // a windmill + two grain silos on the open ground, each at the first candidate that clears
+            float[][] mill = {{-14f, -13f}, {-16f, -9f}, {-11f, -16f}, {13f, -14f}, {-15f, 13f}};
+            for (float[] c : mill) if (themeSpotOk(houses, c[0], c[1], 2.0f, 2.6f, 6f)) { addWindmill(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
+            int silos = 0;
+            float[][] siloC = {{16f, -12f}, {13f, 12f}, {-17f, -13f}, {17f, 10f}, {-13f, 15f}, {8f, -17f}};
+            for (float[] c : siloC) { if (silos >= 2) break; if (themeSpotOk(houses, c[0], c[1], 1.3f, 2.6f, 5f)) { addSilo(L, c[0], c[1], rc); themeMark(c[0], c[1]); silos++; } }
+            // hay bales scattered across the fields
+            int bales = 0;
+            for (int t = 0; t < 300 && bales < 7; t++) {
+                float a = rc.nextFloat() * 6.2832f, rad = 8f + rc.nextFloat() * 18f;
+                float x = (float) Math.cos(a) * rad, z = 5f + (float) Math.sin(a) * rad;
+                if (themeSpotOk(houses, x, z, 0.85f, 1.6f, 3.2f)) { addHayBale(L, x, z, rc); themeMark(x, z); bales++; }
+            }
+            // big crop fields (feed the tilled-soil + sprout bake) in the open quadrants
+            float[][] fields = {{-15f, 14f}, {15f, 13f}, {16f, -13f}, {-16f, -14f}, {0f, -15f}};
+            int plots = 0;
+            for (float[] c : fields) {
+                if (plots >= 3) break;
+                if (!themeSpotOk(houses, c[0], c[1], 3.4f, 3.0f, 8f)) continue;
+                float fw = 5.0f + rc.nextFloat() * 1.6f, fd = 4.2f + rc.nextFloat() * 1.4f;
+                float fyaw = (rc.nextFloat() - 0.5f) * 30f;
+                if (fieldClear(houses, c[0], c[1], fw, fd, fyaw)) { gardenSoil.add(new float[]{c[0], c[1], fw, fd, fyaw}); themeMark(c[0], c[1]); plots++; }
+            }
+            // a small orchard: a tidy grid of fruit trees in one corner
+            addOrchard(houses, rc);
+        } else if (levelId == 2) {
+            // four stone watchtowers framing the old town at the far corners
+            float[][] tw = {{-25f, -22f}, {25f, -22f}, {-25f, 20f}, {24f, 21f}, {-22f, 26f}, {22f, 26f}};
+            int towers = 0;
+            for (float[] c : tw) { if (towers >= 4) break; if (themeSpotOk(houses, c[0], c[1], 1.5f, 2.2f, 10f)) { addWatchtower(L, c[0], c[1], rc); themeMark(c[0], c[1]); towers++; } }
+            // a stone monument on an open patch near the market
+            float[][] mon = {{-6f, -2f}, {7f, 3f}, {-7f, 8f}, {8f, -4f}, {-9f, 1f}};
+            for (float[] c : mon) if (themeSpotOk(houses, c[0], c[1], 1.4f, 2.0f, 4f)) { addMonument(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
+            // street barricades: overturned cart + crates + a barrel at a handful of road-mouth spots
+            int bar = 0;
+            for (int t = 0; t < 400 && bar < 5; t++) {
+                float a = rc.nextFloat() * 6.2832f, rad = 9f + rc.nextFloat() * 16f;
+                float x = (float) Math.cos(a) * rad, z = 5f + (float) Math.sin(a) * rad;
+                if (roadSd(x, z) > 3.2f || roadSd(x, z) < 1.5f) continue;   // just OFF a street edge, not in the field
+                if (!themeSpotOk(houses, x, z, 1.3f, 1.3f, 6f)) continue;
+                addBarricade(L, x, z, rc.nextFloat() * 360f, rc); themeMark(x, z); bar++;
+            }
+        }
+    }
+
+    /** True if a rotated field rectangle clears every house (crops are collision-free but shouldn't paint under walls). */
+    private boolean fieldClear(List<float[]> houses, float cx, float cz, float w, float d, float yaw) {
+        double a = Math.toRadians(yaw); float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        for (float lx = -0.5f; lx <= 0.5f; lx += 0.5f) for (float lz = -0.5f; lz <= 0.5f; lz += 0.5f) {
+            float wx = cx + lx * w * ca + lz * d * sa, wz = cz - lx * w * sa + lz * d * ca;
+            if (!clearOfHouses(houses, wx, wz, 0.4f) || roadSd(wx, wz) < 1.2f || inSpawnLane(wx, wz)) return false;
+        }
+        return true;
+    }
+
+    /** An orchard: a small axis grid of fruit trees dropped into treeList, in whichever corner is clearest. */
+    private void addOrchard(List<float[]> houses, Random rc) {
+        float[][] anchors = {{18f, 15f}, {-18f, 15f}, {18f, -12f}, {-18f, -12f}, {0f, 18f}};
+        for (float[] an : anchors) {
+            java.util.List<float[]> grove = new java.util.ArrayList<float[]>();
+            for (int gx = -1; gx <= 1; gx++) for (int gz = -1; gz <= 1; gz++) {
+                float x = an[0] + gx * 2.6f, z = an[1] + gz * 2.6f;
+                if (x * x + z * z > 28f * 28f || inSpawnLane(x, z)) continue;
+                if (roadSd(x, z) < 2.0f || !clearOfHouses(houses, x, z, 1.4f)) continue;
+                grove.add(new float[]{x, z, 0.68f + rc.nextFloat() * 0.22f});
+            }
+            if (grove.size() >= 6) {                                 // a real orchard, not two stragglers
+                java.util.List<float[]> merged = new java.util.ArrayList<float[]>();
+                if (treeList != null) for (float[] t : treeList) merged.add(t);
+                merged.addAll(grove);
+                for (float[] g : grove) themeMark(g[0], g[1]);
+                treeList = merged.toArray(new float[0][]);
+                return;
+            }
+        }
     }
 
     /** One lot: pick an archetype by distance from the square, size it with real variance, face the road. */
@@ -7813,6 +7956,112 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 2.25f, z, 1.50f, 0.12f, 0.95f, 0.34f, 0.27f, 0.22f, 0f});          // roof
         L.add(new float[]{x, 2.36f, z, 1.10f, 0.12f, 0.60f, 0.31f, 0.245f, 0.20f, 0f});         // upper roof course (gable-ish)
         L.add(new float[]{x, 2.47f, z, 0.62f, 0.12f, 0.28f, 0.28f, 0.22f, 0.18f, 0f});          // ridge cap
+    }
+
+    // ---- chapter-theme structures (each a stack of boxes; collision + baked shadow come for free) ----
+
+    /** One round tier faked as two crossed square boxes (0deg + 45deg) — an octagonal prism footprint. */
+    private static void addRoundTier(List<float[]> L, float x, float y, float z, float rad, float h,
+                                     float r, float g, float b) {
+        L.add(new float[]{x, y, z, rad * 2f, h, rad * 2f, r, g, b, 0f});
+        L.add(new float[]{x, y, z, rad * 1.85f, h * 0.99f, rad * 1.85f, r * 0.94f, g * 0.94f, b * 0.94f, 45f});
+    }
+
+    /** A Dutch-style windmill: tapering white tower, a dark cap, and a four-arm sail cross on the front. */
+    private void addWindmill(List<float[]> L, float x, float z) {
+        float wr = 0.90f, wg = 0.89f, wb = 0.84f;
+        addRoundTier(L, x, 0.9f,  z, 1.75f, 1.8f, wr, wg, wb);          // battered base (widest)
+        addRoundTier(L, x, 2.55f, z, 1.50f, 1.6f, wr * 1.02f, wg * 1.02f, wb * 1.02f);
+        addRoundTier(L, x, 4.05f, z, 1.24f, 1.5f, wr, wg, wb);
+        addRoundTier(L, x, 5.35f, z, 1.02f, 1.2f, wr * 0.98f, wg * 0.98f, wb * 0.98f);
+        addRoundTier(L, x, 6.15f, z, 1.20f, 0.55f, 0.30f, 0.24f, 0.18f);   // dark timber cap
+        L.add(new float[]{x, 6.55f, z, 0.9f, 0.5f, 0.9f, 0.26f, 0.20f, 0.15f, 0f});
+        L.add(new float[]{x, 6.55f, z, 0.7f, 0.5f, 0.7f, 0.24f, 0.185f, 0.14f, 45f});
+        // sail wheel on the front face (toward -z): a hub + four latticed arms in the vertical XY plane,
+        // each a dark spar carrying a pale canvas panel and three cross rungs — an unmistakable mill wheel
+        float hy = 5.9f, hz = z - 1.15f;
+        L.add(new float[]{x, hy, hz - 0.04f, 0.36f, 0.36f, 0.28f, 0.22f, 0.17f, 0.12f, 0f});     // hub boss
+        L.add(new float[]{x, hy, hz - 0.06f, 0.52f, 0.52f, 0.10f, 0.30f, 0.24f, 0.16f, 45f});    // hub cross-plate
+        float[][] arms = {{0f, 1f}, {0f, -1f}, {1f, 0f}, {-1f, 0f}};
+        for (float[] a : arms) {
+            float ax = a[0], ay = a[1];
+            float cxA = x + ax * 1.65f, cyA = hy + ay * 1.65f;
+            boolean horiz = ax != 0f;
+            L.add(new float[]{cxA, cyA, hz - 0.06f, horiz ? 3.3f : 0.16f, horiz ? 0.16f : 3.3f, 0.16f, 0.34f, 0.27f, 0.18f, 0f});  // spar
+            L.add(new float[]{cxA, cyA, hz + 0.02f, horiz ? 3.0f : 0.62f, horiz ? 0.62f : 3.0f, 0.10f, 0.88f, 0.85f, 0.76f, 0f});  // canvas panel
+            for (int rg = -1; rg <= 1; rg++) {                        // three lattice rungs across the panel
+                float rx = cxA + (horiz ? rg * 0.9f : 0f), ry = cyA + (horiz ? 0f : rg * 0.9f);
+                L.add(new float[]{rx, ry, hz + 0.03f, horiz ? 0.10f : 0.62f, horiz ? 0.62f : 0.10f, 0.11f, 0.40f, 0.33f, 0.23f, 0f});
+            }
+        }
+    }
+
+    /** A tall corrugated grain silo: a metal cylinder with hoop rings and a domed cap. */
+    private void addSilo(List<float[]> L, float x, float z, Random rc) {
+        float mr = 0.62f + rc.nextFloat() * 0.10f, mg = 0.65f + rc.nextFloat() * 0.10f, mb = 0.70f + rc.nextFloat() * 0.08f;
+        float rad = 1.05f;
+        for (int t = 0; t < 6; t++)                                    // stacked courses
+            addRoundTier(L, x, 0.6f + t * 1.0f, z, rad, 1.0f, mr * (1f - t * 0.015f), mg * (1f - t * 0.015f), mb * (1f - t * 0.01f));
+        for (int t = 0; t < 6; t++)                                    // hoop rings (slightly proud, darker)
+            addRoundTier(L, x, 1.1f + t * 1.0f, z, rad + 0.05f, 0.10f, mr * 0.72f, mg * 0.72f, mb * 0.74f);
+        addRoundTier(L, x, 6.7f, z, rad * 0.78f, 0.5f, mr * 0.82f, mg * 0.82f, mb * 0.84f);   // shoulder
+        addRoundTier(L, x, 7.05f, z, rad * 0.42f, 0.4f, mr * 0.7f, mg * 0.7f, mb * 0.72f);    // domed cap
+        L.add(new float[]{x, 7.35f, z, 0.16f, 0.5f, 0.16f, 0.30f, 0.30f, 0.32f, 0f});         // filler pipe
+    }
+
+    /** A round hay bale (one or two stacked) — golden straw, octagonal. */
+    private void addHayBale(List<float[]> L, float x, float z, Random rc) {
+        float sr = 0.80f, sg = 0.66f, sb = 0.30f;
+        addRoundTier(L, x, 0.42f, z, 0.85f, 0.82f, sr, sg, sb);
+        addRoundTier(L, x, 0.44f, z, 0.62f, 0.86f, sr * 0.9f, sg * 0.9f, sb * 0.85f);          // banded core
+        if (rc.nextFloat() < 0.5f) addRoundTier(L, x, 1.15f, z, 0.70f, 0.70f, sr * 1.03f, sg * 1.03f, sb * 1.05f);  // stacked second bale
+    }
+
+    /** A square stone watchtower with a crenellated top and an arrow-slit door. */
+    private void addWatchtower(List<float[]> L, float x, float z, Random rc) {
+        float sr = 0.52f + rc.nextFloat() * 0.06f, sg = 0.51f + rc.nextFloat() * 0.05f, sb = 0.47f + rc.nextFloat() * 0.05f;
+        float hw = 1.25f;
+        L.add(new float[]{x, 0.5f, z, hw * 2f + 0.4f, 1.0f, hw * 2f + 0.4f, sr * 0.9f, sg * 0.9f, sb * 0.88f, 0f});   // batter plinth
+        for (int t = 0; t < 6; t++)                                    // shaft courses (subtle tint alternation)
+            L.add(new float[]{x, 1.4f + t * 1.05f, z, hw * 2f, 1.05f, hw * 2f,
+                    sr * (t % 2 == 0 ? 1f : 0.95f), sg * (t % 2 == 0 ? 1f : 0.95f), sb * (t % 2 == 0 ? 1f : 0.95f), 0f});
+        float topY = 1.4f + 6 * 1.05f;
+        L.add(new float[]{x, topY + 0.1f, z, hw * 2f + 0.5f, 0.4f, hw * 2f + 0.5f, sr * 0.86f, sg * 0.86f, sb * 0.84f, 0f});  // corbel ledge
+        for (int c = 0; c < 4; c++) {                                  // 4 merlons (crenellations) at the edge midpoints
+            float mx = (c == 0 ? 1 : c == 1 ? -1 : 0) * (hw + 0.1f), mz = (c == 2 ? 1 : c == 3 ? -1 : 0) * (hw + 0.1f);
+            L.add(new float[]{x + mx, topY + 0.55f, z + mz, c < 2 ? 0.55f : hw * 2f - 0.2f, 0.6f, c < 2 ? hw * 2f - 0.2f : 0.55f, sr, sg, sb, 0f});
+        }
+        L.add(new float[]{x, 1.35f, z - hw, 0.55f, 1.5f, 0.14f, 0.16f, 0.11f, 0.08f, 0f});     // dark arrow-slit doorway (front)
+    }
+
+    /** A market monument: a stepped stone plinth carrying a tapering obelisk. */
+    private void addMonument(List<float[]> L, float x, float z) {
+        float sr = 0.70f, sg = 0.69f, sb = 0.65f;
+        L.add(new float[]{x, 0.15f, z, 2.4f, 0.3f, 2.4f, sr * 0.94f, sg * 0.94f, sb * 0.92f, 0f});   // base step
+        L.add(new float[]{x, 0.45f, z, 1.9f, 0.3f, 1.9f, sr, sg, sb, 0f});
+        L.add(new float[]{x, 0.75f, z, 1.5f, 0.3f, 1.5f, sr * 1.02f, sg * 1.02f, sb, 0f});
+        L.add(new float[]{x, 1.4f, z, 0.9f, 1.0f, 0.9f, sr, sg, sb, 0f});                          // pedestal
+        L.add(new float[]{x, 2.7f, z, 0.62f, 1.6f, 0.62f, sr * 1.03f, sg * 1.03f, sb * 1.02f, 0f}); // obelisk shaft
+        L.add(new float[]{x, 3.7f, z, 0.42f, 0.9f, 0.42f, sr, sg, sb, 0f});
+        L.add(new float[]{x, 4.25f, z, 0.24f, 0.4f, 0.24f, sr * 0.96f, sg * 0.96f, sb * 0.94f, 0f});
+        L.add(new float[]{x, 4.55f, z, 0.10f, 0.3f, 0.10f, 0.30f, 0.24f, 0.14f, 0f});             // weathered bronze tip
+    }
+
+    /** A street barricade: an overturned cart with two wheels, a sandbag row and a barrel — all spun by yaw. */
+    private void addBarricade(List<float[]> L, float x, float z, float yaw, Random rc) {
+        int b0 = L.size();
+        L.add(new float[]{x, 0.62f, z, 2.0f, 0.9f, 0.24f, 0.42f, 0.30f, 0.18f, 0f});              // tipped cart bed
+        L.add(new float[]{x, 1.02f, z + 0.08f, 2.0f, 0.16f, 0.30f, 0.36f, 0.25f, 0.15f, 0f});     // top rail
+        for (int s = -1; s <= 1; s += 2) {                                                        // two wheels flat against it
+            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.2f, 0.7f, 0.7f, 0.12f, 0.34f, 0.24f, 0.14f, 0f});
+            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.2f, 0.5f, 0.5f, 0.14f, 0.30f, 0.20f, 0.12f, 45f});
+            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.22f, 0.14f, 0.14f, 0.16f, 0.44f, 0.34f, 0.22f, 0f});  // hub
+        }
+        for (int i = 0; i < 3; i++)                                                               // sandbag row in front
+            L.add(new float[]{x - 0.6f + i * 0.6f, 0.20f, z - 0.55f, 0.56f, 0.34f, 0.42f, 0.55f, 0.50f, 0.36f, i * 12f});
+        L.add(new float[]{x + 0.95f, 0.42f, z - 0.5f, 0.42f, 0.66f, 0.42f, 0.46f, 0.33f, 0.21f, 0f});          // a barrel jammed in
+        L.add(new float[]{x + 0.95f, 0.42f, z - 0.5f, 0.42f, 0.66f, 0.42f, 0.44f, 0.31f, 0.19f, 45f});
+        for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, x, z, yaw);
     }
 
     /** A four-walled building with one doorway (doorSide 0=+z,1=-z,2=+x,3=-x), a roof, and a
