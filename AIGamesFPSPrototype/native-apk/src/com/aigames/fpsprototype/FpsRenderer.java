@@ -8005,23 +8005,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void addSilo(List<float[]> L, float x, float z, Random rc) {
         float mr = 0.60f + rc.nextFloat() * 0.06f, mg = 0.66f + rc.nextFloat() * 0.06f, mb = 0.74f + rc.nextFloat() * 0.05f;
         float rad = 1.05f;
-        for (int t = 0; t < 12; t++) {                                 // smooth body: thin courses, gentle tint banding only
+        int courses = 12; float ch = 0.5f, y0 = 0.55f;
+        for (int t = 0; t < courses; t++) {                            // smooth body: thin courses, gentle tint banding only
             float shade = 1f - (t % 2) * 0.035f;                       // faint corrugation, NOT protruding rings
-            addRoundTier(L, x, 0.55f + t * 0.5f, z, rad, 0.5f, mr * shade, mg * shade, mb * shade);
+            addRoundTier(L, x, y0 + t * ch, z, rad, ch, mr * shade, mg * shade, mb * shade);
         }
-        addRoundTier(L, x, 6.55f, z, rad + 0.06f, 0.14f, mr * 0.78f, mg * 0.80f, mb * 0.82f);   // eave lip
-        // conical roof: shrinking tiers up to a peak
-        addRoundTier(L, x, 6.85f, z, rad * 0.82f, 0.5f, mr * 0.90f, mg * 0.92f, mb * 0.94f);
-        addRoundTier(L, x, 7.25f, z, rad * 0.55f, 0.5f, mr * 0.95f, mg * 0.97f, mb * 0.99f);
-        addRoundTier(L, x, 7.6f,  z, rad * 0.28f, 0.4f, mr, mg, mb);
-        L.add(new float[]{x, 7.95f, z, 0.22f, 0.34f, 0.22f, mr * 0.72f, mg * 0.74f, mb * 0.78f, 0f});   // vented cap
-        L.add(new float[]{x, 8.16f, z, 0.30f, 0.10f, 0.30f, mr * 0.66f, mg * 0.68f, mb * 0.72f, 45f});  //  cap brim
+        float bodyTop = y0 + (courses - 1) * ch + ch * 0.5f;           // exact top of the last course (== 6.3)
+        // eave lip + conical roof, each tier sitting flush ON the one below (no floating gap)
+        addRoundTier(L, x, bodyTop + 0.07f, z, rad + 0.06f, 0.14f, mr * 0.78f, mg * 0.80f, mb * 0.82f);   // eave lip
+        float ry = bodyTop + 0.14f;
+        addRoundTier(L, x, ry + 0.25f, z, rad * 0.82f, 0.5f, mr * 0.90f, mg * 0.92f, mb * 0.94f); ry += 0.5f;
+        addRoundTier(L, x, ry + 0.25f, z, rad * 0.55f, 0.5f, mr * 0.95f, mg * 0.97f, mb * 0.99f); ry += 0.5f;
+        addRoundTier(L, x, ry + 0.20f, z, rad * 0.28f, 0.4f, mr, mg, mb); ry += 0.4f;
+        L.add(new float[]{x, ry + 0.17f, z, 0.22f, 0.34f, 0.22f, mr * 0.72f, mg * 0.74f, mb * 0.78f, 0f});   // vented cap
+        L.add(new float[]{x, ry + 0.34f, z, 0.30f, 0.10f, 0.30f, mr * 0.66f, mg * 0.68f, mb * 0.72f, 45f});  //  cap brim
         // maintenance ladder up the front face (toward -z): two rails + rungs
         float lz = z - rad - 0.05f;
         for (int s = -1; s <= 1; s += 2)
-            L.add(new float[]{x + s * 0.16f, 3.3f, lz, 0.05f, 6.4f, 0.05f, 0.34f, 0.35f, 0.38f, 0f});   // rails
+            L.add(new float[]{x + s * 0.16f, bodyTop * 0.5f + 0.3f, lz, 0.05f, bodyTop - 0.6f, 0.05f, 0.34f, 0.35f, 0.38f, 0f});   // rails
         for (int rg = 0; rg < 9; rg++)
-            L.add(new float[]{x, 0.7f + rg * 0.72f, lz, 0.34f, 0.05f, 0.05f, 0.36f, 0.37f, 0.40f, 0f}); // rungs
+            L.add(new float[]{x, 0.7f + rg * 0.66f, lz, 0.34f, 0.05f, 0.05f, 0.36f, 0.37f, 0.40f, 0f});     // rungs
     }
 
     /** A round hay bale (one or two stacked) — golden straw, octagonal. */
@@ -8040,22 +8043,22 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float sr = 0.54f + rc.nextFloat() * 0.05f, sg = 0.53f + rc.nextFloat() * 0.05f, sb = 0.49f + rc.nextFloat() * 0.05f;
         float hw = 1.15f;                                              // half width of the shaft
         L.add(new float[]{x, 0.55f, z, hw * 2f + 0.5f, 1.1f, hw * 2f + 0.5f, sr * 0.88f, sg * 0.88f, sb * 0.86f, 0f});   // battered plinth
-        int courses = 7;
+        int courses = 7; float cc = 1.05f, cy0 = 1.4f;
         for (int t = 0; t < courses; t++) {                           // straight shaft, faint course banding
             float sh = t % 2 == 0 ? 1f : 0.955f;
-            L.add(new float[]{x, 1.4f + t * 1.05f, z, hw * 2f, 1.05f, hw * 2f, sr * sh, sg * sh, sb * sh, 0f});
+            L.add(new float[]{x, cy0 + t * cc, z, hw * 2f, cc, hw * 2f, sr * sh, sg * sh, sb * sh, 0f});
         }
-        float topY = 1.4f + courses * 1.05f;                          // ~8.75
+        float topY = cy0 + (courses - 1) * cc + cc * 0.5f;            // exact top of the last course (== 8.225)
         // arrow-slit windows: a tall dark recess centred on each of the four faces, two heights
         float[][] faces = {{0f, -1f}, {0f, 1f}, {-1f, 0f}, {1f, 0f}};
         for (float[] f : faces) for (float wy : new float[]{3.0f, 5.6f}) {
             boolean zf = f[1] != 0f;
             L.add(new float[]{x + f[0] * hw, wy, z + f[1] * hw, zf ? 0.24f : 0.10f, 0.85f, zf ? 0.10f : 0.24f, 0.10f, 0.09f, 0.08f, 0f});
         }
-        // machicolation ledge (slightly proud), then the parapet wall, then the crenel teeth
-        L.add(new float[]{x, topY + 0.12f, z, hw * 2f + 0.44f, 0.34f, hw * 2f + 0.44f, sr * 0.84f, sg * 0.84f, sb * 0.82f, 0f});
-        L.add(new float[]{x, topY + 0.5f, z, hw * 2f + 0.24f, 0.44f, hw * 2f + 0.24f, sr * 0.92f, sg * 0.92f, sb * 0.9f, 0f});   // parapet band
-        float ext = hw + 0.12f, teethY = topY + 0.95f;
+        // machicolation ledge, parapet band, then the crenel teeth — each flush ON the one below
+        L.add(new float[]{x, topY + 0.17f, z, hw * 2f + 0.44f, 0.34f, hw * 2f + 0.44f, sr * 0.84f, sg * 0.84f, sb * 0.82f, 0f});  // ledge sits on the shaft
+        L.add(new float[]{x, topY + 0.56f, z, hw * 2f + 0.24f, 0.44f, hw * 2f + 0.24f, sr * 0.92f, sg * 0.92f, sb * 0.9f, 0f});   // parapet band
+        float ext = hw + 0.12f, teethY = topY + 1.055f;
         for (int side = 0; side < 4; side++) {                        // 3 merlon teeth per side, gaps between (crenellations)
             boolean zEdge = side < 2;
             float edge = (side == 0 || side == 2 ? -1f : 1f) * ext;
