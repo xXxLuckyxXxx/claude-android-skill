@@ -453,6 +453,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int[] navQ;                                              // both allocated with the first bake
     private int[][] navDoorCells;                                    // per-door: cells a CLOSED leaf blocks
     private boolean navFieldValid = false;
+    private boolean lmPolice, lmFire, lmChapel;   // landmark one-shots (police / fire station / chapel), per world build
     private float navTimer = 0f, navPx = 1e9f, navPz = 1e9f;
     private final float[] navFlow = new float[2];
     private final float[] enLastX = new float[MAX_ENEMIES], enLastZ = new float[MAX_ENEMIES];
@@ -6845,6 +6846,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.gardenSoil = new java.util.ArrayList<float[]>();
         this.gardenTreePts = new java.util.ArrayList<float[]>();
         this.waterDiscs = null; this.waterStreams = null;       // re-registered by this build's fountain (if any)
+        lmPolice = false; lmFire = false; lmChapel = false;     // one landmark of each kind per town
         // No more loose cover blocks on the plaza — the market (fountain centrepiece + a ring of
         // stalls, see addAccessories) provides the spawn cover now.
         numCover = 0;
@@ -6865,9 +6867,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 acc -= sl;
                 if (acc > 0f) continue;
                 // lot spacing tells each chapter's story: farms sit far apart, the old town packs tight
-                acc = levelId == 1 ? 8.5f + rc.nextFloat() * 5.5f
+                acc = levelId == 1 ? 6.4f + rc.nextFloat() * 4.2f
                     : levelId == 2 ? 3.9f + rc.nextFloat() * 2.4f
-                    : 4.6f + rc.nextFloat() * 3.0f;
+                    : 4.1f + rc.nextFloat() * 2.6f;   // denser: the big landmark/barn lots must not thin the towns
                 tx /= sl; tz /= sl;
                 float nxr = -tz, nzr = tx;                          // road normal (left of travel)
                 int nSides = rc.nextFloat() < (levelId == 1 ? 0.35f : levelId == 2 ? 0.80f : 0.7f) ? 2 : 1;
@@ -6925,15 +6927,23 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                    float ax, float az, float tx, float tz, float nx, float nz, float roadHw) {
         float distSq = (float) Math.hypot(ax - SQ_X, az - SQ_Z);
         float roll = rc.nextFloat();
-        int arch;                                                   // 0 cottage · 1 townhouse · 2 block · 3 shop · 4 farmhouse
-        if (levelId == 1) {                                         // ASCHENHOF: long farmhouses + squat cottages
-            arch = roll < 0.52f ? 4 : (roll < 0.86f ? 0 : 1);
-        } else if (levelId == 2) {                                  // STEINMARKT: tall stone town, shops at the core
-            if (distSq < 13f) arch = roll < 0.50f ? 3 : (roll < 0.90f ? 1 : 2);
+        // 0 cottage · 1 townhouse · 2 block · 3 shop · 4 farmhouse ·
+        // 5 POLIZEI · 6 FEUERWEHR · 7 KAPELLE · 8 SCHEUNE · 9 WIRTSHAUS
+        int arch;
+        if (levelId == 1) {                                         // ASCHENHOF: barns + farmhouses + squat cottages
+            arch = roll < 0.28f ? 8 : (roll < 0.62f ? 4 : (roll < 0.90f ? 0 : 1));
+        } else if (levelId == 2) {                                  // STEINMARKT: tall stone town, shops + tavern at the core
+            if (distSq < 13f) arch = roll < 0.40f ? 3 : (roll < 0.56f ? 9 : (roll < 0.92f ? 1 : 2));
             else              arch = roll < 0.40f ? 1 : (roll < 0.66f ? 2 : (roll < 0.88f ? 0 : 3));
-        } else if (distSq < 11f) arch = roll < 0.45f ? 3 : (roll < 0.80f ? 1 : 0);
+        } else if (distSq < 11f) arch = roll < 0.40f ? 3 : (roll < 0.55f ? 9 : (roll < 0.84f ? 1 : 0));
         else if (distSq < 21f)  arch = roll < 0.52f ? 0 : (roll < 0.72f ? 1 : (roll < 0.88f ? 4 : 3));
-        else                    arch = roll < 0.42f ? 0 : (roll < 0.68f ? 4 : (roll < 0.88f ? 1 : 2));
+        else                    arch = roll < 0.38f ? 0 : (roll < 0.58f ? 4 : (roll < 0.70f ? 8 : (roll < 0.90f ? 1 : 2)));
+        // public-building landmarks claim a mid-ring lot once per town (the farm gets only a field chapel)
+        if (levelId != 1 && distSq > 13f) {
+            if (!lmPolice && roll >= 0.30f && roll < 0.42f) arch = 5;
+            else if (!lmFire && roll >= 0.42f && roll < 0.54f) arch = 6;
+            else if (!lmChapel && distSq > 16f && roll >= 0.90f) arch = 7;
+        } else if (levelId == 1 && !lmChapel && distSq > 15f && roll >= 0.93f) arch = 7;
         float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
         int storeys, winDens; boolean chimney, trim; float[] rf; int mat; int doorStyle;
         if (arch == 0) {                                            // cottage: low, gabled, squat-to-snug
@@ -6955,17 +6965,43 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             storeys = 1; foundH = 0.24f + rc.nextFloat() * 0.10f; winDens = 3; winSize = 1.2f; chimney = false;
             trim = true; doorW = 2.2f + rc.nextFloat() * 0.4f; rf = ROOFS[rc.nextFloat() < 0.6f ? 4 : 3];
             mat = rc.nextFloat() < 0.5f ? 1 : 0; doorStyle = 3;
+        } else if (arch == 5) {                                     // POLIZEI: sturdy two-storey stone station
+            w = 5.2f + rc.nextFloat() * 0.8f; d = 4.2f + rc.nextFloat() * 0.5f; h = 4.9f + rc.nextFloat() * 0.5f;
+            storeys = 2; foundH = 0.34f; winDens = 3; winSize = 1.05f; chimney = false; trim = true;
+            pitch = 0.6f + rc.nextFloat() * 0.3f;
+            rf = new float[]{0.30f, 0.32f, 0.38f}; mat = 2; doorStyle = 2; doorW = 2.3f;
+        } else if (arch == 6) {                                     // FEUERWEHR: wide engine hall, huge red gate
+            w = 6.6f + rc.nextFloat() * 0.9f; d = 4.8f + rc.nextFloat() * 0.5f; h = 3.9f + rc.nextFloat() * 0.4f;
+            storeys = 1; foundH = 0.30f; winDens = 2; winSize = 1.1f; chimney = false; trim = true;
+            pitch = 0.55f + rc.nextFloat() * 0.2f;
+            rf = new float[]{0.44f, 0.17f, 0.13f}; mat = 1; doorStyle = 3; doorW = 3.4f; doorH = 2.9f;
+        } else if (arch == 7) {                                     // KAPELLE: narrow, tall, steep slate roof
+            w = 3.3f + rc.nextFloat() * 0.4f; d = 5.0f + rc.nextFloat() * 0.8f; h = 5.0f + rc.nextFloat() * 0.5f;
+            storeys = 2; foundH = 0.36f; winDens = 1; winSize = 1.5f; chimney = false; trim = true;
+            pitch = 2.0f;
+            rf = new float[]{0.24f, 0.26f, 0.31f}; mat = 2; doorStyle = 0; doorW = 1.7f; doorH = 2.6f;
+        } else if (arch == 8) {                                     // SCHEUNE: big dark-timber barn, few windows
+            w = 6.2f + rc.nextFloat() * 1.0f; d = 4.6f + rc.nextFloat() * 0.7f; h = 4.3f + rc.nextFloat() * 0.6f;
+            storeys = 1; foundH = 0.24f; winDens = 1; winSize = 0.9f; chimney = false; trim = false;
+            pitch = 1.7f + rc.nextFloat() * 0.4f;
+            rf = new float[]{0.32f, 0.22f, 0.13f}; mat = 3; doorStyle = 1; doorW = 3.0f; doorH = 2.7f;
+        } else if (arch == 9) {                                     // WIRTSHAUS: warm two-storey inn with a hanging sign
+            w = 4.8f + rc.nextFloat() * 0.6f; d = 4.0f + rc.nextFloat() * 0.5f; h = 4.8f + rc.nextFloat() * 0.5f;
+            storeys = 2; foundH = 0.28f; winDens = 3; winSize = 1.1f; chimney = true; trim = true;
+            pitch = 1.2f + rc.nextFloat() * 0.4f;
+            rf = ROOFS[new int[]{0, 7, 7, 4}[rc.nextInt(4)]]; mat = 3; doorStyle = 0; doorW = 2.1f;
         } else {                                                    // farmhouse: long, low, timbered
             w = 4.6f + rc.nextFloat() * 1.5f; d = 3.0f + rc.nextFloat() * 0.7f; h = 3.0f + rc.nextFloat() * 0.9f;
             storeys = 1 + (rc.nextFloat() < 0.35f ? 1 : 0); foundH = 0.26f + rc.nextFloat() * 0.10f; winDens = 2;
             chimney = true; trim = false; pitch = 1.1f + rc.nextFloat() * 0.5f;
             rf = ROOFS[new int[]{0, 4, 7, 7}[rc.nextInt(4)]]; mat = 3; doorStyle = 1;
         }
-        // chapter material/height accents: farm timber everywhere; old town stone/brick and taller
-        if (levelId == 1) {
+        // chapter material/height accents: farm timber everywhere; old town stone/brick and taller.
+        // Landmarks (arch >= 5) keep their signature materials in every chapter.
+        if (levelId == 1 && arch < 5) {
             if (rc.nextFloat() < 0.70f) mat = 3;                          // weathered timber
             if (arch == 1) storeys = 2;                                   // no towers on a farm
-        } else if (levelId == 2) {
+        } else if (levelId == 2 && arch < 5) {
             if (mat == 0 && rc.nextFloat() < 0.65f) mat = rc.nextBoolean() ? 1 : 2;   // plaster -> brick/stone
             if (mat == 3) mat = 2;                                        // no timber in the stone town
             if (arch == 1 && storeys < 3 && rc.nextFloat() < 0.5f) { storeys++; h += 1.3f; }
@@ -6999,17 +7035,56 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float[] dc = DOORS[rc.nextInt(DOORS.length)];
         float fR = 0.40f + rc.nextFloat() * 0.06f, fG = 0.38f + rc.nextFloat() * 0.06f, fB = 0.36f + rc.nextFloat() * 0.06f;
         float tR = trim ? 0.86f : -1f, tG = trim ? 0.84f : -1f, tB = trim ? 0.78f : -1f;
+        if (arch == 5)      { p = new float[]{0.86f, 0.88f, 0.92f}; dc = new float[]{0.10f, 0.22f, 0.55f};   // POLIZEI: white + blue
+                              tR = 0.16f; tG = 0.30f; tB = 0.62f; }
+        else if (arch == 6) { p = new float[]{0.78f, 0.30f, 0.24f}; dc = new float[]{0.70f, 0.12f, 0.10f};   // FEUERWEHR: signal red
+                              tR = 0.94f; tG = 0.91f; tB = 0.84f; }
+        else if (arch == 7) { p = new float[]{0.93f, 0.92f, 0.88f}; dc = new float[]{0.36f, 0.24f, 0.14f};   // KAPELLE: white stone
+                              tR = 0.80f; tG = 0.78f; tB = 0.72f; }
+        else if (arch == 8) { p = new float[]{0.48f, 0.26f, 0.18f}; dc = new float[]{0.30f, 0.19f, 0.11f}; } // SCHEUNE: ox-blood timber
+        else if (arch == 9) { p = new float[]{0.84f, 0.72f, 0.52f}; dc = new float[]{0.30f, 0.18f, 0.10f};   // WIRTSHAUS: warm cream
+                              tR = 0.55f; tG = 0.40f; tB = 0.26f; }
         addBuilding(L, doors, cx, cz, w, d, h, 0, 1, p[0], p[1], p[2], chimney ? 1 : 0,
                     doorW, doorH, dc[0], dc[1], dc[2], doorStyle, mat, yawDeg,
                     winDens, winSize, storeys, foundH, houseFurnishable(w, d, h));   // cut real window openings
         houses.add(new float[]{cx, cz, w, d, h, 0f, rf[0], rf[1], rf[2], pitch, -1f, (float) winDens, winSize,
                 GLASS_DEF[0], GLASS_DEF[1], GLASS_DEF[2], foundH, fR, fG, fB, tR, tG, tB, (float) storeys, doorW,
                 yawDeg});                                            // [25] = house yaw (spins roof/windows/interior)
+        // landmark signage/rooftop extras (local frame, door faces +z; spun with the house below)
+        int exStart = L.size();
+        if (arch == 5) {                                            // POLIZEI: rooftop light bar over the entrance
+            L.add(new float[]{cx, h + 0.44f, cz + d * 0.5f - 0.35f, 1.10f, 0.10f, 0.16f, 0.20f, 0.22f, 0.26f, 0f});
+            L.add(new float[]{cx - 0.28f, h + 0.56f, cz + d * 0.5f - 0.35f, 0.22f, 0.15f, 0.15f, 0.25f, 0.45f, 0.98f, 0f});
+            L.add(new float[]{cx + 0.28f, h + 0.56f, cz + d * 0.5f - 0.35f, 0.22f, 0.15f, 0.15f, 0.92f, 0.16f, 0.12f, 0f});
+            lmPolice = true;
+        } else if (arch == 6) {                                     // FEUERWEHR: hose tower + siren dome
+            L.add(new float[]{cx - w * 0.5f + 0.7f, h + 0.85f, cz - d * 0.5f + 0.7f, 1.15f, 1.7f, 1.15f, p[0] * 0.90f, p[1] * 0.90f, p[2] * 0.90f, 0f});
+            L.add(new float[]{cx - w * 0.5f + 0.7f, h + 1.80f, cz - d * 0.5f + 0.7f, 1.35f, 0.14f, 1.35f, 0.30f, 0.24f, 0.20f, 0f});
+            L.add(new float[]{cx + 0.4f, h + 0.90f, cz, 0.30f, 0.22f, 0.30f, 0.90f, 0.22f, 0.16f, 45f});
+            lmFire = true;
+        } else if (arch == 7) {                                     // KAPELLE: ridge bell cote + cross
+            float ridgeY = h + 0.30f + 2.0f, bz2 = cz + d * 0.5f - 0.85f;
+            L.add(new float[]{cx - 0.26f, ridgeY + 0.48f, bz2, 0.11f, 0.95f, 0.11f, 0.90f, 0.89f, 0.85f, 0f});   // cote posts
+            L.add(new float[]{cx + 0.26f, ridgeY + 0.48f, bz2, 0.11f, 0.95f, 0.11f, 0.90f, 0.89f, 0.85f, 0f});
+            L.add(new float[]{cx, ridgeY + 0.98f, bz2, 0.74f, 0.13f, 0.52f, 0.28f, 0.24f, 0.20f, 0f});           // cote cap
+            L.add(new float[]{cx, ridgeY + 0.58f, bz2, 0.26f, 0.30f, 0.26f, 0.62f, 0.50f, 0.26f, 45f});          // brass bell
+            L.add(new float[]{cx, ridgeY + 1.42f, bz2, 0.065f, 0.66f, 0.065f, 0.86f, 0.83f, 0.75f, 0f});         // cross |
+            L.add(new float[]{cx, ridgeY + 1.52f, bz2, 0.32f, 0.065f, 0.065f, 0.86f, 0.83f, 0.75f, 0f});         // cross -
+            lmChapel = true;
+        } else if (arch == 8) {                                     // SCHEUNE: hayloft door + hoist beam on the gable
+            L.add(new float[]{cx, h - 0.75f, cz + d * 0.5f + 0.04f, 1.05f, 1.15f, 0.10f, 0.24f, 0.155f, 0.09f, 0f});
+            L.add(new float[]{cx, h + 0.10f, cz + d * 0.5f + 0.35f, 0.13f, 0.13f, 0.95f, 0.35f, 0.24f, 0.14f, 0f});
+        } else if (arch == 9) {                                     // WIRTSHAUS: hanging sign beside the door
+            L.add(new float[]{cx + doorW * 0.5f + 0.55f, 2.66f, cz + d * 0.5f + 0.26f, 0.60f, 0.07f, 0.07f, 0.30f, 0.20f, 0.12f, 0f});
+            L.add(new float[]{cx + doorW * 0.5f + 0.74f, 2.30f, cz + d * 0.5f + 0.28f, 0.46f, 0.52f, 0.06f, 0.52f, 0.36f, 0.16f, 0f});
+            L.add(new float[]{cx + doorW * 0.5f + 0.74f, 2.32f, cz + d * 0.5f + 0.315f, 0.30f, 0.32f, 0.045f, 0.82f, 0.64f, 0.20f, 0f});
+        }
+        for (int bi = exStart; bi < L.size(); bi++) rotateBoxAbout(L, bi, cx, cz, yawDeg);
         if (rc.nextFloat() < 0.45f) {                               // a barrel / crate / planter against a side wall
             float lxo = (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.4f);
             float lzo = (rc.nextFloat() - 0.3f) * d * 0.5f;
             float axc = cx + lxo * ca + lzo * sa, azc = cz - lxo * sa + lzo * ca;
-            if (!onStreetXZ(axc, azc) && !inSpawnLane(axc, azc)
+            if (roadSd(axc, azc) > 0.9f && !inSpawnLane(axc, azc)   // 0.9m off the asphalt: crate CORNERS stay clear
                     && clearOfHouses(houses, axc, azc, 0.28f) && !blocksAnyDoor(houses, axc, azc)) {
                 addClutter(L, rc, axc, azc);
                 clutterPts.add(new float[]{axc, azc});
@@ -7185,7 +7260,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     float sx = ax - tz * off * side, sz = az + tx * off * side;
                     if (sx * sx + sz * sz > 30f * 30f) continue;
                     if (inSpawnLane(sx, sz)) continue;
-                    if (onRoadXZ(sx, sz) || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
+                    // 0.30m off EVERY lane, not just this one: at junctions the 45deg lamp-base corner
+                    // (0.23m diagonal) otherwise clips the crossing road's asphalt
+                    if (roadSd(sx, sz) < 0.30f || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
                     if (blocksAnyDoor(houses, sx, sz)) continue;
                     if (!clearOfPts(placed, sx, sz, 3f) || !clearOfPts(marketPts, sx, sz, 2.8f)) continue;
                     if (lamp) {
@@ -8962,6 +9039,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         "    float df=mix(max(ndl,0.0), max((ndl+0.65)/1.65,0.0)*0.82, uChar);" +
         "    float fl=max(dot(N,normalize(vec3(0.5,0.25,0.6))),0.0);" +
         "    float rim=pow(1.0-max(dot(N,V),0.0),3.0);" +
+        // Rim is a VIEW-dependent term, and on a flat facade every fragment shares one normal — so at a
+        // grazing view the whole wall flipped to pale blue-grey at once and slid back as you moved
+        // ("je nach Bewegung mal normal, mal blass": measured 183/128/98 side-on vs 147/141/160 grazing).
+        // Facades keep only 15% rim; props/characters (mesh UVs) keep their full edge sheen.
+        "    rim*=1.0-0.85*uWorldUV;" +
         "    vec3 H=normalize(L+V); float sp=pow(max(dot(N,H),0.0),48.0);" +
         // Schlick fresnel on the Blinn lobe: on a FLAT wall every fragment shares one normal, so with the
         // sun anywhere near the view axis the pow-48 lobe covered the WHOLE face and washed it out pale
