@@ -3237,7 +3237,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             ovRevealMesh = makeBuffer(revealData);      ovRevealVerts = revealVerts;
             ovBandMesh = makeBuffer(makeBandMesh());    ovBandGroups = bandGroups; ovBandVerts = bandVerts;
             interiorPieces = new java.util.ArrayList<float[]>();
-            for (float[] hh : ovH) if (hh[26] != 0f) furnishHouse(colliders, hh[0], hh[1], hh[2], hh[3], hh[4], (int) hh[5], hh[25]);   // skip unpacked houses (their furniture is editable FU)
+            for (float[] hh : ovH) if (hh[26] != 0f) furnishHouse(colliders, hh);   // skip unpacked houses (their furniture is editable FU)
             ovIntMesh = makeBuffer(makeInteriorMesh()); ovIntGroups = interiorGroups; ovIntVerts = interiorVerts;
         } finally {
             bakingOverlay = false;
@@ -5510,20 +5510,48 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    // --- rounded-corner UI kit (composited from rects + corner discs over the flat-colour pipeline) ---
+    // --- rounded-corner UI kit (single-pass geometry over the flat-colour pipeline) ---
 
-    /** Filled rounded rectangle: a cross of two rects + four corner discs. Seam-free at a==1. */
+    private static final int RR_SEG = 8;                               // arc segments per corner
+    private static final int RR_VERTS = 2 + 4 * (RR_SEG + 1);          // centre + ring + closing vertex
+    private FloatBuffer rrBuf;                                         // scratch fan, filled per call
+
+    /** Filled rounded rectangle as ONE triangle fan. The old build (two crossed rects + four corner
+     *  discs) only tiled seamlessly at a==1 — every translucent button double-blended where the pieces
+     *  overlapped and printed its own construction (cross seams, denser corner dots) onto the screen.
+     *  A single fan covers each pixel exactly once at any alpha. */
     private void drawRoundRect(float cx, float cy, float w, float h, float rad,
                                float r, float g, float b, float a) {
+        if (w < 1f || h < 1f) return;                                  // degenerate (e.g. hairline inside a tiny card)
         if (rad < 0.5f) { drawRectPx(cx, cy, w, h, r, g, b, a); return; }
         rad = Math.min(rad, Math.min(w, h) * 0.5f);
-        drawRectPx(cx, cy, w - 2f * rad, h, r, g, b, a);     // full-height middle band
-        drawRectPx(cx, cy, w, h - 2f * rad, r, g, b, a);     // full-width middle band
-        float hx = w * 0.5f - rad, hy = h * 0.5f - rad;
-        drawCircle(cx - hx, cy - hy, rad, r, g, b, a);
-        drawCircle(cx + hx, cy - hy, rad, r, g, b, a);
-        drawCircle(cx - hx, cy + hy, rad, r, g, b, a);
-        drawCircle(cx + hx, cy + hy, rad, r, g, b, a);
+        if (rrBuf == null) {
+            java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocateDirect(RR_VERTS * 2 * 4);
+            bb.order(java.nio.ByteOrder.nativeOrder());
+            rrBuf = bb.asFloatBuffer();
+        }
+        float cxN = cx / width * 2f - 1f, cyN = 1f - cy / height * 2f;
+        float hx = (w * 0.5f - rad) / width * 2f, hy = (h * 0.5f - rad) / height * 2f;
+        float rx = rad / width * 2f, ry = rad / height * 2f;           // per-axis so corners stay round in NDC
+        rrBuf.position(0);
+        rrBuf.put(cxN).put(cyN);                                       // fan centre
+        for (int c = 0; c < 4; c++) {                                  // corner arcs, one CCW ring
+            float sx2 = (c == 0 || c == 3) ? 1f : -1f;
+            float sy2 = (c < 2) ? 1f : -1f;
+            for (int k = 0; k <= RR_SEG; k++) {
+                double ang = Math.PI * 0.5 * (c + k / (double) RR_SEG);
+                rrBuf.put(cxN + sx2 * hx + rx * (float) Math.cos(ang))
+                     .put(cyN + sy2 * hy + ry * (float) Math.sin(ang));
+            }
+        }
+        rrBuf.put(cxN + hx + rx).put(cyN + hy);                        // close the ring at angle 0
+        GLES20.glUniform2f(uScale2, 1f, 1f);
+        GLES20.glUniform2f(uOff2, 0f, 0f);
+        GLES20.glUniform4f(uCol2, r, g, b, a);
+        rrBuf.position(0);
+        GLES20.glEnableVertexAttribArray(aP2);
+        GLES20.glVertexAttribPointer(aP2, 2, GLES20.GL_FLOAT, false, 8, rrBuf);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, RR_VERTS);
     }
 
     /** Soft outer glow: concentric rounded rects grown uniformly (corner radius held constant so the
@@ -5662,32 +5690,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** A small stylised side-on weapon silhouette (rounded-rect parts), tinted with an accent muzzle. */
+    /** A small stylised side-on weapon silhouette (rounded-rect parts), tinted with an accent muzzle.
+     *  Parts BUTT against each other instead of overlapping: at the dimmed row alphas the old overlaps
+     *  double-blended and every construction rectangle showed through its neighbour. The accent muzzle
+     *  now caps the actual barrel tip (it used to float in mid-air past the pistol/SMG). */
     private void drawWeaponIcon(int w, float cx, float cy, float s, float a) {
         float mr = 0.80f, mg = 0.83f, mb = 0.90f;      // light metal
         float dr = 0.34f, dg = 0.37f, db = 0.44f;      // dark metal
+        float muzX, muzY = cy - 1.5f * s;
         switch (w) {
-            case 0: // PISTOL — slide + grip + muzzle
+            case 0: // PISTOL — slide + grip
                 drawRoundRect(cx, cy - 1.5f * s, 13f * s, 4.6f * s, 1.4f * s, mr, mg, mb, a);
-                drawRoundRect(cx - 3.5f * s, cy + 3f * s, 5f * s, 7f * s, 1.4f * s, dr, dg, db, a);
+                drawRoundRect(cx - 3.5f * s, cy + 4.3f * s, 5f * s, 7f * s, 1.4f * s, dr, dg, db, a);
+                muzX = cx + 6.5f * s;
                 break;
             case 1: // SMG — receiver + magazine + stock
                 drawRoundRect(cx, cy - 1.5f * s, 18f * s, 4.6f * s, 1.4f * s, mr, mg, mb, a);
-                drawRoundRect(cx - 1f * s, cy + 4f * s, 4.2f * s, 8f * s, 1.2f * s, dr, dg, db, a);
-                drawRoundRect(cx - 9f * s, cy - 1.5f * s, 4.5f * s, 4.6f * s, 1.2f * s, dr, dg, db, a);
+                drawRoundRect(cx - 1f * s, cy + 4.8f * s, 4.2f * s, 8f * s, 1.2f * s, dr, dg, db, a);
+                drawRoundRect(cx - 11.25f * s, cy - 1.5f * s, 4.5f * s, 4.6f * s, 1.2f * s, dr, dg, db, a);
+                muzX = cx + 9f * s;
                 break;
             case 2: // SHOTGUN — long barrel + pump + stock
                 drawRoundRect(cx + 1f * s, cy - 2f * s, 22f * s, 4f * s, 1.2f * s, mr, mg, mb, a);
                 drawRoundRect(cx + 1f * s, cy + 2.6f * s, 12f * s, 3f * s, 1.2f * s, dr, dg, db, a);
-                drawRoundRect(cx - 11.5f * s, cy - 0.5f * s, 5f * s, 6.5f * s, 1.4f * s, dr, dg, db, a);
+                drawRoundRect(cx - 12.5f * s, cy - 0.5f * s, 5f * s, 6.5f * s, 1.4f * s, dr, dg, db, a);
+                muzX = cx + 12f * s; muzY = cy - 2f * s;
                 break;
             default: // SNIPER — long barrel + scope + stock
                 drawRoundRect(cx, cy - 1.5f * s, 25f * s, 3.6f * s, 1.2f * s, mr, mg, mb, a);
-                drawRoundRect(cx + 2f * s, cy - 5.5f * s, 10f * s, 3f * s, 1.2f * s, dr, dg, db, a);
-                drawRoundRect(cx - 12.5f * s, cy - 0.5f * s, 5f * s, 6.5f * s, 1.4f * s, dr, dg, db, a);
+                drawRoundRect(cx + 2f * s, cy - 4.8f * s, 10f * s, 3f * s, 1.2f * s, dr, dg, db, a);
+                drawRoundRect(cx - 15f * s, cy - 0.5f * s, 5f * s, 6.5f * s, 1.4f * s, dr, dg, db, a);
+                muzX = cx + 12.5f * s;
                 break;
         }
-        drawCircle(cx + 11f * s, cy - 1.5f * s, 1.8f * s, weaponR(w), weaponG(w), weaponB(w), a);  // accent muzzle
+        drawCircle(muzX, muzY, 1.8f * s, weaponR(w), weaponG(w), weaponB(w), a);  // accent muzzle cap
     }
 
     /** A polished round touch button: edge shadow, bright thin ring, tinted fill, inner top gloss. */
@@ -5698,13 +5734,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawCircle(cx, cy - rPx * 0.33f, rPx * 0.55f, 1f, 1f, 1f, 0.10f);                   // inner top gloss
     }
 
-    /** A glossy rounded button: faked vertical gradient + top rim highlight; optional outer glow. */
+    /** A glossy rounded button: shadow, single-pass fill, inset top lightening + top rim highlight.
+     *  (The old darker-base + brighter-top-half pair stacked two translucent rounded rects: the seam
+     *  between the halves and the top piece's rounded bottom corners were visible mid-face.) */
     private void drawButton(float cx, float cy, float w, float h, float rad,
                             float r, float g, float b, float a, boolean glow) {
         if (glow) drawGlow(cx, cy, w, h, rad, r, g, b, a);
         drawRoundRect(cx, cy + 5f * us, w, h, rad, 0f, 0f, 0f, 0.35f * a);                  // shadow
-        drawRoundRect(cx, cy, w, h, rad, r * 0.72f, g * 0.72f, b * 0.72f, a);               // darker bottom base
-        drawRoundRect(cx, cy - h * 0.23f, w, h * 0.56f, rad, r, g, b, a);                   // brighter top half
+        drawRoundRect(cx, cy, w, h, rad, r * 0.86f, g * 0.86f, b * 0.86f, a);               // fill
+        // gentle top lightening — a plain rect inset past the corner radius, like drawCard
+        drawRectPx(cx, cy - h * 0.26f, w - 2f * rad, h * 0.46f, r, g, b, 0.55f * a);
         drawRoundRect(cx, cy - h * 0.5f + 4f * us, w - 12f * us, 4f * us, 2f * us,
                       Math.min(1f, r + 0.30f), Math.min(1f, g + 0.30f), Math.min(1f, b + 0.30f), 0.55f * a); // rim
     }
@@ -8161,14 +8200,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         interiorPieces = new java.util.ArrayList<float[]>();
         for (float[] h : houses) {
             if (h.length > 26 && h[26] == 0f) continue;        // auto-furnish off -> the level supplies its own FU pieces
-            furnishHouse(L, h[0], h[1], h[2], h[3], h[4], (int) h[5], h.length > 25 ? h[25] : 0f);
+            furnishHouse(L, h);
         }
     }
 
     /** A cosy ground-floor room: wood floor, ceiling, rug, hanging lamp, a bed, a wardrobe and a table + chairs,
      *  laid out away from the doorway. Solid pieces also get a non-rendered collision box in L.
-     *  Layout is computed axis-aligned; addPiece spins each piece + collider about (cx,cz) by yaw. */
-    private void furnishHouse(List<float[]> L, float cx, float cz, float w, float dd, float h, int ds, float yaw) {
+     *  Layout is computed axis-aligned; addPiece spins each piece + collider about (cx,cz) by yaw.
+     *  Takes the full house record: wall pictures need the window layout (dens/wsc/storeys/foundH). */
+    private void furnishHouse(List<float[]> L, float[] hh) {
+        float cx = hh[0], cz = hh[1], w = hh[2], dd = hh[3], h = hh[4];
+        int ds = (int) hh[5];
+        float yaw = hh.length > 25 ? hh[25] : 0f;
         fCx = cx; fCz = cz; fYaw = yaw;
         float inx = w * 0.5f - 0.28f, inz = dd * 0.5f - 0.28f;       // interior half-extents (for furniture)
         if (inx < 0.7f || inz < 0.7f) return;                        // too small to furnish
@@ -8203,30 +8246,37 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (bedPlaced) {
             addPiece(L, bx, 0.22f, bz, bedW, 0.30f, bedD, 2, true);                            // frame (solid)
             addPiece(L, bx, 0.42f, bz, bedW - 0.08f, 0.14f, bedD - 0.08f, 4, false);           // duvet
-            addPiece(L, bx - sgx[bedC] * bedW * 0.30f, 0.46f, bz - sgz[bedC] * bedD * 0.30f, 0.40f, 0.12f, 0.28f, 5, false); // pillow
-            // headboard behind the pillow end + a folded blanket accent across the foot
+            // The HEAD of the bed goes against the corner wall (it used to point into the room, with the
+            // nightstand floating mid-floor beside it): pillow lies ACROSS the bed at the wall end,
+            // headboard on the wall, folded blanket accent across the foot (room end).
+            float pilW = bedAlongX ? 0.30f : Math.min(0.44f, bedW - 0.30f);
+            float pilD = bedAlongX ? Math.min(0.44f, bedD - 0.30f) : 0.30f;
+            addPiece(L, bx + sgx[bedC] * (bedAlongX ? bedW * 0.30f : 0f), 0.46f,
+                        bz + sgz[bedC] * (bedAlongX ? 0f : bedD * 0.30f), pilW, 0.12f, pilD, 5, false); // pillow
             if (bedAlongX) {
-                addPiece(L, bx - sgx[bedC] * (bedW * 0.5f - 0.035f), 0.56f, bz, 0.07f, 0.50f, bedD, 3, false);
-                addPiece(L, bx + sgx[bedC] * bedW * 0.24f, 0.505f, bz, 0.30f, 0.05f, bedD - 0.12f, 9, false);
+                addPiece(L, bx + sgx[bedC] * (bedW * 0.5f - 0.035f), 0.56f, bz, 0.07f, 0.50f, bedD, 3, false);
+                addPiece(L, bx - sgx[bedC] * bedW * 0.24f, 0.505f, bz, 0.30f, 0.05f, bedD - 0.12f, 9, false);
             } else {
-                addPiece(L, bx, 0.56f, bz - sgz[bedC] * (bedD * 0.5f - 0.035f), bedW, 0.50f, 0.07f, 3, false);
-                addPiece(L, bx, 0.505f, bz + sgz[bedC] * bedD * 0.24f, bedW - 0.12f, 0.05f, 0.30f, 9, false);
+                addPiece(L, bx, 0.56f, bz + sgz[bedC] * (bedD * 0.5f - 0.035f), bedW, 0.50f, 0.07f, 3, false);
+                addPiece(L, bx, 0.505f, bz - sgz[bedC] * bedD * 0.24f, bedW - 0.12f, 0.05f, 0.30f, 9, false);
             }
             occ.add(new float[]{bx, bz, bedW, bedD});
-            // nightstand tucked beside the head of the bed (toward room centre), with a tiny lamp
-            float nsx = bx - sgx[bedC] * (bedW * 0.5f + 0.22f), nsz = bz - sgz[bedC] * (bedD * 0.5f - 0.10f);
+            // nightstand beside the HEAD of the bed, on its room-facing long side, with a tiny lamp
+            float nsx, nsz;
+            if (bedAlongX) { nsx = bx + sgx[bedC] * (bedW * 0.5f - 0.17f); nsz = bz - sgz[bedC] * (bedD * 0.5f + 0.22f); }
+            else           { nsx = bx - sgx[bedC] * (bedW * 0.5f + 0.22f); nsz = bz + sgz[bedC] * (bedD * 0.5f - 0.17f); }
             if (Math.abs(nsx - cx) < inx - 0.2f && Math.abs(nsz - cz) < inz - 0.2f && clearSpot(occ, nsx, nsz, 0.34f, 0.30f)) {
                 addPiece(L, nsx, 0.22f, nsz, 0.34f, 0.40f, 0.30f, 2, true);
                 addPiece(L, nsx, 0.50f, nsz, 0.16f, 0.18f, 0.16f, 7, false);     // little lamp
                 occ.add(new float[]{nsx, nsz, 0.34f, 0.30f});
             }
         }
-        // WARDROBE: prefer the diagonal corner, else an adjacent one — never blocking the entry, never into the bed
+        // WARDROBE: prefer the diagonal corner, else an adjacent one — clear of EVERYTHING placed so far
+        // (door lane, bed, nightstand), not just the lane + bed as before.
         float wardH = Math.min(1.70f, ceilH - 0.15f);
         for (int cand : new int[]{bedC ^ 3, bedC ^ 1, bedC ^ 2}) {
             float wx = cx + sgx[cand] * (inx - 0.30f), wz = cz + sgz[cand] * (inz - 0.24f);
-            if (aabbOverlap(wx, wz, 0.70f, 0.50f, koX, koZ, koW, koD)) continue;               // blocks the door lane
-            if (bedPlaced && aabbOverlap(wx, wz, 0.70f, 0.50f, bx, bz, bedW, bedD)) continue;  // into the bed
+            if (!clearSpot(occ, wx, wz, 0.62f, 0.42f)) continue;
             addPiece(L, wx, wardH * 0.5f + 0.04f, wz, 0.62f, wardH, 0.42f, 3, true);
             // plinth + cornice + a pair of door panels with handles on the room-facing side
             addPiece(L, wx, 0.05f, wz, 0.68f, 0.08f, 0.48f, 3, false);
@@ -8245,11 +8295,12 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             occ.add(new float[]{wx, wz, 0.62f, 0.42f});
             break;
         }
-        // TABLE + chairs: centred, pushed away from the door, only if the room is roomy and the spot is clear
+        // TABLE + chairs: centred, pushed away from the door, only if the room is roomy and the spot is clear.
+        // The clearance test covers the FULL footprint including both chairs (the old check only tested the
+        // table top, so a chair could spear the nightstand) and consults everything placed so far.
         if (inx > 1.1f && inz > 1.05f) {
             float tx = cx - dox * (inx * 0.35f), tz = cz - doz * (inz * 0.35f);
-            if (!aabbOverlap(tx, tz, 0.95f, 0.75f, koX, koZ, koW, koD)
-             && !(bedPlaced && aabbOverlap(tx, tz, 0.95f, 0.75f, bx, bz, bedW, bedD))) {
+            if (clearSpot(occ, tx, tz, 1.65f, 0.75f)) {
                 addPiece(L, tx, 0.70f, tz, 0.80f, 0.07f, 0.60f, 2, true);                       // table top (solid)
                 addPiece(L, tx, 0.625f, tz, 0.66f, 0.06f, 0.46f, 3, false);                    // apron under the top
                 addPiece(L, tx, 0.765f, tz, 0.20f, 0.07f, 0.20f, 9, false);                    // bowl on top
@@ -8280,9 +8331,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             addPiece(L, sx2 + bdx2 * (sd * 0.5f - 0.08f), 0.46f, sz2 + bdz2 * (sd * 0.5f - 0.08f),
                     alongX ? sw : 0.16f, 0.34f, alongX ? 0.16f : sd, 8, false);                 // backrest
             float cLen = (alongX ? sw : sd) * 0.5f - 0.06f;                                     // 2 accent seat cushions
+            // cushion cross-size follows the sofa's WIDTH (sw when along X, and 0.5 when along Z — the old
+            // code used sd there, so side-wall sofas grew 1.34 m cushion planks jutting across the room)
             for (int q2 = -1; q2 <= 1; q2 += 2)
                 addPiece(L, sx2 + (alongX ? q2 * cLen * 0.5f : bdx2 * -0.04f), 0.40f, sz2 + (alongX ? bdz2 * -0.04f : q2 * cLen * 0.5f),
-                        alongX ? cLen - 0.05f : sd - 0.16f, 0.09f, alongX ? sd - 0.16f : cLen - 0.05f, 9, false);
+                        alongX ? cLen - 0.05f : sw - 0.16f, 0.09f, alongX ? sd - 0.16f : cLen - 0.05f, 9, false);
             occ.add(new float[]{sx2, sz2, sw, sd});
             break;
         }
@@ -8310,12 +8363,57 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             occ.add(new float[]{pxp, pzp, 0.32f, 0.32f});
             break;
         }
-        // WALL PICTURES: two framed pictures flat on the back wall (decor only, no collision)
-        float pwx = cx - dox * (inx - 0.03f), pwz = cz - doz * (inz - 0.03f);
-        boolean wallAlongX = (doz != 0);   // back wall runs along X when the door faces +/-Z
-        for (int pi = -1; pi <= 1; pi += 2) {
-            float ox = wallAlongX ? pi * inx * 0.4f : 0f, oz = wallAlongX ? 0f : pi * inz * 0.4f;
-            addPiece(L, pwx + ox, ceilH * 0.62f, pwz + oz, wallAlongX ? 0.34f : 0.04f, 0.28f, wallAlongX ? 0.04f : 0.34f, 11, false);
+        // WALL PICTURES: framed prints hung FLUSH on the inner wall face, centred in the gaps BETWEEN
+        // the real window openings (shared windowSlots layout). They used to hang at two fixed spots
+        // 16 cm off the wall — floating mid-air and, on most facades, square across the window glass.
+        int wDens = (int) hh[11];
+        float wWsc = hh[12], wFoundH = hh[16];
+        int wStoreys = Math.round(hh[23]);
+        long picSeed = houseSeedOf(cx, cz);
+        float picY = ceilH * 0.62f;
+        float faceIn = 0.152f;                                   // wall inner face (0.13) + half picture depth + hair gap
+        int hung = 0;
+        int[] wallOrder = {ds ^ 1, (ds < 2 ? 2 : 0), (ds < 2 ? 3 : 1)};   // back wall first, then the sides; never the door wall
+        for (int wi = 0; wi < wallOrder.length && hung < 2; wi++) {
+            int side = wallOrder[wi];                            // walls: 0:+z 1:-z 2:+x 3:-x
+            boolean isZ = side < 2;
+            float span = isZ ? w : dd;
+            float limT = span * 0.5f - 0.95f;                    // stay clear of corner units (wardrobe/shelf)
+            if (limT < 0.31f) continue;
+            // forbidden along-wall intervals: every window opening whose vertical band crosses the pictures'
+            java.util.ArrayList<float[]> slots = new java.util.ArrayList<float[]>();
+            if (wDens > 0) windowSlots(span, h, wDens, wWsc, wStoreys, wFoundH, side == ds, picSeed, side, slots);
+            java.util.ArrayList<float[]> bad = new java.util.ArrayList<float[]>();
+            for (float[] s : slots)
+                if (s[1] + s[3] * 0.5f > picY - 0.20f && s[1] - s[3] * 0.5f < picY + 0.20f)
+                    bad.add(new float[]{s[0] - s[2] * 0.5f - 0.06f, s[0] + s[2] * 0.5f + 0.06f});
+            for (int i2 = 1; i2 < bad.size(); i2++)              // insertion sort by start (tiny lists, no lambdas for dx)
+                for (int j2 = i2; j2 > 0 && bad.get(j2)[0] < bad.get(j2 - 1)[0]; j2--)
+                    java.util.Collections.swap(bad, j2, j2 - 1);
+            // free segments = complement of the forbidden intervals inside [-limT, limT]
+            java.util.ArrayList<float[]> free = new java.util.ArrayList<float[]>();
+            float open = -limT;
+            for (float[] iv : bad) {
+                if (iv[0] > open) free.add(new float[]{open, Math.min(iv[0], limT)});
+                open = Math.max(open, iv[1]);
+                if (open >= limT) break;
+            }
+            if (open < limT) free.add(new float[]{open, limT});
+            while (hung < 2) {                                    // hang in the widest remaining gap
+                int best = -1;
+                for (int f2 = 0; f2 < free.size(); f2++)
+                    if (best < 0 || free.get(f2)[1] - free.get(f2)[0] > free.get(best)[1] - free.get(best)[0]) best = f2;
+                if (best < 0 || free.get(best)[1] - free.get(best)[0] < 0.38f) break;
+                float[] seg = free.remove(best);
+                float t = (seg[0] + seg[1]) * 0.5f;
+                boolean big = seg[1] - seg[0] >= 0.46f;           // large print where the pier allows, small otherwise
+                float picW = big ? 0.34f : 0.26f, picH = big ? 0.28f : 0.22f;
+                float wallAt = (isZ ? dd : w) * 0.5f - faceIn;
+                float px2 = isZ ? cx + t : cx + (side == 2 ? wallAt : -wallAt);
+                float pz2 = isZ ? cz + (side == 0 ? wallAt : -wallAt) : cz + t;
+                addPiece(L, px2, picY, pz2, isZ ? picW : 0.04f, picH, isZ ? 0.04f : picW, 11, false);
+                hung++;
+            }
         }
     }
 
