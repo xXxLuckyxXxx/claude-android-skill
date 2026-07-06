@@ -7152,7 +7152,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  inside the map, off the spawn corridor, clear of the asphalt, clear of every house, and `spacing`
      *  away from every theme structure already dropped this build (recorded in themePts). */
     private java.util.List<float[]> themePts;
-    private boolean themeSpotOk(List<float[]> houses, float x, float z, float fr, float roadClr, float spacing) {
+    /** houseGap = clear distance the structure's own footprint must keep from every house edge (so tall
+     *  landmarks stand alone instead of jammed against a wall). */
+    private boolean themeSpotOk(List<float[]> houses, float x, float z, float fr, float roadClr, float spacing, float houseGap) {
         if (x * x + z * z > 29.5f * 29.5f) return false;
         if (inSpawnLane(x, z)) return false;
         for (int c = 0; c < 8; c++) {                               // whole footprint off the asphalt + inside the map
@@ -7160,7 +7162,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             float wx = x + (float) Math.cos(a) * fr, wz = z + (float) Math.sin(a) * fr;
             if (roadSd(wx, wz) < roadClr || wx * wx + wz * wz > 31f * 31f) return false;
         }
-        if (!clearOfHouses(houses, x, z, fr + 0.6f)) return false;
+        if (!clearOfHouses(houses, x, z, fr + houseGap)) return false;
         if (themePts != null) for (float[] p : themePts) if (Math.hypot(x - p[0], z - p[1]) < spacing + fr) return false;
         return true;
     }
@@ -7177,25 +7179,26 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void addChapterTheme(List<float[]> L, List<float[]> houses, Random rc) {
         themePts = new java.util.ArrayList<float[]>();
         if (levelId == 1) {
-            // a windmill + two grain silos on the open ground, each at the first candidate that clears
-            float[][] mill = {{-14f, -13f}, {-16f, -9f}, {-11f, -16f}, {13f, -14f}, {-15f, 13f}};
-            for (float[] c : mill) if (themeSpotOk(houses, c[0], c[1], 2.0f, 2.6f, 6f)) { addWindmill(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
+            // a windmill + two grain silos, each standing ALONE on open ground (big house gap so they
+            // never end up jammed between farmhouses). Many candidates -> take the first that clears.
+            float[][] mill = {{-13f, -14f}, {13f, -15f}, {-15f, 13f}, {15f, 14f}, {-18f, -4f}, {17f, -3f}, {0f, -17f}};
+            for (float[] c : mill) if (themeSpotOk(houses, c[0], c[1], 2.1f, 2.8f, 8f, 3.4f)) { addWindmill(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
             int silos = 0;
-            float[][] siloC = {{16f, -12f}, {13f, 12f}, {-17f, -13f}, {17f, 10f}, {-13f, 15f}, {8f, -17f}};
-            for (float[] c : siloC) { if (silos >= 2) break; if (themeSpotOk(houses, c[0], c[1], 1.3f, 2.6f, 5f)) { addSilo(L, c[0], c[1], rc); themeMark(c[0], c[1]); silos++; } }
+            float[][] siloC = {{17f, -11f}, {-17f, -12f}, {14f, 13f}, {-14f, 15f}, {18f, 6f}, {-18f, 5f}, {9f, -17f}, {-9f, -17f}};
+            for (float[] c : siloC) { if (silos >= 2) break; if (themeSpotOk(houses, c[0], c[1], 1.35f, 2.8f, 7f, 3.2f)) { addSilo(L, c[0], c[1], rc); themeMark(c[0], c[1]); silos++; } }
             // hay bales scattered across the fields
             int bales = 0;
             for (int t = 0; t < 300 && bales < 7; t++) {
                 float a = rc.nextFloat() * 6.2832f, rad = 8f + rc.nextFloat() * 18f;
                 float x = (float) Math.cos(a) * rad, z = 5f + (float) Math.sin(a) * rad;
-                if (themeSpotOk(houses, x, z, 0.85f, 1.6f, 3.2f)) { addHayBale(L, x, z, rc); themeMark(x, z); bales++; }
+                if (themeSpotOk(houses, x, z, 0.85f, 1.6f, 3.2f, 1.4f)) { addHayBale(L, x, z, rc); themeMark(x, z); bales++; }
             }
             // big crop fields (feed the tilled-soil + sprout bake) in the open quadrants
             float[][] fields = {{-15f, 14f}, {15f, 13f}, {16f, -13f}, {-16f, -14f}, {0f, -15f}};
             int plots = 0;
             for (float[] c : fields) {
                 if (plots >= 3) break;
-                if (!themeSpotOk(houses, c[0], c[1], 3.4f, 3.0f, 8f)) continue;
+                if (!themeSpotOk(houses, c[0], c[1], 3.4f, 3.0f, 8f, 1.2f)) continue;
                 float fw = 5.0f + rc.nextFloat() * 1.6f, fd = 4.2f + rc.nextFloat() * 1.4f;
                 float fyaw = (rc.nextFloat() - 0.5f) * 30f;
                 if (fieldClear(houses, c[0], c[1], fw, fd, fyaw)) { gardenSoil.add(new float[]{c[0], c[1], fw, fd, fyaw}); themeMark(c[0], c[1]); plots++; }
@@ -7203,20 +7206,20 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             // a small orchard: a tidy grid of fruit trees in one corner
             addOrchard(houses, rc);
         } else if (levelId == 2) {
-            // four stone watchtowers framing the old town at the far corners
-            float[][] tw = {{-25f, -22f}, {25f, -22f}, {-25f, 20f}, {24f, 21f}, {-22f, 26f}, {22f, 26f}};
+            // four stone watchtowers framing the old town at the far corners, standing well clear of houses
+            float[][] tw = {{-26f, -22f}, {26f, -22f}, {-25f, 21f}, {25f, 22f}, {-22f, 27f}, {22f, 27f}, {-28f, -6f}, {28f, -6f}};
             int towers = 0;
-            for (float[] c : tw) { if (towers >= 4) break; if (themeSpotOk(houses, c[0], c[1], 1.5f, 2.2f, 10f)) { addWatchtower(L, c[0], c[1], rc); themeMark(c[0], c[1]); towers++; } }
+            for (float[] c : tw) { if (towers >= 4) break; if (themeSpotOk(houses, c[0], c[1], 1.6f, 2.2f, 12f, 3.0f)) { addWatchtower(L, c[0], c[1], rc); themeMark(c[0], c[1]); towers++; } }
             // a stone monument on an open patch near the market
             float[][] mon = {{-6f, -2f}, {7f, 3f}, {-7f, 8f}, {8f, -4f}, {-9f, 1f}};
-            for (float[] c : mon) if (themeSpotOk(houses, c[0], c[1], 1.4f, 2.0f, 4f)) { addMonument(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
+            for (float[] c : mon) if (themeSpotOk(houses, c[0], c[1], 1.4f, 2.0f, 4f, 2.2f)) { addMonument(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
             // street barricades: overturned cart + crates + a barrel at a handful of road-mouth spots
             int bar = 0;
             for (int t = 0; t < 400 && bar < 5; t++) {
                 float a = rc.nextFloat() * 6.2832f, rad = 9f + rc.nextFloat() * 16f;
                 float x = (float) Math.cos(a) * rad, z = 5f + (float) Math.sin(a) * rad;
                 if (roadSd(x, z) > 3.2f || roadSd(x, z) < 1.5f) continue;   // just OFF a street edge, not in the field
-                if (!themeSpotOk(houses, x, z, 1.3f, 1.3f, 6f)) continue;
+                if (!themeSpotOk(houses, x, z, 1.3f, 1.3f, 6f, 1.6f)) continue;
                 addBarricade(L, x, z, rc.nextFloat() * 360f, rc); themeMark(x, z); bar++;
             }
         }
@@ -7996,17 +7999,29 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-    /** A tall corrugated grain silo: a metal cylinder with hoop rings and a domed cap. */
+    /** A farm grain silo: a smooth galvanised-metal cylinder banded by subtle course tints, a clean
+     *  conical roof rising to a vented cap, and a maintenance ladder up the front. Reads unmistakably
+     *  as a silo (not the old wedding-cake stack of protruding rings). */
     private void addSilo(List<float[]> L, float x, float z, Random rc) {
-        float mr = 0.62f + rc.nextFloat() * 0.10f, mg = 0.65f + rc.nextFloat() * 0.10f, mb = 0.70f + rc.nextFloat() * 0.08f;
+        float mr = 0.60f + rc.nextFloat() * 0.06f, mg = 0.66f + rc.nextFloat() * 0.06f, mb = 0.74f + rc.nextFloat() * 0.05f;
         float rad = 1.05f;
-        for (int t = 0; t < 6; t++)                                    // stacked courses
-            addRoundTier(L, x, 0.6f + t * 1.0f, z, rad, 1.0f, mr * (1f - t * 0.015f), mg * (1f - t * 0.015f), mb * (1f - t * 0.01f));
-        for (int t = 0; t < 6; t++)                                    // hoop rings (slightly proud, darker)
-            addRoundTier(L, x, 1.1f + t * 1.0f, z, rad + 0.05f, 0.10f, mr * 0.72f, mg * 0.72f, mb * 0.74f);
-        addRoundTier(L, x, 6.7f, z, rad * 0.78f, 0.5f, mr * 0.82f, mg * 0.82f, mb * 0.84f);   // shoulder
-        addRoundTier(L, x, 7.05f, z, rad * 0.42f, 0.4f, mr * 0.7f, mg * 0.7f, mb * 0.72f);    // domed cap
-        L.add(new float[]{x, 7.35f, z, 0.16f, 0.5f, 0.16f, 0.30f, 0.30f, 0.32f, 0f});         // filler pipe
+        for (int t = 0; t < 12; t++) {                                 // smooth body: thin courses, gentle tint banding only
+            float shade = 1f - (t % 2) * 0.035f;                       // faint corrugation, NOT protruding rings
+            addRoundTier(L, x, 0.55f + t * 0.5f, z, rad, 0.5f, mr * shade, mg * shade, mb * shade);
+        }
+        addRoundTier(L, x, 6.55f, z, rad + 0.06f, 0.14f, mr * 0.78f, mg * 0.80f, mb * 0.82f);   // eave lip
+        // conical roof: shrinking tiers up to a peak
+        addRoundTier(L, x, 6.85f, z, rad * 0.82f, 0.5f, mr * 0.90f, mg * 0.92f, mb * 0.94f);
+        addRoundTier(L, x, 7.25f, z, rad * 0.55f, 0.5f, mr * 0.95f, mg * 0.97f, mb * 0.99f);
+        addRoundTier(L, x, 7.6f,  z, rad * 0.28f, 0.4f, mr, mg, mb);
+        L.add(new float[]{x, 7.95f, z, 0.22f, 0.34f, 0.22f, mr * 0.72f, mg * 0.74f, mb * 0.78f, 0f});   // vented cap
+        L.add(new float[]{x, 8.16f, z, 0.30f, 0.10f, 0.30f, mr * 0.66f, mg * 0.68f, mb * 0.72f, 45f});  //  cap brim
+        // maintenance ladder up the front face (toward -z): two rails + rungs
+        float lz = z - rad - 0.05f;
+        for (int s = -1; s <= 1; s += 2)
+            L.add(new float[]{x + s * 0.16f, 3.3f, lz, 0.05f, 6.4f, 0.05f, 0.34f, 0.35f, 0.38f, 0f});   // rails
+        for (int rg = 0; rg < 9; rg++)
+            L.add(new float[]{x, 0.7f + rg * 0.72f, lz, 0.34f, 0.05f, 0.05f, 0.36f, 0.37f, 0.40f, 0f}); // rungs
     }
 
     /** A round hay bale (one or two stacked) — golden straw, octagonal. */
@@ -8017,21 +8032,40 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (rc.nextFloat() < 0.5f) addRoundTier(L, x, 1.15f, z, 0.70f, 0.70f, sr * 1.03f, sg * 1.03f, sb * 1.05f);  // stacked second bale
     }
 
-    /** A square stone watchtower with a crenellated top and an arrow-slit door. */
+    /** A square stone watchtower: a straight shaft on a battered plinth, arrow-slit windows on every
+     *  face, a machicolation ledge, and a ring of distinct crenellation teeth around a flat wall-walk.
+     *  Redesigned so it reads clearly as a fortified tower (the old version's oversized cap made it look
+     *  top-heavy and ambiguous). */
     private void addWatchtower(List<float[]> L, float x, float z, Random rc) {
-        float sr = 0.52f + rc.nextFloat() * 0.06f, sg = 0.51f + rc.nextFloat() * 0.05f, sb = 0.47f + rc.nextFloat() * 0.05f;
-        float hw = 1.25f;
-        L.add(new float[]{x, 0.5f, z, hw * 2f + 0.4f, 1.0f, hw * 2f + 0.4f, sr * 0.9f, sg * 0.9f, sb * 0.88f, 0f});   // batter plinth
-        for (int t = 0; t < 6; t++)                                    // shaft courses (subtle tint alternation)
-            L.add(new float[]{x, 1.4f + t * 1.05f, z, hw * 2f, 1.05f, hw * 2f,
-                    sr * (t % 2 == 0 ? 1f : 0.95f), sg * (t % 2 == 0 ? 1f : 0.95f), sb * (t % 2 == 0 ? 1f : 0.95f), 0f});
-        float topY = 1.4f + 6 * 1.05f;
-        L.add(new float[]{x, topY + 0.1f, z, hw * 2f + 0.5f, 0.4f, hw * 2f + 0.5f, sr * 0.86f, sg * 0.86f, sb * 0.84f, 0f});  // corbel ledge
-        for (int c = 0; c < 4; c++) {                                  // 4 merlons (crenellations) at the edge midpoints
-            float mx = (c == 0 ? 1 : c == 1 ? -1 : 0) * (hw + 0.1f), mz = (c == 2 ? 1 : c == 3 ? -1 : 0) * (hw + 0.1f);
-            L.add(new float[]{x + mx, topY + 0.55f, z + mz, c < 2 ? 0.55f : hw * 2f - 0.2f, 0.6f, c < 2 ? hw * 2f - 0.2f : 0.55f, sr, sg, sb, 0f});
+        float sr = 0.54f + rc.nextFloat() * 0.05f, sg = 0.53f + rc.nextFloat() * 0.05f, sb = 0.49f + rc.nextFloat() * 0.05f;
+        float hw = 1.15f;                                              // half width of the shaft
+        L.add(new float[]{x, 0.55f, z, hw * 2f + 0.5f, 1.1f, hw * 2f + 0.5f, sr * 0.88f, sg * 0.88f, sb * 0.86f, 0f});   // battered plinth
+        int courses = 7;
+        for (int t = 0; t < courses; t++) {                           // straight shaft, faint course banding
+            float sh = t % 2 == 0 ? 1f : 0.955f;
+            L.add(new float[]{x, 1.4f + t * 1.05f, z, hw * 2f, 1.05f, hw * 2f, sr * sh, sg * sh, sb * sh, 0f});
         }
-        L.add(new float[]{x, 1.35f, z - hw, 0.55f, 1.5f, 0.14f, 0.16f, 0.11f, 0.08f, 0f});     // dark arrow-slit doorway (front)
+        float topY = 1.4f + courses * 1.05f;                          // ~8.75
+        // arrow-slit windows: a tall dark recess centred on each of the four faces, two heights
+        float[][] faces = {{0f, -1f}, {0f, 1f}, {-1f, 0f}, {1f, 0f}};
+        for (float[] f : faces) for (float wy : new float[]{3.0f, 5.6f}) {
+            boolean zf = f[1] != 0f;
+            L.add(new float[]{x + f[0] * hw, wy, z + f[1] * hw, zf ? 0.24f : 0.10f, 0.85f, zf ? 0.10f : 0.24f, 0.10f, 0.09f, 0.08f, 0f});
+        }
+        // machicolation ledge (slightly proud), then the parapet wall, then the crenel teeth
+        L.add(new float[]{x, topY + 0.12f, z, hw * 2f + 0.44f, 0.34f, hw * 2f + 0.44f, sr * 0.84f, sg * 0.84f, sb * 0.82f, 0f});
+        L.add(new float[]{x, topY + 0.5f, z, hw * 2f + 0.24f, 0.44f, hw * 2f + 0.24f, sr * 0.92f, sg * 0.92f, sb * 0.9f, 0f});   // parapet band
+        float ext = hw + 0.12f, teethY = topY + 0.95f;
+        for (int side = 0; side < 4; side++) {                        // 3 merlon teeth per side, gaps between (crenellations)
+            boolean zEdge = side < 2;
+            float edge = (side == 0 || side == 2 ? -1f : 1f) * ext;
+            for (int m = -1; m <= 1; m++) {
+                float mx = zEdge ? m * 0.72f : edge, mz = zEdge ? edge : m * 0.72f;
+                L.add(new float[]{x + mx, teethY, z + mz, zEdge ? 0.5f : 0.34f, 0.55f, zEdge ? 0.34f : 0.5f, sr, sg, sb, 0f});
+            }
+        }
+        L.add(new float[]{x, 1.35f, z - hw - 0.02f, 0.6f, 1.6f, 0.14f, 0.13f, 0.10f, 0.08f, 0f});   // dark arched doorway (front)
+        L.add(new float[]{x, 2.2f, z - hw - 0.03f, 0.7f, 0.18f, 0.12f, sr * 0.8f, sg * 0.8f, sb * 0.78f, 0f});  // door lintel stone
     }
 
     /** A market monument: a stepped stone plinth carrying a tapering obelisk. */
