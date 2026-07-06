@@ -4599,6 +4599,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+        // Bind the 2D pipeline FIRST: the frame arrives here with the post-processing program still
+        // active, and the briefing card below drew its panels through THAT shader — the card rendered
+        // as a milky re-copy of the scene ("ein falsch transparentes Fenster") instead of a dark panel.
+        GLES20.glUseProgram(prog2);
 
         if (storyTimer > 0f) {                                  // chapter briefing card, fading out
             float sa = Math.min(1f, storyTimer / 1.1f) * Math.min(1f, (7f - storyTimer) * 2.5f);
@@ -4688,8 +4692,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (klen > 1f) { kx /= klen; ky /= klen; }
             drawPad(mcx + kx * Hud.MOVE_RADIUS, mcy - ky * Hud.MOVE_RADIUS, 66f, 0.85f, 0.88f, 0.95f, 0.7f);
 
-            // fire button
-            drawPad(Hud.fireCx(width), Hud.fireCy(height), Hud.FIRE_RADIUS, 0.95f, 0.26f, 0.22f, 0.62f);
+            // fire button — a clear bullet icon instead of a bare red disc
+            {
+                float fx = Hud.fireCx(width), fy = Hud.fireCy(height), fR = Hud.FIRE_RADIUS;
+                drawPad(fx, fy, fR, 0.95f, 0.26f, 0.22f, 0.62f);
+                drawCircle(fx, fy - fR * 0.27f, fR * 0.175f, 0.98f, 0.74f, 0.44f, 0.96f);                     // copper nose
+                drawRoundRect(fx, fy + 0.10f * fR, fR * 0.34f, fR * 0.50f, fR * 0.055f, 1f, 0.93f, 0.70f, 0.96f); // brass case
+                drawRectPx(fx, fy + fR * 0.29f, fR * 0.34f, fR * 0.055f, 0.72f, 0.55f, 0.34f, 0.96f);        // extractor rim
+            }
             // reload progress ring around the fire button
             if (reloadTimer > 0f) {
                 float fpx = Hud.fireCx(width), fpy = Hud.fireCy(height), prog = 1f - reloadTimer / reloadTotal;
@@ -4703,24 +4713,33 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 drawTextCentered("RELOADING", fpx, fpy + Hud.FIRE_RADIUS + 30f * us, 15f, 1f, 0.8f, 0.3f, 0.85f);
             }
 
-            // weapon switch button (shows current weapon 1/2/3, tinted per weapon)
+            // weapon switch button — the actual weapon's silhouette plus a small slot badge
+            // (it used to show only a bare number, which read as an unexplained counter)
             float swx = Hud.switchCx(width), swy = Hud.switchCy(height);
-            drawPad(swx, swy, Hud.SWITCH_RADIUS, weaponR(curWeapon) * 0.85f, weaponG(curWeapon) * 0.85f, weaponB(curWeapon) * 0.85f, 0.55f);
-            drawTextCenteredShadow("" + (curWeapon + 1), swx, swy, 30f, 1f, 1f, 1f, 0.97f);
+            float swR = Hud.SWITCH_RADIUS;
+            drawPad(swx, swy, swR, weaponR(curWeapon) * 0.85f, weaponG(curWeapon) * 0.85f, weaponB(curWeapon) * 0.85f, 0.55f);
+            drawWeaponIcon(curWeapon, swx, swy, swR * 0.052f, 0.97f);
+            drawCircle(swx + swR * 0.66f, swy + swR * 0.66f, swR * 0.30f, 0.07f, 0.09f, 0.07f, 0.92f);
+            drawTextCentered("" + (curWeapon + 1), swx + swR * 0.66f, swy + swR * 0.66f, 13f, 1f, 1f, 1f, 0.97f);
 
-            // aim (iron sights) toggle — brighter while aiming
+            // aim (iron sights) toggle — a proper reticle, clearly visible even when idle
             float aimx = Hud.aimCx(width), aimy = Hud.aimCy(height);
-            drawPad(aimx, aimy, Hud.AIM_RADIUS, 0.30f + 0.30f * aim, 0.62f, 0.40f + 0.30f * aim, 0.42f + 0.40f * aim);
-            drawCircle(aimx, aimy, 28f * us, 1f, 1f, 1f, 0.10f + 0.55f * aim);              // sight ring
-            drawRectPx(aimx, aimy, 8f * us, 8f * us, 1f, 1f, 1f, 0.4f + 0.55f * aim);       // sight dot
+            float aR = Hud.AIM_RADIUS, ra = 0.60f + 0.38f * aim;
+            drawPad(aimx, aimy, aR, 0.30f + 0.30f * aim, 0.62f, 0.40f + 0.30f * aim, 0.42f + 0.40f * aim);
+            drawRing(aimx, aimy, aR * 0.36f, aR * 0.47f, 1f, 1f, 1f, ra);
+            drawRectPx(aimx, aimy - aR * 0.575f, aR * 0.085f, aR * 0.26f, 1f, 1f, 1f, ra);  // N/S/E/W ticks
+            drawRectPx(aimx, aimy + aR * 0.575f, aR * 0.085f, aR * 0.26f, 1f, 1f, 1f, ra);
+            drawRectPx(aimx - aR * 0.575f, aimy, aR * 0.26f, aR * 0.085f, 1f, 1f, 1f, ra);
+            drawRectPx(aimx + aR * 0.575f, aimy, aR * 0.26f, aR * 0.085f, 1f, 1f, 1f, ra);
+            drawCircle(aimx, aimy, aR * 0.10f, 1f, 1f, 1f, ra);
 
-            // jump button (up chevron), brighter mid-air
+            // jump button — a real up arrow (the three stacked bars read as a burger-menu icon)
             float jpx = Hud.jumpCx(width), jpy = Hud.jumpCy(height);
             float ja = grounded ? 0.42f : 0.7f;
-            drawPad(jpx, jpy, Hud.JUMP_RADIUS, 0.34f, 0.42f, 0.20f, ja);
-            drawRectPx(jpx, jpy - 11f * us, 11f * us, 6f * us, 1f, 1f, 1f, 0.9f);
-            drawRectPx(jpx, jpy - 2f * us, 21f * us, 6f * us, 1f, 1f, 1f, 0.9f);
-            drawRectPx(jpx, jpy + 7f * us, 31f * us, 6f * us, 1f, 1f, 1f, 0.9f);
+            float jR = Hud.JUMP_RADIUS;
+            drawPad(jpx, jpy, jR, 0.34f, 0.42f, 0.20f, ja);
+            drawTriangle(jpx, jpy - jR * 0.52f, jpx - jR * 0.42f, jpy + jR * 0.02f, jpx + jR * 0.42f, jpy + jR * 0.02f, 1f, 1f, 1f, 0.92f);
+            drawRoundRect(jpx, jpy + jR * 0.24f, jR * 0.24f, jR * 0.44f, jR * 0.07f, 1f, 1f, 1f, 0.92f);
 
             // menu button (top-right) — one tap returns to the hub (aborts the run, earnings do not count)
             float mnx = Hud.menuCx(width), mny = Hud.menuCy(height);
@@ -5779,6 +5798,59 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawCircle(cx, cy, rPx + 2.5f * us, Math.min(1f, r + 0.32f), Math.min(1f, g + 0.32f), Math.min(1f, b + 0.32f), fillA * 0.85f); // ring
         drawCircle(cx, cy, rPx, r, g, b, fillA);                                            // fill
         drawCircle(cx, cy - rPx * 0.33f, rPx * 0.55f, 1f, 1f, 1f, 0.10f);                   // inner top gloss
+    }
+
+    /** A solid circular ring (annulus) — one strip through the halo program with constant alpha.
+     *  Used for icon outlines (a hollow ring is impossible with plain filled circles). */
+    private void drawRing(float cx, float cy, float rIn, float rOut, float r, float g, float b, float a) {
+        if (haloBuf == null) {
+            java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocateDirect((4 * (RR_SEG + 1) + 1) * 2 * 3 * 4);
+            bb.order(java.nio.ByteOrder.nativeOrder());
+            haloBuf = bb.asFloatBuffer();
+        }
+        int seg = 24;
+        float cxN = cx / width * 2f - 1f, cyN = 1f - cy / height * 2f;
+        haloBuf.position(0);
+        for (int k = 0; k <= seg; k++) {
+            double ang = Math.PI * 2.0 * k / seg;
+            float ca = (float) Math.cos(ang), sa = (float) Math.sin(ang);
+            haloBuf.put(cxN + rIn * ca / width * 2f).put(cyN + rIn * sa / height * 2f).put(1f);
+            haloBuf.put(cxN + rOut * ca / width * 2f).put(cyN + rOut * sa / height * 2f).put(1f);
+        }
+        GLES20.glUseProgram(progHalo);
+        GLES20.glUniform2f(uScaleHalo, 1f, 1f);
+        GLES20.glUniform2f(uOffHalo, 0f, 0f);
+        GLES20.glUniform4f(uColHalo, r, g, b, a);
+        haloBuf.position(0);
+        GLES20.glEnableVertexAttribArray(aPHalo);
+        GLES20.glVertexAttribPointer(aPHalo, 2, GLES20.GL_FLOAT, false, 12, haloBuf);
+        haloBuf.position(2);
+        GLES20.glEnableVertexAttribArray(aAHalo);
+        GLES20.glVertexAttribPointer(aAHalo, 1, GLES20.GL_FLOAT, false, 12, haloBuf);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, (seg + 1) * 2);
+        GLES20.glDisableVertexAttribArray(aAHalo);
+        GLES20.glUseProgram(prog2);
+    }
+
+    /** A filled triangle through the 2D pipeline (icon arrows etc.). */
+    private void drawTriangle(float x1, float y1, float x2, float y2, float x3, float y3,
+                              float r, float g, float b, float a) {
+        if (rrBuf == null) {
+            java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocateDirect(RR_VERTS * 2 * 4);
+            bb.order(java.nio.ByteOrder.nativeOrder());
+            rrBuf = bb.asFloatBuffer();
+        }
+        rrBuf.position(0);
+        rrBuf.put(x1 / width * 2f - 1f).put(1f - y1 / height * 2f);
+        rrBuf.put(x2 / width * 2f - 1f).put(1f - y2 / height * 2f);
+        rrBuf.put(x3 / width * 2f - 1f).put(1f - y3 / height * 2f);
+        GLES20.glUniform2f(uScale2, 1f, 1f);
+        GLES20.glUniform2f(uOff2, 0f, 0f);
+        GLES20.glUniform4f(uCol2, r, g, b, a);
+        rrBuf.position(0);
+        GLES20.glEnableVertexAttribArray(aP2);
+        GLES20.glVertexAttribPointer(aP2, 2, GLES20.GL_FLOAT, false, 8, rrBuf);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 3);
     }
 
     /** A glossy rounded button: shadow, single-pass fill, inset top lightening + top rim highlight.
