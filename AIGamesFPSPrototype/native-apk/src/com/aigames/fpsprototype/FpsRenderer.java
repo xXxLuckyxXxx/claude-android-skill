@@ -170,6 +170,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private int progBlob, aPBlob, uBlobMVP, uBlobA;
     private int prog2, aP2, uScale2, uOff2, uCol2;
     private int progText, aPText, aUVText, uScaleT, uOffT, uColT, uUVoffT, uUVscaleT, uFontTex;
+    private int progHalo, aPHalo, aAHalo, uScaleHalo, uOffHalo, uColHalo;   // soft UI halo (per-vertex alpha)
 
     private int floorTex, metalTex, terrainTex, cityTex, vegTex, fontTex, winTex, roofTex, wallTex, roadTex, woodTex, clothTex;
     private int brickTex, stoneTex, sidingTex, gravelTex, winBackTex;   // per-archetype facade materials, gravel path + dark window-interior
@@ -626,6 +627,13 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         uUVoffT = GLES20.glGetUniformLocation(progText, "uUVoff");
         uUVscaleT = GLES20.glGetUniformLocation(progText, "uUVscale");
         uFontTex = GLES20.glGetUniformLocation(progText, "uFont");
+
+        progHalo = buildProgram(VERT_HALO_SRC, FRAG_HALO_SRC);     // soft UI halos (per-vertex alpha)
+        aPHalo = GLES20.glGetAttribLocation(progHalo, "aP");
+        aAHalo = GLES20.glGetAttribLocation(progHalo, "aA");
+        uScaleHalo = GLES20.glGetUniformLocation(progHalo, "uScale");
+        uOffHalo = GLES20.glGetUniformLocation(progHalo, "uOff");
+        uColHalo = GLES20.glGetUniformLocation(progHalo, "uCol");
 
         uPtLoc = GLES20.glGetUniformLocation(prog3, "uPt");        // dynamic point lights
         uPtCLoc = GLES20.glGetUniformLocation(prog3, "uPtC");
@@ -4869,8 +4877,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 float scale = 0.72f + 0.28f * ease;
                 boolean boss = bossPending > 0 || waveBannerText.indexOf("BOSS") >= 0;
                 float gr = boss ? 1f : AC_TOXIC[0], gg = boss ? 0.45f : AC_TOXIC[1], gb = boss ? 0.32f : AC_TOXIC[2];
-                float bnY = height * 0.27f + (1f - ease) * -26f * us;      // slides down into place
                 float sz = 40f * scale, tw = measureText(waveBannerText, sz) + 80f * us, bh2 = 64f * us * scale;
+                float bnY = height * 0.27f + (1f - ease) * -26f * us;      // slides down into place
+                // at run start the chapter briefing card owns this spot (both showed at once, stacked
+                // into an unreadable pile of translucent panels) — dock the banner just below the card
+                if (storyTimer > 0f) bnY = height * 0.30f + 94f * us + bh2 * 0.5f + (1f - ease) * -26f * us;
                 drawGlow(width * 0.5f, bnY, tw, bh2, bh2 * 0.5f, gr, gg, gb, ba * 0.9f);
                 drawRoundRect(width * 0.5f, bnY, tw + 5f * us, bh2 + 5f * us, bh2 * 0.5f + 2.5f * us, gr, gg, gb, ba * 0.5f); // rim
                 drawRoundRect(width * 0.5f, bnY, tw, bh2, bh2 * 0.5f, 0.055f, 0.045f, 0.038f, ba * 0.9f);
@@ -5515,6 +5526,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final int RR_SEG = 8;                               // arc segments per corner
     private static final int RR_VERTS = 2 + 4 * (RR_SEG + 1);          // centre + ring + closing vertex
     private FloatBuffer rrBuf;                                         // scratch fan, filled per call
+    private FloatBuffer haloBuf;                                       // scratch annulus strip for drawGlow
 
     /** Filled rounded rectangle as ONE triangle fan. The old build (two crossed rects + four corner
      *  discs) only tiled seamlessly at a==1 — every translucent button double-blended where the pieces
@@ -5554,14 +5566,49 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, RR_VERTS);
     }
 
-    /** Soft outer glow: concentric rounded rects grown uniformly (corner radius held constant so the
-     *  halo stays an even thickness instead of bunching into lobes at a pill's rounded ends). */
+    /** Soft outer halo: ONE annulus strip whose per-vertex alpha fades quadratically to zero at the
+     *  outer edge — a true gradient. It used to stack six translucent rounded rects, whose overlaps
+     *  happened to blur each other; once drawRoundRect became seam-free, the six crisp nested edges
+     *  read as a stack of misrendered "transparent windows" behind banners and buttons. */
     private void drawGlow(float cx, float cy, float w, float h, float rad,
                           float r, float g, float b, float a) {
-        for (int i = 6; i >= 1; i--) {
-            float e = i * 3.2f * us;
-            drawRoundRect(cx, cy, w + 2f * e, h + 2f * e, rad, r, g, b, a * 0.038f);
+        if (w < 1f || h < 1f) return;
+        rad = Math.min(rad, Math.min(w, h) * 0.5f);
+        float E = 19.2f * us;                                  // halo band width == the old outermost layer
+        if (haloBuf == null) {
+            java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocateDirect((4 * (RR_SEG + 1) + 1) * 2 * 3 * 4);
+            bb.order(java.nio.ByteOrder.nativeOrder());
+            haloBuf = bb.asFloatBuffer();
         }
+        float cxN = cx / width * 2f - 1f, cyN = 1f - cy / height * 2f;
+        float hx = (w * 0.5f - rad) / width * 2f, hy = (h * 0.5f - rad) / height * 2f;
+        float rxI = rad / width * 2f, ryI = rad / height * 2f;             // inner ring = the shape itself
+        float rxO = (rad + E) / width * 2f, ryO = (rad + E) / height * 2f; // outer ring = parallel offset
+        haloBuf.position(0);
+        for (int c = 0; c <= 4; c++) {                         // 4 corner arcs + closing repeat of the start
+            float sx2 = (c % 4 == 0 || c % 4 == 3) ? 1f : -1f;
+            float sy2 = (c % 4 < 2) ? 1f : -1f;
+            int kEnd = c < 4 ? RR_SEG : 0;
+            for (int k = 0; k <= kEnd; k++) {
+                double ang = Math.PI * 0.5 * (c + k / (double) RR_SEG);
+                float ca = (float) Math.cos(ang), sa = (float) Math.sin(ang);
+                haloBuf.put(cxN + sx2 * hx + rxI * ca).put(cyN + sy2 * hy + ryI * sa).put(1f);
+                haloBuf.put(cxN + sx2 * hx + rxO * ca).put(cyN + sy2 * hy + ryO * sa).put(0f);
+            }
+        }
+        GLES20.glUseProgram(progHalo);
+        GLES20.glUniform2f(uScaleHalo, 1f, 1f);
+        GLES20.glUniform2f(uOffHalo, 0f, 0f);
+        GLES20.glUniform4f(uColHalo, r, g, b, a * 0.24f);      // matches the old stack's peak density
+        haloBuf.position(0);
+        GLES20.glEnableVertexAttribArray(aPHalo);
+        GLES20.glVertexAttribPointer(aPHalo, 2, GLES20.GL_FLOAT, false, 12, haloBuf);
+        haloBuf.position(2);
+        GLES20.glEnableVertexAttribArray(aAHalo);
+        GLES20.glVertexAttribPointer(aAHalo, 1, GLES20.GL_FLOAT, false, 12, haloBuf);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, (4 * (RR_SEG + 1) + 1) * 2);
+        GLES20.glDisableVertexAttribArray(aAHalo);             // don't leak an extra enabled client array
+        GLES20.glUseProgram(prog2);                            // every caller assumes prog2 afterwards
     }
 
     /** The zombie-UI signature: a blood accent line with a soft glow above and drying runners
@@ -9448,6 +9495,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     private static final String FRAG2_SRC =
         "precision mediump float; uniform vec4 uCol; void main(){ gl_FragColor=uCol; }";
+
+    // Halo: flat colour with a PER-VERTEX alpha ramp (annulus strips fade to zero at their outer ring).
+    // vA is declared mediump in BOTH stages — precision mismatch on a varying is a GLES2 link error.
+    private static final String VERT_HALO_SRC =
+        "attribute vec2 aP; attribute float aA; uniform vec2 uScale; uniform vec2 uOff; varying mediump float vA;" +
+        "void main(){ vA=aA; gl_Position=vec4(aP*uScale+uOff,0.0,1.0); }";
+
+    private static final String FRAG_HALO_SRC =
+        "precision mediump float; uniform vec4 uCol; varying float vA;" +
+        "void main(){ gl_FragColor=vec4(uCol.rgb, uCol.a*vA*vA); }";
 
     // Textured 2D text: per-glyph UV rect via uUVoff/uUVscale; white atlas tinted by uCol.
     private static final String VERT_TEXT_SRC =
