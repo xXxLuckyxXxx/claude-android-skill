@@ -6333,14 +6333,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     // ---- story campaign: three chapters, each its own map ------------------------------------------
     // Kap. 1 spielt im vertrauten Dorf, Kap. 2 draussen auf den Hoefen, Kap. 3 in der alten Stadt.
-    // The farm keeps only the two main lanes (a sparse crossroads hamlet); the old town adds a sixth
-    // lane so the core packs tight. All specs keep the spawn plaza at (0,3)..(0,9) road-free.
+    // The farm map shares NO geometry with chapter 1: one diagonal country road + three dirt tracks
+    // fanning out to whole farmsteads. The old town adds a sixth lane so the core packs tight.
+    // All specs keep the spawn plaza at (0,3)..(0,9) road-free.
     private static final float[][][] LV_ROADS = {
         ROAD_SPEC,
-        {   // ASCHENHOF: one country road + the north track — wide fields between the farms
-            {2.2f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},
-            {1.6f, 9,-36, 7,-26, 4,-16, 1,-8, 0,-2},
-            {1.25f, 0,-2, -5,3, -7,10, -4,18, 3,24},                     // short farm track past the yard
+        {   // ASCHENHOF v2: ONE broad diagonal country road (SW -> NE) skirting the hamlet green,
+            // plus three narrow dirt tracks that fan out to lone farmsteads in the open land
+            {2.0f, -34,22, -25,14, -16,7, -8,2, 1,-2, 10,-1, 18,3, 26,9, 34,17},
+            {1.15f, 1,-2, 3,-8, 5,-14, 8,-19, 12,-24},                   // north farm track
+            {1.15f, -20,10, -23,3, -25,-3, -26,-9},                      // west farm track (mouth clear of the hamlet)
+            {1.15f, 26,9, 26,2, 25,-5, 23,-11},                          // east farm track (bends back inward)
         },
         {   // STEINMARKT: the full five-lane net plus a sixth alley — a dense old trading town
             {2.2f, -36,-16, -26,-11, -15,-4, -4,-2, 7,-1, 17,-2, 27,-6, 36,-12},
@@ -7065,6 +7068,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private int forceArch;                                      // >=0: the guaranteed-landmark sweep pins this archetype
+    private float forceSetback = -1f;              // farmstead pairs align around a shared yard
     private java.util.List<float[]> stationRects;               // {cx, cz, arch} per placed station (interior lookup)
 
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
@@ -7075,7 +7079,9 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.waterDiscs = null; this.waterStreams = null;       // re-registered by this build's fountain (if any)
         lmPolice = false; lmFire = false; lmChapel = false;     // one landmark of each kind per town
         forceArch = -1;                                         // explicit: Unsafe-allocated test instances skip initializers
+        forceSetback = -1f;
         stationRects = new java.util.ArrayList<float[]>();
+        themePts = new java.util.ArrayList<float[]>();          // farmsteads mark theme spots before addChapterTheme
         // No more loose cover blocks on the plaza — the market (fountain centrepiece + a ring of
         // stalls, see addAccessories) provides the spawn cover now.
         numCover = 0;
@@ -7087,7 +7093,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         java.util.List<float[]> gardens = new java.util.ArrayList<float[]>();   // {cx,cz,hw,hd,yaw}
         for (int r = 0; r < ROAD_PTS.length; r++) {
             float[][] P = ROAD_PTS[r];
-            float acc = 5.5f + rc.nextFloat() * 4f;                 // distance until the next lot
+            float acc = levelId == 1 && r > 0 ? 12f + rc.nextFloat() * 3f
+                      : 5.5f + rc.nextFloat() * 4f;                 // distance until the next lot
             int lastSide = rc.nextBoolean() ? 1 : -1;
             for (int i = 0; i + 1 < P.length; i++) {
                 float ax = P[i][0], az = P[i][1];
@@ -7096,12 +7103,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 acc -= sl;
                 if (acc > 0f) continue;
                 // lot spacing tells each chapter's story: farms sit far apart, the old town packs tight
-                acc = levelId == 1 ? 6.4f + rc.nextFloat() * 4.2f
+                acc = levelId == 1 ? 4.2f + rc.nextFloat() * 2.0f   // snug hamlet ring (the tracks place farmsteads)
                     : levelId == 2 ? 3.9f + rc.nextFloat() * 2.4f
                     : 4.1f + rc.nextFloat() * 2.6f;   // denser: the big landmark/barn lots must not thin the towns
                 tx /= sl; tz /= sl;
                 float nxr = -tz, nzr = tx;                          // road normal (left of travel)
-                int nSides = rc.nextFloat() < (levelId == 1 ? 0.35f : levelId == 2 ? 0.80f : 0.7f) ? 2 : 1;
+                if (levelId == 1 && r > 0) { acc = 999f; continue; }   // tracks carry farmsteads, not street lots
+                if (levelId == 1 && (Math.hypot(ax - SQ_X, az - SQ_Z) > 16.5 || ax > 12f)) { acc = 3.5f; continue; }   // hamlet stays west of the east-track land
+                int nSides = rc.nextFloat() < (levelId == 1 ? 0.55f : levelId == 2 ? 0.80f : 0.7f) ? 2 : 1;
                 int side = rc.nextFloat() < 0.72f ? -lastSide : lastSide;   // mostly alternate sides
                 for (int sI = 0; sI < nSides; sI++, side = -side) {
                     lastSide = side;
@@ -7109,6 +7118,14 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                             ROAD_HALFW[r]);
                 }
             }
+        }
+        if (levelId == 1) {
+            // four HOF anchors — courtyard centres beside the dirt tracks, each with the direction
+            // the farmhouse faces INTO the yard (hand-placed on open ground; validation still runs)
+            float[][] steads = {{1f, -20f, -0.71f, 0.71f}, {19f, -13f, 0.38f, 0.92f},
+                                {-19f, -7f, 0f, 1f}, {19f, 13f, 0.71f, 0.71f}};
+            for (float[] st : steads)
+                placeFarmstead(L, doors, houses, gardens, rc, st[0], st[1], st[2], st[3]);
         }
         // the stations are story landmarks — if the roll-based pass missed one (its wide lot kept
         // losing to dense neighbours), sweep the lanes again offering ONLY that station to every
@@ -7140,11 +7157,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // trodden shortcuts BETWEEN the lanes: painted dirt polylines wandering through the green.
         // Each polyline slides sideways until it clears every house + garden fence (or is dropped),
         // so the layout can change without a path ever running through a building.
-        float[][] shortcuts = {
-            {-3.5f, 18.5f, 4f, 16.5f, 11f, 14f, 19f, 13.5f},        // south lane -> east lane, across the meadow
-            {-18.5f, 3.5f, -13f, 8f, -6.5f, 11.5f},                 // west lane -> south lane
-            {5.5f, -3.5f, 10f, -7f, 14.5f, -5f},                    // main road inner bend cut-off
-        };
+        float[][] shortcuts = levelId == 1
+            ? new float[][]{                                        // trodden farm paths radiating from the green
+                {2.5f, 7.5f, 5.5f, 0.5f, 4.5f, -6.5f},              // hamlet green -> north track
+                {-5.5f, 7.5f, -11f, 8.5f, -16f, 6.5f},              // green -> west track mouth
+                {13f, 6.5f, 16.5f, 1.5f, 20.5f, -3.5f}}             // country road -> east track corner
+            : new float[][]{
+                {-3.5f, 18.5f, 4f, 16.5f, 11f, 14f, 19f, 13.5f},    // south lane -> east lane, across the meadow
+                {-18.5f, 3.5f, -13f, 8f, -6.5f, 11.5f},             // west lane -> south lane
+                {5.5f, -3.5f, 10f, -7f, 14.5f, -5f},                // main road inner bend cut-off
+            };
         for (float[] sc : shortcuts) {
             for (float off : new float[]{0f, 2.2f, -2.2f, 4.4f, -4.4f, 6.6f, -6.6f}) {
                 boolean clear = true;
@@ -7174,6 +7196,64 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         addAccessories(L, houses, rc);                              // lamps, benches, market square, scattered trees
         addChapterTheme(L, houses, rc);                             // per-chapter landmark structures + ground features
+    }
+
+    /** True if (x,z) can take a loose farm prop: off the roads and spawn lane, clear of houses/doors/props. */
+    private boolean propSpotOk(List<float[]> houses, float x, float z) {
+        return roadSd(x, z) > 0.75f && !inSpawnLane(x, z) && x * x + z * z < 31.5f * 31.5f
+                && clearOfHouses(houses, x, z, 0.45f) && !blocksAnyDoor(houses, x, z)
+                && clearOfPts(clutterPts, x, z, 1.15f);
+    }
+
+    /** Field rectangles are painted soil, not geometry — but they must not paint over the asphalt. */
+    private static boolean fieldOffRoads(float cx, float cz, float w, float d, float yaw) {
+        double a = Math.toRadians(yaw); float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
+        for (float lx = -0.5f; lx <= 0.5f; lx += 0.25f) for (float lz = -0.5f; lz <= 0.5f; lz += 0.25f) {
+            float wx = cx + lx * w * ca + lz * d * sa, wz = cz - lx * w * sa + lz * d * ca;
+            if (roadSd(wx, wz) < 0.35f || wx * wx + wz * wz > 31f * 31f) return false;
+        }
+        return true;
+    }
+
+    /** One ASCHENHOF farmstead, a classic Winkelhof: the farmhouse looks across the courtyard
+     *  toward its track (door on -d), the barn stands at a right angle to it, a grain silo leans on
+     *  the barn's far corner, loose props fill the yard, and a tilled field spreads out behind.
+     *  Everything passes the normal lot/spot validation, so a blocked yard just yields less. */
+    private void placeFarmstead(List<float[]> L, List<float[]> doors, List<float[]> houses,
+                                List<float[]> gardens, Random rc, float cx0, float cz0, float dx, float dz) {
+        float qx = -dz, qz = dx;                                    // courtyard cross axis
+        int before = houses.size();
+        float yardSb = 1.6f + rc.nextFloat() * 0.9f;
+        forceArch = 4; forceSetback = yardSb;                       // farmhouse: door faces the yard centre
+        placeVillageHouse(L, doors, houses, gardens, rc, cx0 - dx * 2.2f, cz0 - dz * 2.2f, qx, qz, -dx, -dz, 0f);
+        forceArch = -1; forceSetback = -1f;
+        if (houses.size() == before) return;                        // yard blocked -> no farmstead here
+        int partner = (!lmChapel && rc.nextFloat() < 0.28f) ? 7 : 8;
+        int beforeB = houses.size();
+        for (int qs = 1; qs >= -1 && houses.size() == beforeB; qs -= 2) {   // barn on either cross side
+            forceArch = partner; forceSetback = yardSb + 0.4f;
+            placeVillageHouse(L, doors, houses, gardens, rc, cx0 + qx * qs * 2.4f, cz0 + qz * qs * 2.4f,
+                    dx, dz, qx * qs, qz * qs, 0f);
+            forceArch = -1; forceSetback = -1f;
+        }
+        if (houses.size() > beforeB && partner == 8) {              // grain silo off the barn's back corner
+            float[] bh = houses.get(houses.size() - 1);
+            float bnx = (bh[0] - cx0), bnz = (bh[1] - cz0);
+            float bl = (float) Math.hypot(bnx, bnz); bnx /= bl; bnz /= bl;
+            float sx = bh[0] + bnx * (bh[3] * 0.5f + 2.3f) + dx * 1.4f;
+            float sz2 = bh[1] + bnz * (bh[3] * 0.5f + 2.3f) + dz * 1.4f;
+            if (themeSpotOk(houses, sx, sz2, 1.35f, 2.4f, 0f, 1.4f)) { addSilo(L, sx, sz2, rc); themeMark(sx, sz2); }
+        }
+        if (propSpotOk(houses, cx0, cz0)) { addWoodpile(L, rc, cx0, cz0); clutterPts.add(new float[]{cx0, cz0}); }
+        float hx = cx0 - dx * 2.4f + qx * 1.6f, hz = cz0 - dz * 2.4f + qz * 1.6f;
+        if (propSpotOk(houses, hx, hz)) { addHayBale(L, hx, hz, rc); clutterPts.add(new float[]{hx, hz}); }
+        float bx2 = cx0 + qx * 2.2f - dx * 0.8f, bz2 = cz0 + qz * 2.2f - dz * 0.8f;
+        if (propSpotOk(houses, bx2, bz2)) { addBarrel(L, bx2, bz2); clutterPts.add(new float[]{bx2, bz2}); }
+        float fxc = cx0 + dx * 9.5f, fzc = cz0 + dz * 9.5f;         // field spreads behind the farmhouse
+        float fw = 6.5f + rc.nextFloat() * 2.5f, fd = 4.6f + rc.nextFloat() * 1.6f;
+        float fyaw = (float) Math.toDegrees(Math.atan2(dx, dz));
+        if (fieldClear(houses, fxc, fzc, fw, fd, fyaw) && fieldOffRoads(fxc, fzc, fw, fd, fyaw))
+            gardenSoil.add(new float[]{fxc, fzc, fw, fd, fyaw});
     }
 
     // ---- per-chapter theme features: what makes each map its own place, not a re-skinned village ----
@@ -7207,31 +7287,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  Chapter 1 (the village) adds nothing here. All structures pass themeSpotOk so nav/road/spawn
      *  invariants hold, and orchard trees + field plots feed the existing tree/soil bakes. */
     private void addChapterTheme(List<float[]> L, List<float[]> houses, Random rc) {
-        themePts = new java.util.ArrayList<float[]>();
+        if (themePts == null) themePts = new java.util.ArrayList<float[]>();
         if (levelId == 1) {
-            // a windmill + two grain silos, each standing ALONE on open ground (big house gap so they
-            // never end up jammed between farmhouses). Many candidates -> take the first that clears.
-            float[][] mill = {{-13f, -14f}, {13f, -15f}, {-15f, 13f}, {15f, 14f}, {-18f, -4f}, {17f, -3f}, {0f, -17f}};
+            // ONE windmill standing alone on open ground (candidates tuned to the v2 diagonal road
+            // net); the grain silos live on the farmsteads now, so no standalone pair any more
+            float[][] mill = {{-13f, 17f}, {-20f, 16f}, {12f, 21f}, {21f, -25f}, {-24f, -14f}, {6f, 26f}, {-6f, -20f}};
             for (float[] c : mill) if (themeSpotOk(houses, c[0], c[1], 2.1f, 2.8f, 8f, 3.4f)) { addWindmill(L, c[0], c[1]); themeMark(c[0], c[1]); break; }
-            int silos = 0;
-            float[][] siloC = {{17f, -11f}, {-17f, -12f}, {14f, 13f}, {-14f, 15f}, {18f, 6f}, {-18f, 5f}, {9f, -17f}, {-9f, -17f}};
-            for (float[] c : siloC) { if (silos >= 2) break; if (themeSpotOk(houses, c[0], c[1], 1.35f, 2.8f, 7f, 3.2f)) { addSilo(L, c[0], c[1], rc); themeMark(c[0], c[1]); silos++; } }
-            // hay bales scattered across the fields
+            // hay bales scattered across the open land
             int bales = 0;
-            for (int t = 0; t < 300 && bales < 7; t++) {
+            for (int t = 0; t < 300 && bales < 8; t++) {
                 float a = rc.nextFloat() * 6.2832f, rad = 8f + rc.nextFloat() * 18f;
                 float x = (float) Math.cos(a) * rad, z = 5f + (float) Math.sin(a) * rad;
                 if (themeSpotOk(houses, x, z, 0.85f, 1.6f, 3.2f, 1.4f)) { addHayBale(L, x, z, rc); themeMark(x, z); bales++; }
             }
-            // big crop fields (feed the tilled-soil + sprout bake) in the open quadrants
-            float[][] fields = {{-15f, 14f}, {15f, 13f}, {16f, -13f}, {-16f, -14f}, {0f, -15f}};
+            // big crop fields between the farmsteads (each stead also tills its own by the track)
+            float[][] fields = {{-13f, 15f}, {-7f, 21f}, {11f, 18f}, {22f, -24f}, {-24f, -13f}, {-7f, -19f}, {17f, 23f}, {13f, -8f}};
             int plots = 0;
             for (float[] c : fields) {
-                if (plots >= 3) break;
-                if (!themeSpotOk(houses, c[0], c[1], 3.4f, 3.0f, 8f, 1.2f)) continue;
-                float fw = 5.0f + rc.nextFloat() * 1.6f, fd = 4.2f + rc.nextFloat() * 1.4f;
+                if (plots >= 4) break;
+                if (!themeSpotOk(houses, c[0], c[1], 3.6f, 3.0f, 7f, 1.2f)) continue;
+                float fw = 6.0f + rc.nextFloat() * 2.4f, fd = 4.8f + rc.nextFloat() * 1.8f;
                 float fyaw = (rc.nextFloat() - 0.5f) * 30f;
-                if (fieldClear(houses, c[0], c[1], fw, fd, fyaw)) { gardenSoil.add(new float[]{c[0], c[1], fw, fd, fyaw}); themeMark(c[0], c[1]); plots++; }
+                if (fieldClear(houses, c[0], c[1], fw, fd, fyaw) && fieldOffRoads(c[0], c[1], fw, fd, fyaw)) { gardenSoil.add(new float[]{c[0], c[1], fw, fd, fyaw}); themeMark(c[0], c[1]); plots++; }
             }
             // a small orchard: a tidy grid of fruit trees in one corner
             addOrchard(houses, rc);
@@ -7288,6 +7365,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     /** One lot: pick an archetype by distance from the square, size it with real variance, face the road. */
+    static boolean DBG = false;
     private void placeVillageHouse(List<float[]> L, List<float[]> doors, List<float[]> houses,
                                    List<float[]> gardens, Random rc,
                                    float ax, float az, float tx, float tz, float nx, float nz, float roadHw) {
@@ -7296,8 +7374,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // 0 cottage · 1 townhouse · 2 block · 3 shop · 4 farmhouse ·
         // 5 POLIZEI · 6 FEUERWEHR · 7 KAPELLE · 8 SCHEUNE · 9 WIRTSHAUS
         int arch;
-        if (levelId == 1) {                                         // ASCHENHOF: barns + farmhouses + squat cottages
-            arch = roll < 0.28f ? 8 : (roll < 0.62f ? 4 : (roll < 0.90f ? 0 : 1));
+        if (levelId == 1) {                                         // ASCHENHOF hamlet: cottages, farmhouses, a store + inn
+            arch = roll < 0.30f ? 0 : (roll < 0.58f ? 4 : (roll < 0.76f ? 3 : (roll < 0.90f ? 9 : 1)));
         } else if (levelId == 2) {                                  // STEINMARKT: tall stone town, shops + tavern at the core
             if (distSq < 13f) arch = roll < 0.40f ? 3 : (roll < 0.56f ? 9 : (roll < 0.92f ? 1 : 2));
             else              arch = roll < 0.40f ? 1 : (roll < 0.66f ? 2 : (roll < 0.88f ? 0 : 3));
@@ -7311,7 +7389,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             else if (!lmFire && roll >= 0.42f && roll < 0.54f) arch = 6;
             else if (!lmChapel && distSq > 16f && roll >= 0.90f) arch = 7;
         } else if (levelId == 1) {
-            if (!lmFire && distSq > 11f && roll >= 0.28f && roll < 0.42f) arch = 6;
+            if (!lmFire && distSq > 8.5f && roll >= 0.28f && roll < 0.42f) arch = 6;
             else if (!lmChapel && distSq > 15f && roll >= 0.93f) arch = 7;
         }
         if (forceArch >= 0) arch = forceArch;                       // guaranteed-landmark sweep (see buildWorldInto)
@@ -7382,29 +7460,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (arch == 1 && storeys < 3 && rc.nextFloat() < 0.5f) { storeys++; h += 1.3f; }
         }
         // door wall (+z) faces the road: centre = station + normal * (verge + setback + half depth)
-        float setback = VERGE + (levelId == 1 ? 1.4f + rc.nextFloat() * 3.6f
+        float setback = forceSetback >= 0f ? forceSetback
+                      : VERGE + (levelId == 1 ? 0.8f + rc.nextFloat() * 1.4f
                               : levelId == 2 ? 0.5f + rc.nextFloat() * 1.6f
                               : 0.7f + rc.nextFloat() * 2.8f);
         float cx = ax + nx * (roadHw + setback + d * 0.5f);
         float cz = az + nz * (roadHw + setback + d * 0.5f);
         float yawDeg = (float) Math.toDegrees(Math.atan2(-nx, -nz)) + (rc.nextFloat() - 0.5f) * 12f;
         // rejection tests: core disc, spawn corridor, square keep-clear, road + neighbour clearance
-        if (cx * cx + cz * cz > 30.2f * 30.2f) return;
-        if (inSpawnLane(cx, cz)) return;
+        if (cx * cx + cz * cz > 30.2f * 30.2f) { if (DBG) System.out.println("REJ ring arch=" + arch + " @" + cx + "," + cz); return; }
+        if (inSpawnLane(cx, cz)) { if (DBG) System.out.println("REJ spawn arch=" + arch + " @" + cx + "," + cz); return; }
         float dSq = (float) Math.hypot(cx - SQ_X, cz - SQ_Z);
-        if (dSq < (arch == 3 ? 6.8f : 8.2f)) return;                // shops may ring the square more tightly
+        if (dSq < (arch == 3 ? 6.8f : 8.2f)) { if (DBG) System.out.println("REJ square arch=" + arch + " @" + cx + "," + cz); return; }
         double ya = Math.toRadians(yawDeg);
         float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
         for (int cIx = 0; cIx < 9; cIx++) {                         // 8 perimeter points + centre stay off the streets
             float lx = (cIx % 3 - 1) * (w * 0.5f + 0.35f), lz = (cIx / 3 - 1) * (d * 0.5f + 0.35f);
             float wx = cx + lx * ca + lz * sa, wz = cz - lx * sa + lz * ca;
-            if (roadSd(wx, wz) < 0.45f || wx * wx + wz * wz > 32.5f * 32.5f || inSpawnLane(wx, wz)) return;
+            if (roadSd(wx, wz) < 0.45f || wx * wx + wz * wz > 32.5f * 32.5f || inSpawnLane(wx, wz)) { if (DBG) System.out.println("REJ road/edge arch=" + arch + " @" + cx + "," + cz); return; }
         }
         for (float[] o : houses)                                    // never overlap a neighbour (OBB + breathing room)
             if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, o[0], o[1], o[2] * 0.5f, o[3] * 0.5f,
-                    o.length > 25 ? o[25] : 0f, 1.1f)) return;
+                    o.length > 25 ? o[25] : 0f, 1.1f)) { if (DBG) System.out.println("REJ house arch=" + arch + " @" + cx + "," + cz); return; }
         for (float[] g : gardens)
-            if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, g[0], g[1], g[2], g[3], g[4], 0.8f)) return;
+            if (obbOverlap(cx, cz, w * 0.5f, d * 0.5f, yawDeg, g[0], g[1], g[2], g[3], g[4], 0.8f)) { if (DBG) System.out.println("REJ garden arch=" + arch + " @" + cx + "," + cz); return; }
 
         float[] p = PALETTE[rc.nextInt(PALETTE.length)];
         float[] dc = DOORS[rc.nextInt(DOORS.length)];
