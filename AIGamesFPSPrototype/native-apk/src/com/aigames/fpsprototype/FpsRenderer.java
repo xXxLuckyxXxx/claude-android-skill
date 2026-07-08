@@ -7347,7 +7347,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             d = 4.8f + rc.nextFloat() * 0.5f; h = 3.9f + rc.nextFloat() * 0.4f;
             storeys = 1; foundH = 0.30f; winDens = 2; winSize = 1.1f; chimney = false; trim = true;
             pitch = 0.55f + rc.nextFloat() * 0.2f;
-            rf = new float[]{0.44f, 0.17f, 0.13f}; mat = 1; doorStyle = 3; doorW = cityFw ? 3.0f : 3.4f; doorH = 2.9f;
+            rf = new float[]{0.44f, 0.17f, 0.13f}; mat = 1; doorStyle = 1; doorW = cityFw ? 3.0f : 3.4f; doorH = 2.9f;
         } else if (arch == 7) {                                     // KAPELLE: narrow, tall, steep slate roof
             // plinth 0.50: its tall windows clamp their sill to foundH+0.12 — anything under 0.5 is
             // "step-over" to the nav bake, so zombies pathed straight through the chapel glass
@@ -7484,25 +7484,30 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             L.add(new float[]{cx - w * 0.5f + 0.09f, h + 0.62f, cz - d * 0.5f + 0.95f, 0.10f, 0.9f, 0.14f, 0.55f, 0.12f, 0.09f, 0f});
             // siren dome ON the hose-tower cap (it used to sit over the pitched roof and floated mid-air)
             L.add(new float[]{cx - w * 0.5f + 0.7f, h + 2.21f, cz - d * 0.5f + 0.7f, 0.30f, 0.22f, 0.30f, 0.90f, 0.22f, 0.16f, 0f});
-            // engine-hall gate front: warning-striped posts flanking the big gate + white fascia + badge
+            // engine-hall gate PORTAL, one composition: striped posts capped at gate height, a slim
+            // steel header connecting them, and a gate-wide signage band with trim/badge/lamps ON it.
+            // Walls are 0.30 thick (outer face gz2+0.15); every sheet embeds ~5mm into the one behind
+            // so no two faces tie in the depth buffer.
             float gz2 = cz + d * 0.5f;
+            float segH = (doorH - 0.32f) * 0.25f;
             for (int s = -1; s <= 1; s += 2) for (int seg = 0; seg < 4; seg++)
-                L.add(new float[]{cx + s * (doorW * 0.5f + 0.28f), 0.36f + seg * 0.72f, gz2 + 0.10f, 0.22f, 0.72f, 0.15f,
+                L.add(new float[]{cx + s * (doorW * 0.5f + 0.28f), 0.30f + (seg + 0.5f) * segH, gz2 + 0.14f, 0.24f, segH, 0.15f,
                         seg % 2 == 0 ? 0.85f : 0.94f, seg % 2 == 0 ? 0.14f : 0.92f, seg % 2 == 0 ? 0.11f : 0.87f, 0f});
-            // walls are 0.30 thick (outer face gz2+0.15) — everything layers proud of that, each
-            // sheet embedding ~5mm into the one behind so no two faces tie in the depth buffer
-            L.add(new float[]{cx, doorH + 0.62f, gz2 + 0.16f, Math.min(w - 0.5f, doorW + 2.4f), 0.62f, 0.12f, 0.95f, 0.93f, 0.88f, 0f}); // fascia
-            L.add(new float[]{cx, doorH + 0.40f, gz2 + 0.235f, Math.min(w - 0.7f, doorW + 2.2f), 0.10f, 0.05f, 0.80f, 0.14f, 0.11f, 0f}); // red trim line
-            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.245f, 0.66f, 0.50f, 0.06f, 0.78f, 0.12f, 0.10f, 0f});  // badge plate
-            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.285f, 0.28f, 0.28f, 0.03f, 0.96f, 0.94f, 0.90f, 0f}); // white centre square
-            // alarm bell beside the gate + a warm lamp over the lintel
-            L.add(new float[]{cx - doorW * 0.5f - 0.62f, 2.35f, gz2 + 0.10f, 0.09f, 0.16f, 0.16f, 0.30f, 0.26f, 0.20f, 0f});
-            L.add(new float[]{cx - doorW * 0.5f - 0.62f, 2.32f, gz2 + 0.16f, 0.30f, 0.30f, 0.10f, 0.78f, 0.60f, 0.24f, 0f});  // brass bell
-            L.add(new float[]{cx + doorW * 0.5f + 0.62f, doorH + 0.10f, gz2 + 0.12f, 0.20f, 0.14f, 0.14f, 0.99f, 0.90f, 0.62f, 0f});  // gate lamp
-            L.add(new float[]{cx + doorW * 0.5f + 0.62f, doorH + 0.20f, gz2 + 0.12f, 0.26f, 0.06f, 0.18f, 0.22f, 0.22f, 0.25f, 0f});  //  hood
+            L.add(new float[]{cx, doorH + 0.07f, gz2 + 0.10f, doorW + 0.66f, 0.18f, 0.16f, 0.30f, 0.31f, 0.34f, 0f});   // steel header
+            L.add(new float[]{cx, doorH + 0.44f, gz2 + 0.16f, doorW + 0.66f, 0.56f, 0.12f, 0.95f, 0.93f, 0.88f, 0f});   // signage band
+            L.add(new float[]{cx, doorH + 0.225f, gz2 + 0.225f, doorW + 0.5f, 0.07f, 0.05f, 0.80f, 0.14f, 0.11f, 0f});  // red trim line
+            L.add(new float[]{cx, doorH + 0.50f, gz2 + 0.245f, 0.62f, 0.46f, 0.06f, 0.78f, 0.12f, 0.10f, 0f});          // badge plate
+            L.add(new float[]{cx, doorH + 0.50f, gz2 + 0.285f, 0.26f, 0.26f, 0.03f, 0.96f, 0.94f, 0.90f, 0f});          // white centre square
+            for (int s = -1; s <= 1; s += 2)                                                     // twin warm lamps flanking the badge
+                L.add(new float[]{cx + s * doorW * 0.25f, doorH + 0.42f, gz2 + 0.26f, 0.20f, 0.16f, 0.10f, 0.99f, 0.90f, 0.62f, 0f});
+            // fire-alarm call box mounted ON the left gate post (posts are window-free ground)
+            float axp = cx - doorW * 0.5f - 0.28f;
+            L.add(new float[]{axp, 1.62f, gz2 + 0.20f, 0.30f, 0.42f, 0.05f, 0.24f, 0.25f, 0.28f, 0f});   // backplate (proud of the post face)
+            L.add(new float[]{axp, 1.62f, gz2 + 0.235f, 0.24f, 0.32f, 0.07f, 0.82f, 0.10f, 0.08f, 0f});  // red call box
+            L.add(new float[]{axp, 1.62f, gz2 + 0.28f, 0.09f, 0.09f, 0.03f, 0.95f, 0.94f, 0.90f, 0f});   //  button
             // the truck parks INSIDE the hall when it is wide enough (furnishStation adds it); the
             // compact city hall keeps an outside bay instead
-            boolean truckInside = w * 0.5f - 0.28f >= 2.85f;
+            boolean truckInside = w * 0.5f - 0.28f >= 2.45f;   // the compact engine fits every hall incl. the narrowest city one (gate keeps ~1.8 m walkable)
             addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, true, !truckInside);
             stationRects.add(new float[]{cx, cz, 6f});
             lmFire = true;
@@ -7525,7 +7530,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         }
         for (int bi = exStart; bi < L.size(); bi++) rotateBoxAbout(L, bi, cx, cz, yawDeg);
         if (rc.nextFloat() < 0.45f) {                               // a barrel / crate / planter against a side wall
-            float lxo = (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.4f);
+            // 0.60 keeps even a crate CORNER (half-diagonal ~0.38) clear of the 0.18 foundation-skirt overhang
+            float lxo = (rc.nextBoolean() ? 1f : -1f) * (w * 0.5f + 0.60f);
             float lzo = (rc.nextFloat() - 0.3f) * d * 0.5f;
             float axc = cx + lxo * ca + lzo * sa, azc = cz - lxo * sa + lzo * ca;
             if (roadSd(axc, azc) > 0.9f && !inSpawnLane(axc, azc)   // 0.9m off the asphalt: crate CORNERS stay clear
@@ -7546,9 +7552,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                 boolean fire, boolean vehicle) {
         float halfW = fire ? 1.15f : 0.95f, halfL = fire ? 2.70f : 2.25f;      // vehicle footprint halves
         int firstSide = rc.nextBoolean() ? 1 : -1;
-        for (int si = 0; si < 2 && vehicle; si++) {
-            float side = si == 0 ? firstSide : -firstSide;
-            float lx = side * (w * 0.5f + halfW + 0.55f), lz = d * 0.5f - halfL + 0.35f;   // nose toward the street
+        for (int si = 0; si < 4 && vehicle; si++) {                                        // 2 side bays, then 2 forecourt corners
+            float side = si % 2 == 0 ? firstSide : -firstSide;
+            float lx = side * (w * 0.5f + (si < 2 ? halfW + 0.55f : 0.35f));
+            float lz = si < 2 ? d * 0.5f - halfL + 0.35f : d * 0.5f + halfL + 0.60f;       // nose toward the street
             float vx = cx + lx * ca + lz * sa, vz = cz - lx * sa + lz * ca;                // world centre
             boolean ok = vx * vx + vz * vz < 31.5f * 31.5f && !inSpawnLane(vx, vz) && !blocksAnyDoor(houses, vx, vz);
             for (int cI = 0; ok && cI < 9; cI++) {                                          // corners + edges + centre
@@ -8267,46 +8274,66 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  red cab + crew body, silver roller shutters, roof ladder, blue light bar, rear chevron plate. */
     private static void addFireEngine(List<float[]> L, float x, float z) {
         float rr = 0.78f, rg2 = 0.13f, rb = 0.11f;                                            // signal red
-        L.add(new float[]{x, 0.55f, z, 1.86f, 0.30f, 5.1f, 0.15f, 0.15f, 0.17f, 0f});         // chassis frame
-        for (float wz : new float[]{z + 1.7f, z - 1.5f}) for (int s = -1; s <= 1; s += 2)
-            addWheel(L, x + s * 0.93f, 0.46f, wz, 0.92f, 0.30f);
-        L.add(new float[]{x, 1.62f, z + 1.85f, 2.06f, 1.44f, 1.45f, rr, rg2, rb, 0f});        // cab
-        L.add(new float[]{x, 1.98f, z + 2.60f, 1.80f, 0.52f, 0.06f, 0.16f, 0.19f, 0.23f, 0f});// windshield
-        L.add(new float[]{x, 1.02f, z + 2.62f, 1.96f, 0.34f, 0.10f, 0.58f, 0.59f, 0.61f, 0f});// grille + bumper
-        L.add(new float[]{x, 1.78f, z - 0.65f, 2.16f, 1.86f, 3.15f, rr, rg2, rb, 0f});        // equipment body
-        for (int s = -1; s <= 1; s += 2) {
-            L.add(new float[]{x + s * 1.09f, 1.72f, z - 0.65f, 0.04f, 1.28f, 2.55f, 0.74f, 0.76f, 0.80f, 0f});  // roller shutters
-            for (int lam = 0; lam < 3; lam++)                                                  // shutter lamellae
-                L.add(new float[]{x + s * 1.115f, 1.30f + lam * 0.42f, z - 0.65f, 0.015f, 0.05f, 2.45f, 0.52f, 0.54f, 0.58f, 0f});
+        L.add(new float[]{x, 0.42f, z, 1.70f, 0.20f, 4.9f, 0.13f, 0.13f, 0.15f, 0f});         // low chassis rail
+        for (float wz : new float[]{z + 1.70f, z - 1.45f}) {                                  // wheels sunk in dark arches
+            L.add(new float[]{x, 0.60f, wz, 1.86f, 0.60f, 1.06f, 0.10f, 0.10f, 0.12f, 0f});
+            for (int s = -1; s <= 1; s += 2) addWheel(L, x + s * 0.80f, 0.46f, wz, 0.92f, 0.30f);
         }
-        L.add(new float[]{x - 0.48f, 2.82f, z - 0.6f, 0.08f, 0.10f, 3.1f, 0.80f, 0.82f, 0.86f, 0f});   // roof ladder rails
-        L.add(new float[]{x + 0.48f, 2.82f, z - 0.6f, 0.08f, 0.10f, 3.1f, 0.80f, 0.82f, 0.86f, 0f});
+        L.add(new float[]{x, 1.50f, z + 1.95f, 1.96f, 1.20f, 1.30f, rr, rg2, rb, 0f});        // cab
+        L.add(new float[]{x, 2.28f, z + 1.90f, 1.88f, 0.42f, 1.16f, rr, rg2, rb, 0f});        // cab roof ring
+        L.add(new float[]{x, 2.26f, z + 2.455f, 1.70f, 0.44f, 0.10f, 0.16f, 0.19f, 0.23f, 0f});// windshield band
+        for (int s = -1; s <= 1; s += 2)
+            L.add(new float[]{x + s * 0.975f, 2.24f, z + 1.92f, 0.05f, 0.40f, 0.80f, 0.16f, 0.19f, 0.23f, 0f}); // cab side glass
+        L.add(new float[]{x, 0.90f, z + 2.62f, 1.90f, 0.34f, 0.14f, 0.90f, 0.90f, 0.92f, 0f});// white bumper
+        L.add(new float[]{x, 1.42f, z + 2.605f, 1.10f, 0.26f, 0.08f, 0.35f, 0.36f, 0.40f, 0f});// grille
+        for (int s = -1; s <= 1; s += 2)
+            L.add(new float[]{x + s * 0.72f, 1.42f, z + 2.61f, 0.26f, 0.18f, 0.07f, 0.96f, 0.92f, 0.70f, 0f}); // headlights
+        L.add(new float[]{x, 1.62f, z - 0.70f, 2.02f, 1.70f, 3.30f, rr, rg2, rb, 0f});        // equipment body
+        for (int s = -1; s <= 1; s += 2) {                                                    // 2 shutter bays per side + divider
+            for (int bay = -1; bay <= 1; bay += 2) {
+                float bz = z - 0.70f + bay * 0.85f;
+                L.add(new float[]{x + s * 1.015f, 1.58f, bz, 0.03f, 1.18f, 1.34f, 0.74f, 0.76f, 0.80f, 0f});
+                for (int lam = 0; lam < 4; lam++)
+                    L.add(new float[]{x + s * 1.0345f, 1.16f + lam * 0.30f, bz, 0.021f, 0.045f, 1.26f, 0.55f, 0.57f, 0.61f, 0f});
+            }
+            L.add(new float[]{x + s * 1.023f, 1.58f, z - 0.70f, 0.035f, 1.26f, 0.16f, 0.62f, 0.10f, 0.09f, 0f});
+        }
+        L.add(new float[]{x - 0.48f, 2.52f, z - 0.70f, 0.08f, 0.10f, 3.10f, 0.80f, 0.82f, 0.86f, 0f});  // roof ladder rails
+        L.add(new float[]{x + 0.48f, 2.52f, z - 0.70f, 0.08f, 0.10f, 3.10f, 0.80f, 0.82f, 0.86f, 0f});
         for (int rg = 0; rg < 5; rg++)
-            L.add(new float[]{x, 2.84f, z - 1.9f + rg * 0.65f, 0.9f, 0.06f, 0.08f, 0.76f, 0.78f, 0.82f, 0f});   // rungs
-        L.add(new float[]{x, 2.44f, z + 1.85f, 1.30f, 0.12f, 0.32f, 0.15f, 0.15f, 0.18f, 0f});         // light-bar base
-        L.add(new float[]{x - 0.34f, 2.56f, z + 1.85f, 0.30f, 0.16f, 0.24f, 0.20f, 0.45f, 0.98f, 0f}); // blue lights
-        L.add(new float[]{x + 0.34f, 2.56f, z + 1.85f, 0.30f, 0.16f, 0.24f, 0.20f, 0.45f, 0.98f, 0f});
+            L.add(new float[]{x, 2.54f, z - 2.0f + rg * 0.65f, 0.9f, 0.06f, 0.08f, 0.76f, 0.78f, 0.82f, 0f}); // rungs
+        L.add(new float[]{x, 2.55f, z + 1.90f, 1.30f, 0.12f, 0.30f, 0.15f, 0.15f, 0.18f, 0f});         // light-bar base
+        L.add(new float[]{x - 0.34f, 2.67f, z + 1.90f, 0.30f, 0.16f, 0.24f, 0.20f, 0.45f, 0.98f, 0f}); // blue lights
+        L.add(new float[]{x + 0.34f, 2.67f, z + 1.90f, 0.30f, 0.16f, 0.24f, 0.20f, 0.45f, 0.98f, 0f});
         for (int st = 0; st < 4; st++)                                                          // rear chevron plate
-            L.add(new float[]{x, 0.98f + st * 0.32f, z - 2.24f, 1.9f, 0.30f, 0.05f,
+            L.add(new float[]{x, 0.92f + st * 0.30f, z - 2.38f, 1.86f, 0.28f, 0.05f,
                     st % 2 == 0 ? 0.85f : 0.95f, st % 2 == 0 ? 0.12f : 0.93f, st % 2 == 0 ? 0.10f : 0.88f, 0f});
+        for (int s = -1; s <= 1; s += 2)
+            L.add(new float[]{x + s * 0.80f, 2.18f, z - 2.375f, 0.22f, 0.10f, 0.06f, 0.85f, 0.15f, 0.12f, 0f}); // taillights
     }
-
     /** A parked police patrol car (yaw 0, nose toward +z): white body, blue door band + bonnet stripe,
      *  dark glass cabin, blue light bar. */
     private static void addPoliceCar(List<float[]> L, float x, float z) {
         float wr = 0.90f, wg = 0.91f, wb = 0.93f;                                              // white paint
         float br = 0.13f, bg = 0.30f, bb = 0.72f;                                              // police blue
         L.add(new float[]{x, 0.72f, z, 1.78f, 0.52f, 4.25f, wr, wg, wb, 0f});                  // body
-        for (float wz : new float[]{z + 1.42f, z - 1.42f}) for (int s = -1; s <= 1; s += 2)
-            addWheel(L, x + s * 0.86f, 0.36f, wz, 0.7f, 0.26f);
+        for (float wz : new float[]{z + 1.42f, z - 1.42f}) {
+            L.add(new float[]{x, 0.46f, wz, 1.82f, 0.48f, 0.84f, 0.10f, 0.10f, 0.12f, 0f});   // dark wheel arches
+            for (int s = -1; s <= 1; s += 2) addWheel(L, x + s * 0.80f, 0.36f, wz, 0.70f, 0.26f);
+        }
         L.add(new float[]{x, 1.26f, z - 0.25f, 1.58f, 0.56f, 2.05f, 0.16f, 0.19f, 0.24f, 0f}); // glass cabin
         L.add(new float[]{x, 1.57f, z - 0.25f, 1.62f, 0.08f, 2.10f, wr, wg, wb, 0f});          // roof
         for (int s = -1; s <= 1; s += 2)                                                       // blue door band
             L.add(new float[]{x + s * 0.90f, 0.78f, z + 0.1f, 0.03f, 0.34f, 2.4f, br, bg, bb, 0f});
-        L.add(new float[]{x, 1.00f, z + 1.68f, 1.55f, 0.06f, 0.85f, br, bg, bb, 0f});          // bonnet stripe (front edge inset off the nose plane)
+        L.add(new float[]{x, 1.00f, z + 1.68f, 0.46f, 0.06f, 0.85f, br, bg, bb, 0f});          // narrow bonnet stripe (edges clear of the nose plane)
         L.add(new float[]{x, 0.62f, z + 2.14f, 1.70f, 0.26f, 0.08f, 0.55f, 0.56f, 0.58f, 0f}); // front bumper
         L.add(new float[]{x, 0.62f, z - 2.14f, 1.70f, 0.26f, 0.08f, 0.55f, 0.56f, 0.58f, 0f}); // rear bumper
-        L.add(new float[]{x, 0.84f, z + 2.13f, 1.10f, 0.14f, 0.05f, 0.13f, 0.14f, 0.16f, 0f}); // grille
+        L.add(new float[]{x, 0.84f, z + 2.13f, 0.90f, 0.14f, 0.05f, 0.13f, 0.14f, 0.16f, 0f}); // grille
+        for (int s = -1; s <= 1; s += 2) {
+            L.add(new float[]{x + s * 0.60f, 0.84f, z + 2.14f, 0.24f, 0.10f, 0.06f, 0.96f, 0.93f, 0.72f, 0f}); // headlights
+            L.add(new float[]{x + s * 0.60f, 0.84f, z - 2.14f, 0.24f, 0.10f, 0.06f, 0.85f, 0.14f, 0.12f, 0f}); // taillights
+            L.add(new float[]{x + s * 0.82f, 1.18f, z + 0.68f, 0.10f, 0.10f, 0.09f, 0.86f, 0.87f, 0.90f, 0f}); // door mirrors
+        }
         L.add(new float[]{x, 1.66f, z - 0.25f, 1.05f, 0.13f, 0.30f, 0.15f, 0.15f, 0.18f, 0f}); // light-bar base
         L.add(new float[]{x - 0.26f, 1.76f, z - 0.25f, 0.26f, 0.15f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
         L.add(new float[]{x + 0.26f, 1.76f, z - 0.25f, 0.26f, 0.15f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
@@ -8329,8 +8356,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 1.02f, z + 0.08f, 2.0f, 0.16f, 0.30f, 0.36f, 0.25f, 0.15f, 0f});     // top rail
         for (int s = -1; s <= 1; s += 2) {                                                        // two wheels flat against it
             L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.2f, 0.7f, 0.7f, 0.12f, 0.34f, 0.24f, 0.14f, 0f});
-            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.2f, 0.5f, 0.5f, 0.14f, 0.30f, 0.20f, 0.12f, 45f});
-            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.22f, 0.14f, 0.14f, 0.16f, 0.44f, 0.34f, 0.22f, 0f});  // hub
+            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.21f, 0.30f, 0.30f, 0.15f, 0.26f, 0.18f, 0.10f, 0f});  // rim
+            L.add(new float[]{x + s * 0.7f, 0.55f, z - 0.22f, 0.14f, 0.14f, 0.17f, 0.44f, 0.34f, 0.22f, 0f});  // hub
         }
         for (int i = 0; i < 3; i++)                                                               // sandbag row in front
             L.add(new float[]{x - 0.6f + i * 0.6f, 0.20f, z - 0.55f, 0.56f, 0.34f, 0.42f, 0.55f, 0.50f, 0.36f, i * 12f});
@@ -8413,11 +8440,11 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         // door colour. Collision-safe: with the default 2.3 m door its underside sits at ~2.5 m, above the
         // 1.8 m overhead-ignore band of collide(); the 1.95 gate skips only extreme low-door custom levels.
         float canY = Math.min(doorH + 0.26f, h - 0.12f), canProj = 0.55f;
-        if (doorStyle != 3 && canY - 0.05f > 1.95f) {
+        if (doorStyle != 3 && doorW < 2.2f && canY - 0.05f > 1.95f) {
             if (axis == 0) L.add(new float[]{dcx, canY, dcz + nnz * (t * 0.5f + canProj * 0.5f), doorW + 0.5f, 0.09f, canProj, dr * 0.72f, dg * 0.72f, db * 0.72f, 0f});
             else           L.add(new float[]{dcx + nnx * (t * 0.5f + canProj * 0.5f), canY, dcz, canProj, 0.09f, doorW + 0.5f, dr * 0.72f, dg * 0.72f, db * 0.72f, 0f});
         }
-        if (doorStyle == 3) {                              // striped shop awning over the storefront door
+        if (doorStyle == 3 && doorW < 2.5f) {              // striped shop awning over the storefront door
             float awY = Math.min(doorH + 0.22f, h - 0.15f), aw = doorW + 0.5f, proj = 0.85f;
             for (int s = 0; s < 3; s++) {
                 boolean red = (s % 2 == 0);
@@ -8454,7 +8481,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         if (b.length < 12) { float[] nb = new float[12]; System.arraycopy(b, 0, nb, 0, b.length); b = nb; L.set(idx, nb); }
         b[0] = px + x * ca + z * sa;                       // Ry(yaw): new centre
         b[2] = pz - x * sa + z * ca;
-        b[9] = yawDeg;                                      // visual + collision orientation
+        b[9] += yawDeg;                                     // compose with any authored accent yaw (octagon caps etc.)
     }
 
     /** Rotate the door leaf record about (px,pz) and stash the house yaw in slot 13 (drawn + collided oriented). */
@@ -9074,7 +9101,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                                 float inx, float inz, float yawDeg) {
         int b0 = L.size();
         if (arch == 6) {                                             // FIRE HALL
-            if (inx >= 2.85f) {                                      // the engine, parked in its bay (left of the lane)
+            if (inx >= 2.45f) {                                      // the engine, parked in its bay (left of the lane; matches truckInside)
                 float bayX = cx - (inx - 1.18f);
                 addFireEngineCompact(L, bayX, cz + inz - 2.07f, ceilH);
             }
@@ -9122,24 +9149,37 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, cx, cz, yawDeg);
     }
 
-    /** A shortened fire engine that fits inside the hall (3.9 m, nose toward local +z / the gate). */
+    /** A shortened fire engine that fits inside the hall (3.8 m, nose toward local +z / the gate). */
     private static void addFireEngineCompact(List<float[]> L, float x, float z, float ceilH) {
         float rr = 0.78f, rg2 = 0.13f, rb = 0.11f;
-        L.add(new float[]{x, 0.50f, z, 1.80f, 0.28f, 3.7f, 0.15f, 0.15f, 0.17f, 0f});          // chassis
-        for (float wz : new float[]{z + 1.25f, z - 1.15f}) for (int s = -1; s <= 1; s += 2)
-            addWheel(L, x + s * 0.90f, 0.42f, wz, 0.84f, 0.28f);
-        L.add(new float[]{x, 1.48f, z + 1.35f, 1.98f, 1.30f, 1.15f, rr, rg2, rb, 0f});          // cab
-        L.add(new float[]{x, 1.80f, z + 1.94f, 1.72f, 0.46f, 0.06f, 0.16f, 0.19f, 0.23f, 0f});  // windshield
-        L.add(new float[]{x, 0.94f, z + 1.96f, 1.88f, 0.30f, 0.08f, 0.58f, 0.59f, 0.61f, 0f});  // bumper
-        L.add(new float[]{x, 1.58f, z - 0.55f, 2.06f, 1.66f, 2.55f, rr, rg2, rb, 0f});          // body
+        L.add(new float[]{x, 0.40f, z, 1.60f, 0.18f, 3.6f, 0.13f, 0.13f, 0.15f, 0f});          // low chassis rail
+        for (float wz : new float[]{z + 1.22f, z - 1.12f}) {                                   // wheels sunk in dark arches
+            L.add(new float[]{x, 0.58f, wz, 1.76f, 0.58f, 0.96f, 0.10f, 0.10f, 0.12f, 0f});
+            for (int s = -1; s <= 1; s += 2) addWheel(L, x + s * 0.76f, 0.42f, wz, 0.84f, 0.28f);
+        }
+        L.add(new float[]{x, 1.40f, z + 1.35f, 1.86f, 1.10f, 1.10f, rr, rg2, rb, 0f});         // cab
+        L.add(new float[]{x, 2.10f, z + 1.31f, 1.78f, 0.38f, 0.98f, rr, rg2, rb, 0f});         // cab roof ring
+        L.add(new float[]{x, 2.08f, z + 1.76f, 1.60f, 0.40f, 0.10f, 0.16f, 0.19f, 0.23f, 0f}); // windshield band
         for (int s = -1; s <= 1; s += 2)
-            L.add(new float[]{x + s * 1.04f, 1.55f, z - 0.55f, 0.04f, 1.12f, 2.05f, 0.74f, 0.76f, 0.80f, 0f});  // shutters
-        float topY = Math.min(2.30f, ceilH - 0.22f);
-        L.add(new float[]{x, topY, z + 1.35f, 1.20f, 0.11f, 0.30f, 0.15f, 0.15f, 0.18f, 0f});   // light bar
-        L.add(new float[]{x - 0.30f, topY + 0.10f, z + 1.35f, 0.26f, 0.13f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
-        L.add(new float[]{x + 0.30f, topY + 0.10f, z + 1.35f, 0.26f, 0.13f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
+            L.add(new float[]{x + s * 0.925f, 2.06f, z + 1.33f, 0.05f, 0.36f, 0.66f, 0.16f, 0.19f, 0.23f, 0f}); // side glass
+        L.add(new float[]{x, 0.84f, z + 1.95f, 1.80f, 0.30f, 0.12f, 0.90f, 0.90f, 0.92f, 0f}); // white bumper
+        L.add(new float[]{x, 1.30f, z + 1.93f, 0.95f, 0.22f, 0.07f, 0.35f, 0.36f, 0.40f, 0f}); // grille
+        for (int s = -1; s <= 1; s += 2)
+            L.add(new float[]{x + s * 0.64f, 1.30f, z + 1.935f, 0.22f, 0.16f, 0.06f, 0.96f, 0.92f, 0.70f, 0f}); // headlights
+        L.add(new float[]{x, 1.50f, z - 0.49f, 1.92f, 1.50f, 2.66f, rr, rg2, rb, 0f});         // equipment body
+        for (int s = -1; s <= 1; s += 2) {                                                     // one shutter bay per side
+            L.add(new float[]{x + s * 0.965f, 1.48f, z - 0.51f, 0.03f, 1.06f, 2.05f, 0.74f, 0.76f, 0.80f, 0f});
+            for (int lam = 0; lam < 3; lam++)
+                L.add(new float[]{x + s * 0.9845f, 1.14f + lam * 0.32f, z - 0.51f, 0.021f, 0.045f, 1.95f, 0.55f, 0.57f, 0.61f, 0f});
+        }
+        float topY = Math.min(2.36f, ceilH - 0.22f);                                           // beacons stay under the hall ceiling
+        L.add(new float[]{x, topY, z + 1.33f, 1.20f, 0.11f, 0.28f, 0.15f, 0.15f, 0.18f, 0f});  // light-bar base
+        L.add(new float[]{x - 0.30f, topY + 0.11f, z + 1.33f, 0.26f, 0.13f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
+        L.add(new float[]{x + 0.30f, topY + 0.11f, z + 1.33f, 0.26f, 0.13f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
+        for (int st = 0; st < 3; st++)                                                          // rear chevron plate
+            L.add(new float[]{x, 0.90f + st * 0.30f, z - 1.835f, 1.76f, 0.28f, 0.05f,
+                    st % 2 == 0 ? 0.85f : 0.95f, st % 2 == 0 ? 0.12f : 0.93f, st % 2 == 0 ? 0.10f : 0.88f, 0f});
     }
-
     /** True if two XZ footprints (centre + full extents) overlap — used to keep furniture off the door + each other. */
     private static boolean aabbOverlap(float ax, float az, float aw, float ad, float bx, float bz, float bw, float bd) {
         return Math.abs(ax - bx) < (aw + bw) * 0.5f && Math.abs(az - bz) < (ad + bd) * 0.5f;
