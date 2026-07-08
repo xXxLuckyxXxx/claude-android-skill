@@ -7064,6 +7064,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         return Math.abs(x) < 3.6f && z > 0.8f && z < 13.5f;
     }
 
+    private int forceArch;                                      // >=0: the guaranteed-landmark sweep pins this archetype
+
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         this.clutterPts = new java.util.ArrayList<float[]>();   // record props so benches don't spawn on top of them
         this.pathStrokes = new java.util.ArrayList<float[]>();
@@ -7071,6 +7073,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.gardenTreePts = new java.util.ArrayList<float[]>();
         this.waterDiscs = null; this.waterStreams = null;       // re-registered by this build's fountain (if any)
         lmPolice = false; lmFire = false; lmChapel = false;     // one landmark of each kind per town
+        forceArch = -1;                                         // explicit: Unsafe-allocated test instances skip initializers
         // No more loose cover blocks on the plaza — the market (fountain centrepiece + a ring of
         // stalls, see addAccessories) provides the spawn cover now.
         numCover = 0;
@@ -7104,6 +7107,31 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                             ROAD_HALFW[r]);
                 }
             }
+        }
+        // the stations are story landmarks — if the roll-based pass missed one (its wide lot kept
+        // losing to dense neighbours), sweep the lanes again offering ONLY that station to every
+        // remaining gap until it fits. The farm hamlet fields a volunteer fire squad but no police.
+        int[] wantedStations = levelId == 1 ? new int[]{6} : new int[]{6, 5};
+        for (int wa : wantedStations) {
+            if (wa == 6 ? lmFire : lmPolice) continue;
+            forceArch = wa;
+            for (int r = 0; r < ROAD_PTS.length && !(wa == 6 ? lmFire : lmPolice); r++) {
+                float[][] P = ROAD_PTS[r];
+                float acc2 = 2.5f;
+                for (int i = 0; i + 1 < P.length && !(wa == 6 ? lmFire : lmPolice); i++) {
+                    float ax = P[i][0], az = P[i][1];
+                    float tx = P[i + 1][0] - ax, tz = P[i + 1][1] - az;
+                    float sl = (float) Math.sqrt(tx * tx + tz * tz);
+                    acc2 -= sl;
+                    if (acc2 > 0f) continue;
+                    acc2 = 2.5f;
+                    tx /= sl; tz /= sl;
+                    for (int side = -1; side <= 1 && !(wa == 6 ? lmFire : lmPolice); side += 2)
+                        placeVillageHouse(L, doors, houses, gardens, rc, ax, az, tx, tz, tz * side, -tx * side,
+                                ROAD_HALFW[r]);
+                }
+            }
+            forceArch = -1;
         }
         buildGardens(L, houses, gardens, rc);
         buildFrontPaths(L, houses);
@@ -7274,12 +7302,17 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         } else if (distSq < 11f) arch = roll < 0.40f ? 3 : (roll < 0.55f ? 9 : (roll < 0.84f ? 1 : 0));
         else if (distSq < 21f)  arch = roll < 0.52f ? 0 : (roll < 0.72f ? 1 : (roll < 0.88f ? 4 : 3));
         else                    arch = roll < 0.38f ? 0 : (roll < 0.58f ? 4 : (roll < 0.70f ? 8 : (roll < 0.90f ? 1 : 2)));
-        // public-building landmarks claim a mid-ring lot once per town (the farm gets only a field chapel)
+        // public-building landmarks claim a mid-ring lot once per town; the farm hamlet keeps a
+        // volunteer fire station (freiwillige Feuerwehr) + field chapel but no police post
         if (levelId != 1 && distSq > 13f) {
             if (!lmPolice && roll >= 0.30f && roll < 0.42f) arch = 5;
             else if (!lmFire && roll >= 0.42f && roll < 0.54f) arch = 6;
             else if (!lmChapel && distSq > 16f && roll >= 0.90f) arch = 7;
-        } else if (levelId == 1 && !lmChapel && distSq > 15f && roll >= 0.93f) arch = 7;
+        } else if (levelId == 1) {
+            if (!lmFire && distSq > 11f && roll >= 0.28f && roll < 0.42f) arch = 6;
+            else if (!lmChapel && distSq > 15f && roll >= 0.93f) arch = 7;
+        }
+        if (forceArch >= 0) arch = forceArch;                       // guaranteed-landmark sweep (see buildWorldInto)
         float w, d, h, pitch = -1f, winSize = 1f, foundH, doorW = 1.9f, doorH = 2.3f;
         int storeys, winDens; boolean chimney, trim; float[] rf; int mat; int doorStyle;
         if (arch == 0) {                                            // cottage: low, gabled, squat-to-snug
@@ -7306,14 +7339,18 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             storeys = 2; foundH = 0.34f; winDens = 3; winSize = 1.05f; chimney = false; trim = true;
             pitch = 0.6f + rc.nextFloat() * 0.3f;
             rf = new float[]{0.30f, 0.32f, 0.38f}; mat = 2; doorStyle = 2; doorW = 2.3f;
-        } else if (arch == 6) {                                     // FEUERWEHR: wide engine hall, huge red gate
-            w = 6.6f + rc.nextFloat() * 0.9f; d = 4.8f + rc.nextFloat() * 0.5f; h = 3.9f + rc.nextFloat() * 0.4f;
+        } else if (arch == 6) {                                     // FEUERWEHR: engine hall with a huge red gate
+            boolean cityFw = levelId == 2;                          // the packed old town gets a compact city station
+            w = (cityFw ? 5.5f : 6.6f) + rc.nextFloat() * (cityFw ? 0.6f : 0.9f);
+            d = 4.8f + rc.nextFloat() * 0.5f; h = 3.9f + rc.nextFloat() * 0.4f;
             storeys = 1; foundH = 0.30f; winDens = 2; winSize = 1.1f; chimney = false; trim = true;
             pitch = 0.55f + rc.nextFloat() * 0.2f;
-            rf = new float[]{0.44f, 0.17f, 0.13f}; mat = 1; doorStyle = 3; doorW = 3.4f; doorH = 2.9f;
+            rf = new float[]{0.44f, 0.17f, 0.13f}; mat = 1; doorStyle = 3; doorW = cityFw ? 3.0f : 3.4f; doorH = 2.9f;
         } else if (arch == 7) {                                     // KAPELLE: narrow, tall, steep slate roof
+            // plinth 0.50: its tall windows clamp their sill to foundH+0.12 — anything under 0.5 is
+            // "step-over" to the nav bake, so zombies pathed straight through the chapel glass
             w = 3.3f + rc.nextFloat() * 0.4f; d = 5.0f + rc.nextFloat() * 0.8f; h = 5.0f + rc.nextFloat() * 0.5f;
-            storeys = 2; foundH = 0.36f; winDens = 1; winSize = 1.5f; chimney = false; trim = true;
+            storeys = 2; foundH = 0.50f; winDens = 1; winSize = 1.5f; chimney = false; trim = true;
             pitch = 2.0f;
             rf = new float[]{0.24f, 0.26f, 0.31f}; mat = 2; doorStyle = 0; doorW = 1.7f; doorH = 2.6f;
         } else if (arch == 8) {                                     // SCHEUNE: big dark-timber barn, few windows
@@ -7388,15 +7425,55 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 yawDeg});                                            // [25] = house yaw (spins roof/windows/interior)
         // landmark signage/rooftop extras (local frame, door faces +z; spun with the house below)
         int exStart = L.size();
-        if (arch == 5) {                                            // POLIZEI: rooftop light bar over the entrance
+        if (arch == 5) {                                            // POLIZEI: a proper station front
+            // rooftop light bar over the entrance
             L.add(new float[]{cx, h + 0.44f, cz + d * 0.5f - 0.35f, 1.10f, 0.10f, 0.16f, 0.20f, 0.22f, 0.26f, 0f});
             L.add(new float[]{cx - 0.28f, h + 0.56f, cz + d * 0.5f - 0.35f, 0.22f, 0.15f, 0.15f, 0.25f, 0.45f, 0.98f, 0f});
             L.add(new float[]{cx + 0.28f, h + 0.56f, cz + d * 0.5f - 0.35f, 0.22f, 0.15f, 0.15f, 0.92f, 0.16f, 0.12f, 0f});
+            // entrance porch: two pillars carrying a canopy slab with a blue fascia (canopy is overhead)
+            float pz2 = cz + d * 0.5f;
+            for (int s = -1; s <= 1; s += 2)
+                L.add(new float[]{cx + s * (doorW * 0.5f + 0.40f), 1.25f, pz2 + 0.62f, 0.18f, 2.5f, 0.18f, 0.88f, 0.89f, 0.92f, 0f});
+            L.add(new float[]{cx, 2.62f, pz2 + 0.45f, doorW + 1.5f, 0.14f, 1.10f, 0.86f, 0.87f, 0.90f, 0f});   // canopy
+            L.add(new float[]{cx, 2.55f, pz2 + 0.99f, doorW + 1.5f, 0.16f, 0.06f, 0.16f, 0.30f, 0.62f, 0f});   // blue fascia
+            // twin blue station lamps flanking the porch (the classic Polizei blue lights)
+            for (int s = -1; s <= 1; s += 2) {
+                float lx2 = cx + s * (doorW * 0.5f + 1.15f);
+                L.add(new float[]{lx2, 0.62f, pz2 + 0.62f, 0.10f, 1.24f, 0.10f, 0.24f, 0.25f, 0.28f, 0f});     // post
+                L.add(new float[]{lx2, 1.36f, pz2 + 0.62f, 0.22f, 0.26f, 0.22f, 0.30f, 0.55f, 1.00f, 0f});     // blue lamp
+                L.add(new float[]{lx2, 1.52f, pz2 + 0.62f, 0.26f, 0.06f, 0.26f, 0.20f, 0.21f, 0.24f, 0f});     // cap
+            }
+            // badge over the canopy: blue plate + white star diamond
+            L.add(new float[]{cx, 3.25f, pz2 + 0.035f, 0.78f, 0.78f, 0.06f, 0.14f, 0.28f, 0.60f, 0f});
+            L.add(new float[]{cx, 3.25f, pz2 + 0.07f, 0.36f, 0.36f, 0.03f, 0.94f, 0.95f, 0.97f, 45f});
+            // rooftop radio mast on the back corner
+            float mx2 = cx - w * 0.5f + 0.75f, mz2 = cz - d * 0.5f + 0.75f;
+            L.add(new float[]{mx2, h + 0.18f, mz2, 0.42f, 0.36f, 0.42f, 0.32f, 0.33f, 0.36f, 0f});
+            L.add(new float[]{mx2, h + 1.55f, mz2, 0.09f, 2.6f, 0.09f, 0.38f, 0.39f, 0.42f, 0f});
+            L.add(new float[]{mx2, h + 1.35f, mz2, 0.62f, 0.06f, 0.06f, 0.35f, 0.36f, 0.39f, 0f});             // cross arms
+            L.add(new float[]{mx2, h + 2.15f, mz2, 0.45f, 0.06f, 0.06f, 0.35f, 0.36f, 0.39f, 0f});
+            L.add(new float[]{mx2, h + 2.92f, mz2, 0.12f, 0.12f, 0.12f, 0.82f, 0.30f, 0.24f, 45f});            // beacon tip
+            addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, false);
             lmPolice = true;
-        } else if (arch == 6) {                                     // FEUERWEHR: hose tower + siren dome
+        } else if (arch == 6) {                                     // FEUERWEHR: engine-hall front + hose tower
+            // hose-drying tower with a proper cap ridge + hanging hoses
             L.add(new float[]{cx - w * 0.5f + 0.7f, h + 0.85f, cz - d * 0.5f + 0.7f, 1.15f, 1.7f, 1.15f, p[0] * 0.90f, p[1] * 0.90f, p[2] * 0.90f, 0f});
             L.add(new float[]{cx - w * 0.5f + 0.7f, h + 1.80f, cz - d * 0.5f + 0.7f, 1.35f, 0.14f, 1.35f, 0.30f, 0.24f, 0.20f, 0f});
-            L.add(new float[]{cx + 0.4f, h + 0.90f, cz, 0.30f, 0.22f, 0.30f, 0.90f, 0.22f, 0.16f, 45f});
+            L.add(new float[]{cx - w * 0.5f + 0.7f, h + 1.98f, cz - d * 0.5f + 0.7f, 0.95f, 0.24f, 0.95f, 0.34f, 0.27f, 0.22f, 0f});
+            L.add(new float[]{cx - w * 0.5f + 0.42f, h + 0.55f, cz - d * 0.5f + 0.7f, 0.10f, 1.1f, 0.16f, 0.62f, 0.14f, 0.10f, 0f});  // drying hoses
+            L.add(new float[]{cx - w * 0.5f + 0.95f, h + 0.45f, cz - d * 0.5f + 0.7f, 0.10f, 0.9f, 0.16f, 0.55f, 0.12f, 0.09f, 0f});
+            // siren dome ON the hose-tower cap (it used to sit over the pitched roof and floated mid-air)
+            L.add(new float[]{cx - w * 0.5f + 0.7f, h + 2.21f, cz - d * 0.5f + 0.7f, 0.30f, 0.22f, 0.30f, 0.90f, 0.22f, 0.16f, 45f});
+            // engine-hall gate front: warning-striped posts flanking the big gate + white fascia + badge
+            float gz2 = cz + d * 0.5f;
+            for (int s = -1; s <= 1; s += 2) for (int seg = 0; seg < 4; seg++)
+                L.add(new float[]{cx + s * (doorW * 0.5f + 0.28f), 0.36f + seg * 0.72f, gz2 + 0.10f, 0.22f, 0.72f, 0.15f,
+                        seg % 2 == 0 ? 0.85f : 0.94f, seg % 2 == 0 ? 0.14f : 0.92f, seg % 2 == 0 ? 0.11f : 0.87f, 0f});
+            L.add(new float[]{cx, doorH + 0.62f, gz2 + 0.07f, Math.min(w - 0.5f, doorW + 2.4f), 0.62f, 0.12f, 0.95f, 0.93f, 0.88f, 0f}); // fascia
+            L.add(new float[]{cx, doorH + 0.40f, gz2 + 0.135f, Math.min(w - 0.7f, doorW + 2.2f), 0.10f, 0.03f, 0.80f, 0.14f, 0.11f, 0f}); // red trim line
+            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.14f, 0.66f, 0.50f, 0.05f, 0.78f, 0.12f, 0.10f, 0f});  // badge plate
+            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.17f, 0.28f, 0.28f, 0.03f, 0.96f, 0.94f, 0.90f, 45f}); // white diamond
+            addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, true);
             lmFire = true;
         } else if (arch == 7) {                                     // KAPELLE: ridge bell cote + cross
             float ridgeY = h + 0.30f + 2.0f, bz2 = cz + d * 0.5f - 0.85f;
@@ -7424,6 +7501,56 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     && clearOfHouses(houses, axc, azc, 0.28f) && !blocksAnyDoor(houses, axc, azc)) {
                 addClutter(L, rc, axc, azc);
                 clutterPts.add(new float[]{axc, azc});
+            }
+        }
+    }
+
+    /** The station yard: a service vehicle (fire engine / patrol car) parked along one side wall, plus a
+     *  hydrant at the front corner for the fire station. Boxes are added in the house's yaw-0 local frame
+     *  (the caller's rotate loop spins them); validation happens in WORLD space — the bay must clear the
+     *  asphalt, the spawn corridor, every other house/garden and every door. The claimed bay is pushed
+     *  into `gardens` so later lots/gardens/paths keep out, and into clutterPts for the prop passes. */
+    private void addStationYard(List<float[]> L, List<float[]> gardens, List<float[]> houses, Random rc,
+                                float cx, float cz, float w, float d, float ca, float sa, float yawDeg,
+                                boolean fire) {
+        float halfW = fire ? 1.15f : 0.95f, halfL = fire ? 2.70f : 2.25f;      // vehicle footprint halves
+        int firstSide = rc.nextBoolean() ? 1 : -1;
+        for (int si = 0; si < 2; si++) {
+            float side = si == 0 ? firstSide : -firstSide;
+            float lx = side * (w * 0.5f + halfW + 0.55f), lz = d * 0.5f - halfL + 0.35f;   // nose toward the street
+            float vx = cx + lx * ca + lz * sa, vz = cz - lx * sa + lz * ca;                // world centre
+            boolean ok = vx * vx + vz * vz < 31.5f * 31.5f && !inSpawnLane(vx, vz) && !blocksAnyDoor(houses, vx, vz);
+            for (int cI = 0; ok && cI < 9; cI++) {                                          // corners + edges + centre
+                float ex = (cI % 3 - 1) * (halfW + 0.30f), ez = (cI / 3 - 1) * (halfL + 0.30f);
+                float wx = cx + (lx + ex) * ca + (lz + ez) * sa, wz = cz - (lx + ex) * sa + (lz + ez) * ca;
+                if (roadSd(wx, wz) < 0.40f || wx * wx + wz * wz > 32f * 32f || inSpawnLane(wx, wz)) ok = false;
+            }
+            for (int oi = 0; ok && oi < houses.size() - 1; oi++) {                          // every OTHER house
+                float[] o = houses.get(oi);
+                if (obbOverlap(vx, vz, halfW, halfL, yawDeg, o[0], o[1], o[2] * 0.5f, o[3] * 0.5f,
+                        o.length > 25 ? o[25] : 0f, 0.35f)) ok = false;
+            }
+            for (int gi = 0; ok && gi < gardens.size(); gi++) {
+                float[] g = gardens.get(gi);
+                if (obbOverlap(vx, vz, halfW, halfL, yawDeg, g[0], g[1], g[2], g[3], g[4], 0.35f)) ok = false;
+            }
+            if (!ok) continue;
+            if (fire) addFireEngine(L, cx + lx, cz + lz);                                   // local frame; caller rotates
+            else      addPoliceCar(L, cx + lx, cz + lz);
+            gardens.add(new float[]{vx, vz, halfW + 0.30f, halfL + 0.30f, yawDeg});         // reserve the bay
+            for (float t = -1f; t <= 1f; t += 1f)
+                clutterPts.add(new float[]{cx + lx * ca + (lz + t * halfL) * sa, cz - lx * sa + (lz + t * halfL) * ca});
+            break;
+        }
+        if (fire) {                                                                          // hydrant at a front corner
+            for (int s = -1; s <= 1; s += 2) {
+                float hx2 = s * (w * 0.5f + 0.85f), hz2 = d * 0.5f + 0.55f;
+                float wx = cx + hx2 * ca + hz2 * sa, wz = cz - hx2 * sa + hz2 * ca;
+                if (roadSd(wx, wz) < 0.45f || wx * wx + wz * wz > 31.5f * 31.5f || inSpawnLane(wx, wz)) continue;
+                if (!clearOfHouses(houses, wx, wz, 0.22f) || blocksAnyDoor(houses, wx, wz)) continue;
+                addHydrant(L, cx + hx2, cz + hz2);
+                clutterPts.add(new float[]{wx, wz});
+                break;
             }
         }
     }
@@ -7601,6 +7728,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                     if (roadSd(sx, sz) < 0.30f || !clearOfHouses(houses, sx, sz, 0.15f)) continue;
                     if (blocksAnyDoor(houses, sx, sz)) continue;
                     if (!clearOfPts(placed, sx, sz, 3f) || !clearOfPts(marketPts, sx, sz, 2.8f)) continue;
+                    if (!clearOfPts(clutterPts, sx, sz, 1.2f)) continue;   // e.g. the station vehicle bays
                     if (lamp) {
                         placed.add(new float[]{sx, sz});
                         addLamp(L, sx, sz); lampPts.add(new float[]{sx, sz});
@@ -7647,6 +7775,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             if (roadSd(x, z) < 2.3f || !treeSpotOk(x, z)) continue;   // grass/dirt only
             if (!clearOfHouses(houses, x, z, 1.3f) || blocksAnyDoorCrown(houses, x, z, 1.6f)) continue;
             if (!clearOfPts(trees, x, z, 3.4f) || !clearOfPts(lampPts, x, z, 1.2f) || !clearOfPts(benchPts, x, z, 1.4f)) continue;
+            if (!clearOfPts(clutterPts, x, z, 1.9f)) continue;        // never sprout inside a recorded prop/vehicle bay
             if (!clearOfPts(marketPts, x, z, 3.0f)) continue;         // never in front of the market stands
             trees.add(new float[]{x, z, 0.8f + rc.nextFloat() * 0.6f});
             n++;
@@ -7780,22 +7909,35 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
 
     /** Do two yawed rectangles (centre, half sizes, yaw°) overlap when the first is inflated by margin?
      *  Tested by sampling each rect's corners + edge midpoints + centre against the other (build-time only). */
+    /** Exact separating-axis test for two yawed rectangles (the first inflated by margin). The old
+     *  sample-9-points approximation missed thin X-crossings where neither box's sample points fell
+     *  inside the other — two houses could genuinely intersect and still pass. */
     private static boolean obbOverlap(float cx1, float cz1, float hw1, float hd1, float yaw1,
                                       float cx2, float cz2, float hw2, float hd2, float yaw2, float margin) {
         float rr = (float) Math.hypot(hw1 + margin, hd1 + margin) + (float) Math.hypot(hw2, hd2);
         float dcx = cx2 - cx1, dcz = cz2 - cz1;
         if (dcx * dcx + dcz * dcz > rr * rr) return false;                     // circumradius reject
-        return obbPtsInside(cx2, cz2, hw2, hd2, yaw2, cx1, cz1, hw1 + margin, hd1 + margin, yaw1)
-            || obbPtsInside(cx1, cz1, hw1 + margin, hd1 + margin, yaw1, cx2, cz2, hw2 + margin * 0.5f, hd2 + margin * 0.5f, yaw2);
+        return !satSeparated(cx1, cz1, hw1 + margin, hd1 + margin, yaw1, cx2, cz2, hw2, hd2, yaw2)
+            && !satSeparated(cx2, cz2, hw2, hd2, yaw2, cx1, cz1, hw1 + margin, hd1 + margin, yaw1);
     }
-    private static boolean obbPtsInside(float cxA, float czA, float hwA, float hdA, float yawA,
+    /** True if any of A's two edge axes separates the boxes (call both ways for the full SAT). */
+    private static boolean satSeparated(float cxA, float czA, float hwA, float hdA, float yawA,
                                         float cxB, float czB, float hwB, float hdB, float yawB) {
-        double a = Math.toRadians(yawA);
-        float ca = (float) Math.cos(a), sa = (float) Math.sin(a);
-        for (int i = 0; i < 9; i++) {                                          // corners, edge mids, centre of A
-            float lx = (i % 3 - 1) * hwA, lz = (i / 3 - 1) * hdA;
-            float wx = cxA + lx * ca + lz * sa, wz = czA - lx * sa + lz * ca;  // A-local -> world (box convention)
-            if (insideYawXZ(wx, wz, cxB, czB, hwB, hdB, yawB)) return true;
+        double a = Math.toRadians(yawA), b = Math.toRadians(yawB);
+        float caA = (float) Math.cos(a), saA = (float) Math.sin(a);
+        float caB = (float) Math.cos(b), saB = (float) Math.sin(b);
+        // A's local axes in world space (matches the lx*ca + lz*sa box convention)
+        float[][] axes = {{caA, -saA}, {saA, caA}};                            // local x-axis, local z-axis
+        float[] extA = {hwA, hdA};
+        // B's axes in world space + extents
+        float bx1 = caB, bz1 = -saB, bx2 = saB, bz2 = caB;
+        float dx = cxB - cxA, dz = czB - czA;
+        for (int i = 0; i < 2; i++) {
+            float ax = axes[i][0], az = axes[i][1];
+            float dist = Math.abs(dx * ax + dz * az);
+            float ra = extA[i];
+            float rb = hwB * Math.abs(bx1 * ax + bz1 * az) + hdB * Math.abs(bx2 * ax + bz2 * az);
+            if (dist > ra + rb) return true;
         }
         return false;
     }
@@ -8082,6 +8224,71 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 3.7f, z, 0.42f, 0.9f, 0.42f, sr, sg, sb, 0f});
         L.add(new float[]{x, 4.25f, z, 0.24f, 0.4f, 0.24f, sr * 0.96f, sg * 0.96f, sb * 0.94f, 0f});
         L.add(new float[]{x, 4.55f, z, 0.10f, 0.3f, 0.10f, 0.30f, 0.24f, 0.14f, 0f});             // weathered bronze tip
+    }
+
+    /** A boxy truck wheel: dark tyre block + lighter hub, protruding from the chassis side. */
+    private static void addWheel(List<float[]> L, float x, float y, float z, float dia, float wid) {
+        L.add(new float[]{x, y, z, wid, dia, dia, 0.09f, 0.09f, 0.10f, 0f});                  // tyre
+        L.add(new float[]{x, y, z, wid + 0.04f, dia * 0.42f, dia * 0.42f, 0.30f, 0.30f, 0.33f, 0f});  // hub
+    }
+
+    /** A parked fire engine (built at yaw 0, nose toward +z; the caller spins it with the station):
+     *  red cab + crew body, silver roller shutters, roof ladder, blue light bar, rear chevron plate. */
+    private static void addFireEngine(List<float[]> L, float x, float z) {
+        float rr = 0.78f, rg2 = 0.13f, rb = 0.11f;                                            // signal red
+        L.add(new float[]{x, 0.55f, z, 1.86f, 0.30f, 5.1f, 0.15f, 0.15f, 0.17f, 0f});         // chassis frame
+        for (float wz : new float[]{z + 1.7f, z - 1.5f}) for (int s = -1; s <= 1; s += 2)
+            addWheel(L, x + s * 0.93f, 0.46f, wz, 0.92f, 0.30f);
+        L.add(new float[]{x, 1.62f, z + 1.85f, 2.06f, 1.44f, 1.45f, rr, rg2, rb, 0f});        // cab
+        L.add(new float[]{x, 1.98f, z + 2.60f, 1.80f, 0.52f, 0.06f, 0.16f, 0.19f, 0.23f, 0f});// windshield
+        L.add(new float[]{x, 1.02f, z + 2.62f, 1.96f, 0.34f, 0.10f, 0.58f, 0.59f, 0.61f, 0f});// grille + bumper
+        L.add(new float[]{x, 1.78f, z - 0.65f, 2.16f, 1.86f, 3.15f, rr, rg2, rb, 0f});        // equipment body
+        for (int s = -1; s <= 1; s += 2) {
+            L.add(new float[]{x + s * 1.09f, 1.72f, z - 0.65f, 0.04f, 1.28f, 2.55f, 0.74f, 0.76f, 0.80f, 0f});  // roller shutters
+            for (int lam = 0; lam < 3; lam++)                                                  // shutter lamellae
+                L.add(new float[]{x + s * 1.115f, 1.30f + lam * 0.42f, z - 0.65f, 0.015f, 0.05f, 2.45f, 0.52f, 0.54f, 0.58f, 0f});
+        }
+        L.add(new float[]{x - 0.48f, 2.82f, z - 0.6f, 0.08f, 0.10f, 3.1f, 0.80f, 0.82f, 0.86f, 0f});   // roof ladder rails
+        L.add(new float[]{x + 0.48f, 2.82f, z - 0.6f, 0.08f, 0.10f, 3.1f, 0.80f, 0.82f, 0.86f, 0f});
+        for (int rg = 0; rg < 5; rg++)
+            L.add(new float[]{x, 2.84f, z - 1.9f + rg * 0.65f, 0.9f, 0.06f, 0.08f, 0.76f, 0.78f, 0.82f, 0f});   // rungs
+        L.add(new float[]{x, 2.44f, z + 1.85f, 1.30f, 0.12f, 0.32f, 0.15f, 0.15f, 0.18f, 0f});         // light-bar base
+        L.add(new float[]{x - 0.34f, 2.56f, z + 1.85f, 0.30f, 0.16f, 0.24f, 0.20f, 0.45f, 0.98f, 0f}); // blue lights
+        L.add(new float[]{x + 0.34f, 2.56f, z + 1.85f, 0.30f, 0.16f, 0.24f, 0.20f, 0.45f, 0.98f, 0f});
+        for (int st = 0; st < 4; st++)                                                          // rear chevron plate
+            L.add(new float[]{x, 0.98f + st * 0.32f, z - 2.24f, 1.9f, 0.30f, 0.05f,
+                    st % 2 == 0 ? 0.85f : 0.95f, st % 2 == 0 ? 0.12f : 0.93f, st % 2 == 0 ? 0.10f : 0.88f, 0f});
+    }
+
+    /** A parked police patrol car (yaw 0, nose toward +z): white body, blue door band + bonnet stripe,
+     *  dark glass cabin, blue light bar. */
+    private static void addPoliceCar(List<float[]> L, float x, float z) {
+        float wr = 0.90f, wg = 0.91f, wb = 0.93f;                                              // white paint
+        float br = 0.13f, bg = 0.30f, bb = 0.72f;                                              // police blue
+        L.add(new float[]{x, 0.72f, z, 1.78f, 0.52f, 4.25f, wr, wg, wb, 0f});                  // body
+        for (float wz : new float[]{z + 1.42f, z - 1.42f}) for (int s = -1; s <= 1; s += 2)
+            addWheel(L, x + s * 0.86f, 0.36f, wz, 0.7f, 0.26f);
+        L.add(new float[]{x, 1.26f, z - 0.25f, 1.58f, 0.56f, 2.05f, 0.16f, 0.19f, 0.24f, 0f}); // glass cabin
+        L.add(new float[]{x, 1.57f, z - 0.25f, 1.62f, 0.08f, 2.10f, wr, wg, wb, 0f});          // roof
+        for (int s = -1; s <= 1; s += 2)                                                       // blue door band
+            L.add(new float[]{x + s * 0.90f, 0.78f, z + 0.1f, 0.03f, 0.34f, 2.4f, br, bg, bb, 0f});
+        L.add(new float[]{x, 1.00f, z + 1.7f, 1.55f, 0.06f, 0.85f, br, bg, bb, 0f});           // bonnet stripe
+        L.add(new float[]{x, 0.62f, z + 2.14f, 1.70f, 0.26f, 0.08f, 0.55f, 0.56f, 0.58f, 0f}); // front bumper
+        L.add(new float[]{x, 0.62f, z - 2.14f, 1.70f, 0.26f, 0.08f, 0.55f, 0.56f, 0.58f, 0f}); // rear bumper
+        L.add(new float[]{x, 0.84f, z + 2.13f, 1.10f, 0.14f, 0.05f, 0.13f, 0.14f, 0.16f, 0f}); // grille
+        L.add(new float[]{x, 1.66f, z - 0.25f, 1.05f, 0.13f, 0.30f, 0.15f, 0.15f, 0.18f, 0f}); // light-bar base
+        L.add(new float[]{x - 0.26f, 1.76f, z - 0.25f, 0.26f, 0.15f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
+        L.add(new float[]{x + 0.26f, 1.76f, z - 0.25f, 0.26f, 0.15f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
+    }
+
+    /** A red street hydrant: plinth, barrel body, domed cap and two side nozzles. */
+    private static void addHydrant(List<float[]> L, float x, float z) {
+        L.add(new float[]{x, 0.06f, z, 0.30f, 0.12f, 0.30f, 0.30f, 0.30f, 0.32f, 0f});
+        L.add(new float[]{x, 0.36f, z, 0.22f, 0.52f, 0.22f, 0.80f, 0.16f, 0.12f, 0f});
+        L.add(new float[]{x, 0.36f, z, 0.20f, 0.48f, 0.20f, 0.76f, 0.14f, 0.11f, 45f});
+        L.add(new float[]{x, 0.66f, z, 0.16f, 0.12f, 0.16f, 0.86f, 0.20f, 0.15f, 45f});        // cap
+        L.add(new float[]{x - 0.14f, 0.42f, z, 0.10f, 0.10f, 0.10f, 0.70f, 0.13f, 0.10f, 0f}); // nozzles
+        L.add(new float[]{x + 0.14f, 0.42f, z, 0.10f, 0.10f, 0.10f, 0.70f, 0.13f, 0.10f, 0f});
     }
 
     /** A street barricade: an overturned cart with two wheels, a sandbag row and a barrel — all spun by yaw. */
