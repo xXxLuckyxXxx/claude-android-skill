@@ -7065,6 +7065,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     private int forceArch;                                      // >=0: the guaranteed-landmark sweep pins this archetype
+    private java.util.List<float[]> stationRects;               // {cx, cz, arch} per placed station (interior lookup)
 
     private void buildWorldInto(List<float[]> L, List<float[]> doors, List<float[]> houses) {
         this.clutterPts = new java.util.ArrayList<float[]>();   // record props so benches don't spawn on top of them
@@ -7074,6 +7075,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         this.waterDiscs = null; this.waterStreams = null;       // re-registered by this build's fountain (if any)
         lmPolice = false; lmFire = false; lmChapel = false;     // one landmark of each kind per town
         forceArch = -1;                                         // explicit: Unsafe-allocated test instances skip initializers
+        stationRects = new java.util.ArrayList<float[]>();
         // No more loose cover blocks on the plaza — the market (fountain centrepiece + a ring of
         // stalls, see addAccessories) provides the spawn cover now.
         numCover = 0;
@@ -7435,7 +7437,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             for (int s = -1; s <= 1; s += 2)
                 L.add(new float[]{cx + s * (doorW * 0.5f + 0.40f), 1.25f, pz2 + 0.62f, 0.18f, 2.5f, 0.18f, 0.88f, 0.89f, 0.92f, 0f});
             L.add(new float[]{cx, 2.62f, pz2 + 0.45f, doorW + 1.5f, 0.14f, 1.10f, 0.86f, 0.87f, 0.90f, 0f});   // canopy
-            L.add(new float[]{cx, 2.55f, pz2 + 0.99f, doorW + 1.5f, 0.16f, 0.06f, 0.16f, 0.30f, 0.62f, 0f});   // blue fascia
+            L.add(new float[]{cx, 2.55f, pz2 + 0.99f, doorW + 1.44f, 0.16f, 0.06f, 0.16f, 0.30f, 0.62f, 0f});  // blue fascia (ends inset off the canopy's)
             // twin blue station lamps flanking the porch (the classic Polizei blue lights)
             for (int s = -1; s <= 1; s += 2) {
                 float lx2 = cx + s * (doorW * 0.5f + 1.15f);
@@ -7443,37 +7445,66 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 L.add(new float[]{lx2, 1.36f, pz2 + 0.62f, 0.22f, 0.26f, 0.22f, 0.30f, 0.55f, 1.00f, 0f});     // blue lamp
                 L.add(new float[]{lx2, 1.52f, pz2 + 0.62f, 0.26f, 0.06f, 0.26f, 0.20f, 0.21f, 0.24f, 0f});     // cap
             }
-            // badge over the canopy: blue plate + white star diamond
-            L.add(new float[]{cx, 3.25f, pz2 + 0.035f, 0.78f, 0.78f, 0.06f, 0.14f, 0.28f, 0.60f, 0f});
-            L.add(new float[]{cx, 3.25f, pz2 + 0.07f, 0.36f, 0.36f, 0.03f, 0.94f, 0.95f, 0.97f, 45f});
+            // badge over the canopy: blue plate + white centre (wall face is at pz2+0.15 — mount proud)
+            L.add(new float[]{cx, 3.25f, pz2 + 0.16f, 0.78f, 0.78f, 0.06f, 0.14f, 0.28f, 0.60f, 0f});
+            L.add(new float[]{cx, 3.25f, pz2 + 0.20f, 0.36f, 0.36f, 0.03f, 0.94f, 0.95f, 0.97f, 0f});
             // rooftop radio mast on the back corner
             float mx2 = cx - w * 0.5f + 0.75f, mz2 = cz - d * 0.5f + 0.75f;
             L.add(new float[]{mx2, h + 0.18f, mz2, 0.42f, 0.36f, 0.42f, 0.32f, 0.33f, 0.36f, 0f});
             L.add(new float[]{mx2, h + 1.55f, mz2, 0.09f, 2.6f, 0.09f, 0.38f, 0.39f, 0.42f, 0f});
             L.add(new float[]{mx2, h + 1.35f, mz2, 0.62f, 0.06f, 0.06f, 0.35f, 0.36f, 0.39f, 0f});             // cross arms
             L.add(new float[]{mx2, h + 2.15f, mz2, 0.45f, 0.06f, 0.06f, 0.35f, 0.36f, 0.39f, 0f});
-            L.add(new float[]{mx2, h + 2.92f, mz2, 0.12f, 0.12f, 0.12f, 0.82f, 0.30f, 0.24f, 45f});            // beacon tip
-            addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, false);
+            L.add(new float[]{mx2, h + 2.92f, mz2, 0.12f, 0.12f, 0.12f, 0.82f, 0.30f, 0.24f, 0f});             // beacon tip
+            // the cell's barred window: iron bars over the first ground-floor front window (real slot)
+            java.util.ArrayList<float[]> pSlots = new java.util.ArrayList<float[]>();
+            windowSlots(w, h, 3, 1.05f, 2, foundH, true, houseSeedOf(cx, cz), 0, pSlots);
+            for (float[] s : pSlots) {
+                if (s[4] != 0f) continue;                            // ground floor only
+                float bt = s[0], by2 = s[1], bw2 = s[2], bh3 = s[3];
+                for (int bi2 = 0; bi2 < 4; bi2++)
+                    L.add(new float[]{cx + bt - bw2 * 0.5f + (bi2 + 0.5f) * bw2 / 4f, by2, pz2 + 0.17f,
+                            0.05f, bh3 + 0.14f, 0.05f, 0.20f, 0.21f, 0.24f, 0f});
+                L.add(new float[]{cx + bt, by2 - bh3 * 0.5f - 0.10f, pz2 + 0.16f, bw2 + 0.16f, 0.07f, 0.09f, 0.60f, 0.60f, 0.58f, 0f}); // sill
+                break;
+            }
+            // glazed notice case beside the entrance
+            L.add(new float[]{cx - doorW * 0.5f - 1.05f, 1.55f, pz2 + 0.14f, 0.72f, 0.9f, 0.07f, 0.35f, 0.36f, 0.40f, 0f});
+            L.add(new float[]{cx - doorW * 0.5f - 1.05f, 1.55f, pz2 + 0.18f, 0.58f, 0.75f, 0.02f, 0.88f, 0.89f, 0.85f, 0f});
+            addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, false, true);
+            stationRects.add(new float[]{cx, cz, 5f});
             lmPolice = true;
         } else if (arch == 6) {                                     // FEUERWEHR: engine-hall front + hose tower
             // hose-drying tower with a proper cap ridge + hanging hoses
             L.add(new float[]{cx - w * 0.5f + 0.7f, h + 0.85f, cz - d * 0.5f + 0.7f, 1.15f, 1.7f, 1.15f, p[0] * 0.90f, p[1] * 0.90f, p[2] * 0.90f, 0f});
             L.add(new float[]{cx - w * 0.5f + 0.7f, h + 1.80f, cz - d * 0.5f + 0.7f, 1.35f, 0.14f, 1.35f, 0.30f, 0.24f, 0.20f, 0f});
             L.add(new float[]{cx - w * 0.5f + 0.7f, h + 1.98f, cz - d * 0.5f + 0.7f, 0.95f, 0.24f, 0.95f, 0.34f, 0.27f, 0.22f, 0f});
-            L.add(new float[]{cx - w * 0.5f + 0.42f, h + 0.55f, cz - d * 0.5f + 0.7f, 0.10f, 1.1f, 0.16f, 0.62f, 0.14f, 0.10f, 0f});  // drying hoses
-            L.add(new float[]{cx - w * 0.5f + 0.95f, h + 0.45f, cz - d * 0.5f + 0.7f, 0.10f, 0.9f, 0.16f, 0.55f, 0.12f, 0.09f, 0f});
+            // drying hoses hang on the tower's OUTER (-x) face — straddling the face so they read
+            // as hung, not baked in (they used to sit fully inside the tower body, invisible)
+            L.add(new float[]{cx - w * 0.5f + 0.09f, h + 0.75f, cz - d * 0.5f + 0.48f, 0.10f, 1.1f, 0.14f, 0.62f, 0.14f, 0.10f, 0f});
+            L.add(new float[]{cx - w * 0.5f + 0.09f, h + 0.62f, cz - d * 0.5f + 0.95f, 0.10f, 0.9f, 0.14f, 0.55f, 0.12f, 0.09f, 0f});
             // siren dome ON the hose-tower cap (it used to sit over the pitched roof and floated mid-air)
-            L.add(new float[]{cx - w * 0.5f + 0.7f, h + 2.21f, cz - d * 0.5f + 0.7f, 0.30f, 0.22f, 0.30f, 0.90f, 0.22f, 0.16f, 45f});
+            L.add(new float[]{cx - w * 0.5f + 0.7f, h + 2.21f, cz - d * 0.5f + 0.7f, 0.30f, 0.22f, 0.30f, 0.90f, 0.22f, 0.16f, 0f});
             // engine-hall gate front: warning-striped posts flanking the big gate + white fascia + badge
             float gz2 = cz + d * 0.5f;
             for (int s = -1; s <= 1; s += 2) for (int seg = 0; seg < 4; seg++)
                 L.add(new float[]{cx + s * (doorW * 0.5f + 0.28f), 0.36f + seg * 0.72f, gz2 + 0.10f, 0.22f, 0.72f, 0.15f,
                         seg % 2 == 0 ? 0.85f : 0.94f, seg % 2 == 0 ? 0.14f : 0.92f, seg % 2 == 0 ? 0.11f : 0.87f, 0f});
-            L.add(new float[]{cx, doorH + 0.62f, gz2 + 0.07f, Math.min(w - 0.5f, doorW + 2.4f), 0.62f, 0.12f, 0.95f, 0.93f, 0.88f, 0f}); // fascia
-            L.add(new float[]{cx, doorH + 0.40f, gz2 + 0.135f, Math.min(w - 0.7f, doorW + 2.2f), 0.10f, 0.03f, 0.80f, 0.14f, 0.11f, 0f}); // red trim line
-            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.14f, 0.66f, 0.50f, 0.05f, 0.78f, 0.12f, 0.10f, 0f});  // badge plate
-            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.17f, 0.28f, 0.28f, 0.03f, 0.96f, 0.94f, 0.90f, 45f}); // white diamond
-            addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, true);
+            // walls are 0.30 thick (outer face gz2+0.15) — everything layers proud of that, each
+            // sheet embedding ~5mm into the one behind so no two faces tie in the depth buffer
+            L.add(new float[]{cx, doorH + 0.62f, gz2 + 0.16f, Math.min(w - 0.5f, doorW + 2.4f), 0.62f, 0.12f, 0.95f, 0.93f, 0.88f, 0f}); // fascia
+            L.add(new float[]{cx, doorH + 0.40f, gz2 + 0.235f, Math.min(w - 0.7f, doorW + 2.2f), 0.10f, 0.05f, 0.80f, 0.14f, 0.11f, 0f}); // red trim line
+            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.245f, 0.66f, 0.50f, 0.06f, 0.78f, 0.12f, 0.10f, 0f});  // badge plate
+            L.add(new float[]{cx, doorH + 0.68f, gz2 + 0.285f, 0.28f, 0.28f, 0.03f, 0.96f, 0.94f, 0.90f, 0f}); // white centre square
+            // alarm bell beside the gate + a warm lamp over the lintel
+            L.add(new float[]{cx - doorW * 0.5f - 0.62f, 2.35f, gz2 + 0.10f, 0.09f, 0.16f, 0.16f, 0.30f, 0.26f, 0.20f, 0f});
+            L.add(new float[]{cx - doorW * 0.5f - 0.62f, 2.32f, gz2 + 0.16f, 0.30f, 0.30f, 0.10f, 0.78f, 0.60f, 0.24f, 0f});  // brass bell
+            L.add(new float[]{cx + doorW * 0.5f + 0.62f, doorH + 0.10f, gz2 + 0.12f, 0.20f, 0.14f, 0.14f, 0.99f, 0.90f, 0.62f, 0f});  // gate lamp
+            L.add(new float[]{cx + doorW * 0.5f + 0.62f, doorH + 0.20f, gz2 + 0.12f, 0.26f, 0.06f, 0.18f, 0.22f, 0.22f, 0.25f, 0f});  //  hood
+            // the truck parks INSIDE the hall when it is wide enough (furnishStation adds it); the
+            // compact city hall keeps an outside bay instead
+            boolean truckInside = w * 0.5f - 0.28f >= 2.85f;
+            addStationYard(L, gardens, houses, rc, cx, cz, w, d, ca, sa, yawDeg, true, !truckInside);
+            stationRects.add(new float[]{cx, cz, 6f});
             lmFire = true;
         } else if (arch == 7) {                                     // KAPELLE: ridge bell cote + cross
             float ridgeY = h + 0.30f + 2.0f, bz2 = cz + d * 0.5f - 0.85f;
@@ -7485,7 +7516,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             L.add(new float[]{cx, ridgeY + 1.52f, bz2, 0.32f, 0.065f, 0.065f, 0.86f, 0.83f, 0.75f, 0f});         // cross -
             lmChapel = true;
         } else if (arch == 8) {                                     // SCHEUNE: hayloft door + hoist beam on the gable
-            L.add(new float[]{cx, h - 0.75f, cz + d * 0.5f + 0.04f, 1.05f, 1.15f, 0.10f, 0.24f, 0.155f, 0.09f, 0f});
+            L.add(new float[]{cx, h - 0.75f, cz + d * 0.5f + 0.17f, 1.05f, 1.15f, 0.10f, 0.24f, 0.155f, 0.09f, 0f});
             L.add(new float[]{cx, h + 0.10f, cz + d * 0.5f + 0.35f, 0.13f, 0.13f, 0.95f, 0.35f, 0.24f, 0.14f, 0f});
         } else if (arch == 9) {                                     // WIRTSHAUS: hanging sign beside the door
             L.add(new float[]{cx + doorW * 0.5f + 0.55f, 2.66f, cz + d * 0.5f + 0.26f, 0.60f, 0.07f, 0.07f, 0.30f, 0.20f, 0.12f, 0f});
@@ -7512,10 +7543,10 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
      *  into `gardens` so later lots/gardens/paths keep out, and into clutterPts for the prop passes. */
     private void addStationYard(List<float[]> L, List<float[]> gardens, List<float[]> houses, Random rc,
                                 float cx, float cz, float w, float d, float ca, float sa, float yawDeg,
-                                boolean fire) {
+                                boolean fire, boolean vehicle) {
         float halfW = fire ? 1.15f : 0.95f, halfL = fire ? 2.70f : 2.25f;      // vehicle footprint halves
         int firstSide = rc.nextBoolean() ? 1 : -1;
-        for (int si = 0; si < 2; si++) {
+        for (int si = 0; si < 2 && vehicle; si++) {
             float side = si == 0 ? firstSide : -firstSide;
             float lx = side * (w * 0.5f + halfW + 0.55f), lz = d * 0.5f - halfL + 0.35f;   // nose toward the street
             float vx = cx + lx * ca + lz * sa, vz = cz - lx * sa + lz * ca;                // world centre
@@ -8272,7 +8303,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         L.add(new float[]{x, 1.57f, z - 0.25f, 1.62f, 0.08f, 2.10f, wr, wg, wb, 0f});          // roof
         for (int s = -1; s <= 1; s += 2)                                                       // blue door band
             L.add(new float[]{x + s * 0.90f, 0.78f, z + 0.1f, 0.03f, 0.34f, 2.4f, br, bg, bb, 0f});
-        L.add(new float[]{x, 1.00f, z + 1.7f, 1.55f, 0.06f, 0.85f, br, bg, bb, 0f});           // bonnet stripe
+        L.add(new float[]{x, 1.00f, z + 1.68f, 1.55f, 0.06f, 0.85f, br, bg, bb, 0f});          // bonnet stripe (front edge inset off the nose plane)
         L.add(new float[]{x, 0.62f, z + 2.14f, 1.70f, 0.26f, 0.08f, 0.55f, 0.56f, 0.58f, 0f}); // front bumper
         L.add(new float[]{x, 0.62f, z - 2.14f, 1.70f, 0.26f, 0.08f, 0.55f, 0.56f, 0.58f, 0f}); // rear bumper
         L.add(new float[]{x, 0.84f, z + 2.13f, 1.10f, 0.14f, 0.05f, 0.13f, 0.14f, 0.16f, 0f}); // grille
@@ -8836,10 +8867,16 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         float slx = w * 0.5f - 0.13f, slz = dd * 0.5f - 0.13f;
         addPiece(L, cx, 0.012f, cz, slx * 2f, 0.05f, slz * 2f, 0, false);                      // wood floor (top ~0.037)
         addPiece(L, cx, ceilH, cz, slx * 2f, 0.10f, slz * 2f, 1, false);                       // ceiling
-        addPiece(L, cx, 0.058f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
         addPiece(L, cx, ceilH - 0.18f, cz, 0.06f, 0.30f, 0.06f, 6, false);                     // lamp cord
         addPiece(L, cx, ceilH - 0.36f, cz, 0.14f, 0.10f, 0.14f, 13, false);                    // warm bulb glow
         addPiece(L, cx, ceilH - 0.42f, cz, 0.34f, 0.16f, 0.34f, 7, false);                     // lampshade
+        // stations get purpose-built interiors (engine hall / police office) instead of a bedroom
+        if (stationRects != null) for (float[] st : stationRects)
+            if (Math.abs(st[0] - cx) < 0.01f && Math.abs(st[1] - cz) < 0.01f) {
+                furnishStation(L, (int) st[2], cx, cz, ceilH, inx, inz, yaw);
+                return;
+            }
+        addPiece(L, cx, 0.058f, cz, Math.min(1.6f, inx * 1.5f), 0.03f, Math.min(1.1f, inz * 1.5f), 4, false); // rug
         // small entry passage just inside the doorway that furniture must keep clear (so the player can always pass)
         float lane = 1.3f, pass = 1.05f;
         float koX = cx + dox * (inx - lane * 0.5f), koZ = cz + doz * (inz - lane * 0.5f);
@@ -9027,6 +9064,80 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
                 hung++;
             }
         }
+    }
+
+    /** Station interiors (door on local +z; everything in yaw-0 local coords, spun about the house
+     *  centre at the end). Pieces go into the WORLD box list with true RGB — crisp signal colours and
+     *  free collision — while floor/ceiling/lamp stay in the baked interior mesh. The centred door
+     *  lane (x within ±0.55) is kept clear by construction so the player can always walk in. */
+    private void furnishStation(List<float[]> L, int arch, float cx, float cz, float ceilH,
+                                float inx, float inz, float yawDeg) {
+        int b0 = L.size();
+        if (arch == 6) {                                             // FIRE HALL
+            if (inx >= 2.85f) {                                      // the engine, parked in its bay (left of the lane)
+                float bayX = cx - (inx - 1.18f);
+                addFireEngineCompact(L, bayX, cz + inz - 2.07f, ceilH);
+            }
+            for (int i = 0; i < 3; i++) {                            // gear lockers along the back wall
+                float lx = cx + 0.55f + i * 0.68f;
+                if (0.55f + i * 0.68f + 0.30f > inx - 0.1f) break;
+                boolean red = i % 2 == 0;
+                L.add(new float[]{lx, 0.93f, cz - inz + 0.24f, 0.58f, 1.86f, 0.42f,
+                        red ? 0.72f : 0.55f, red ? 0.16f : 0.57f, red ? 0.13f : 0.60f, 0f});
+                L.add(new float[]{lx, 1.25f, cz - inz + 0.455f, 0.40f, 0.05f, 0.05f, 0.25f, 0.25f, 0.28f, 0f});  // vent slot
+                L.add(new float[]{lx, 1.86f + 0.10f, cz - inz + 0.24f, 0.50f, 0.16f, 0.34f, 0.92f, 0.78f, 0.22f, 0f});  // helmet on top
+            }
+            // hose reel on the +x wall: red drum (octagon) on a bracket
+            L.add(new float[]{cx + inx - 0.16f, 1.30f, cz + 0.3f, 0.10f, 0.30f, 0.30f, 0.30f, 0.30f, 0.33f, 0f});  // bracket
+            L.add(new float[]{cx + inx - 0.26f, 1.30f, cz + 0.3f, 0.16f, 0.72f, 0.72f, 0.74f, 0.15f, 0.12f, 0f});  // drum
+            L.add(new float[]{cx + inx - 0.26f, 1.30f, cz + 0.3f, 0.18f, 0.52f, 0.52f, 0.60f, 0.12f, 0.10f, 0f});
+            // tool board on the +x wall nearer the gate
+            L.add(new float[]{cx + inx - 0.14f, 1.45f, cz + 1.45f, 0.05f, 0.9f, 0.9f, 0.80f, 0.76f, 0.66f, 0f});
+            L.add(new float[]{cx + inx - 0.17f, 1.45f, cz + 1.30f, 0.03f, 0.5f, 0.08f, 0.30f, 0.30f, 0.33f, 0f}); // hung tools
+            L.add(new float[]{cx + inx - 0.17f, 1.40f, cz + 1.62f, 0.03f, 0.42f, 0.08f, 0.45f, 0.30f, 0.18f, 0f});
+        } else {                                                     // POLICE OFFICE
+            // reception counter facing the entrance, behind the entry lane
+            float cnZ = cz + inz - 2.0f;
+            L.add(new float[]{cx - 0.45f, 0.55f, cnZ, 1.9f, 1.10f, 0.50f, 0.44f, 0.31f, 0.20f, 0f});   // counter body
+            L.add(new float[]{cx - 0.45f, 1.13f, cnZ, 2.05f, 0.07f, 0.62f, 0.55f, 0.40f, 0.26f, 0f});  // counter top
+            L.add(new float[]{cx - 0.45f, 1.20f, cnZ - 0.05f, 0.30f, 0.08f, 0.22f, 0.86f, 0.87f, 0.90f, 0f});  // paper tray
+            L.add(new float[]{cx - 0.9f, 0.45f, cnZ - 0.75f, 0.42f, 0.90f, 0.42f, 0.20f, 0.22f, 0.26f, 0f});   // duty chair
+            L.add(new float[]{cx - 0.9f, 1.05f, cnZ - 0.93f, 0.42f, 0.55f, 0.08f, 0.20f, 0.22f, 0.26f, 0f});
+            for (int i = 0; i < 2; i++)                              // filing cabinets on the -x wall
+                L.add(new float[]{cx - inx + 0.26f, 0.78f, cz - 0.4f + i * 0.75f, 0.44f, 1.56f, 0.55f, 0.52f, 0.54f, 0.58f, 0f});
+            L.add(new float[]{cx - inx + 0.14f, 1.55f, cz + 1.2f, 0.05f, 0.75f, 1.05f, 0.30f, 0.42f, 0.60f, 0f});  // duty board (blue)
+            L.add(new float[]{cx - inx + 0.17f, 1.55f, cz + 1.2f, 0.03f, 0.55f, 0.85f, 0.90f, 0.90f, 0.86f, 0f});  //  pinned sheets
+            // HOLDING CELL in the back-right corner: bar rows with a gap, bunk inside
+            float cellX = cx + inx - 1.45f, cellZ = cz - inz + 1.30f;
+            float barH = Math.min(2.2f, ceilH - 0.10f);
+            for (int i = 0; i < 4; i++)                              // bars along the cell front (z side)
+                L.add(new float[]{cellX + 0.22f + i * 0.40f, barH * 0.5f, cellZ, 0.055f, barH, 0.055f, 0.22f, 0.23f, 0.26f, 0f});
+            for (int i = 0; i < 2; i++)                              // bars along the cell side (x side), gap = doorway
+                L.add(new float[]{cellX, barH * 0.5f, cellZ - 0.42f - i * 0.40f, 0.055f, barH, 0.055f, 0.22f, 0.23f, 0.26f, 0f});
+            L.add(new float[]{cellX + 0.80f, barH + 0.03f, cellZ, 1.62f, 0.07f, 0.07f, 0.25f, 0.26f, 0.29f, 0f}); // top rails
+            L.add(new float[]{cellX, barH + 0.03f, cellZ - 0.62f, 0.07f, 0.07f, 1.30f, 0.25f, 0.26f, 0.29f, 0f});
+            L.add(new float[]{cx + inx - 0.62f, 0.28f, cz - inz + 0.46f, 1.10f, 0.34f, 0.62f, 0.42f, 0.34f, 0.26f, 0f});  // cell bunk
+            L.add(new float[]{cx + inx - 0.62f, 0.48f, cz - inz + 0.46f, 1.00f, 0.10f, 0.52f, 0.60f, 0.62f, 0.58f, 0f});  //  thin mattress
+        }
+        for (int bi = b0; bi < L.size(); bi++) rotateBoxAbout(L, bi, cx, cz, yawDeg);
+    }
+
+    /** A shortened fire engine that fits inside the hall (3.9 m, nose toward local +z / the gate). */
+    private static void addFireEngineCompact(List<float[]> L, float x, float z, float ceilH) {
+        float rr = 0.78f, rg2 = 0.13f, rb = 0.11f;
+        L.add(new float[]{x, 0.50f, z, 1.80f, 0.28f, 3.7f, 0.15f, 0.15f, 0.17f, 0f});          // chassis
+        for (float wz : new float[]{z + 1.25f, z - 1.15f}) for (int s = -1; s <= 1; s += 2)
+            addWheel(L, x + s * 0.90f, 0.42f, wz, 0.84f, 0.28f);
+        L.add(new float[]{x, 1.48f, z + 1.35f, 1.98f, 1.30f, 1.15f, rr, rg2, rb, 0f});          // cab
+        L.add(new float[]{x, 1.80f, z + 1.94f, 1.72f, 0.46f, 0.06f, 0.16f, 0.19f, 0.23f, 0f});  // windshield
+        L.add(new float[]{x, 0.94f, z + 1.96f, 1.88f, 0.30f, 0.08f, 0.58f, 0.59f, 0.61f, 0f});  // bumper
+        L.add(new float[]{x, 1.58f, z - 0.55f, 2.06f, 1.66f, 2.55f, rr, rg2, rb, 0f});          // body
+        for (int s = -1; s <= 1; s += 2)
+            L.add(new float[]{x + s * 1.04f, 1.55f, z - 0.55f, 0.04f, 1.12f, 2.05f, 0.74f, 0.76f, 0.80f, 0f});  // shutters
+        float topY = Math.min(2.30f, ceilH - 0.22f);
+        L.add(new float[]{x, topY, z + 1.35f, 1.20f, 0.11f, 0.30f, 0.15f, 0.15f, 0.18f, 0f});   // light bar
+        L.add(new float[]{x - 0.30f, topY + 0.10f, z + 1.35f, 0.26f, 0.13f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
+        L.add(new float[]{x + 0.30f, topY + 0.10f, z + 1.35f, 0.26f, 0.13f, 0.22f, 0.20f, 0.45f, 0.98f, 0f});
     }
 
     /** True if two XZ footprints (centre + full extents) overlap — used to keep furniture off the door + each other. */
