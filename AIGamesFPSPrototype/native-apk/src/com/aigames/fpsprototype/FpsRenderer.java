@@ -420,6 +420,21 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private static final int MAX_PICKUPS = 10;
     private final float[] pkX = new float[MAX_PICKUPS], pkY = new float[MAX_PICKUPS], pkZ = new float[MAX_PICKUPS], pkLife = new float[MAX_PICKUPS];
     private final int[] pkType = new int[MAX_PICKUPS];   // 0 = health, 1 = ammo
+    // --- world loot (B222): gold/ammo/medi caches scattered per run + unlockable chests ---
+    private static final int MAX_LOOT = 26;
+    private final float[] ltX = new float[MAX_LOOT], ltY = new float[MAX_LOOT], ltZ = new float[MAX_LOOT];
+    private final float[] ltYaw = new float[MAX_LOOT], ltAnim = new float[MAX_LOOT];   // chest lid 0..1
+    private final int[] ltType = new int[MAX_LOOT];      // 0 gold, 1 ammo, 2 medi, 3 chest
+    private final int[] ltAmt = new int[MAX_LOOT];       // gold value (types 0); unused otherwise
+    private final boolean[] ltLive = new boolean[MAX_LOOT];
+    private int ltCount = 0;
+    private float chestChannel = 0f;                     // hold-near-the-chest unlock progress (seconds)
+    private int chestNear = -1;
+    private static final float CHEST_UNLOCK_T = 1.25f;
+    // timed booster out of a chest: -1 none, 0 double damage, 1 rapid fire, 2 speed, 3 gold rush
+    private int boostType = -1;
+    private float boostTime = 0f, boostTimeMax = 1f;
+    private static final String[] BOOST_NAME = {"DOPPELSCHADEN", "SCHNELLFEUER", "TEMPO-RAUSCH", "GOLDRAUSCH"};
     private int pkNext = 0;
     private final float[] enPhase = new float[MAX_ENEMIES];
     private final float[] enHurt = new float[MAX_ENEMIES];
@@ -967,6 +982,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             updateEnemies(gdt);
             updateParticles(gdt);
             updatePickups(gdt);
+            updateLoot(gdt);
             updatePopups(dt);
             tickTimers(gdt);
         }
@@ -1184,6 +1200,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         drawParticles();
         drawWeather();
         drawPickups();
+        if (state == ST_PLAYING) drawLoot();
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
         if (state == ST_PLAYING) drawGun();
@@ -1664,6 +1681,237 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         Matrix.translateM(model, 0, lx, ly, lz);
         Matrix.scaleM(model, 0, sx, sy, sz);
         drawWorld(cube, 36, 3f, r, g, b);
+    }
+
+    // --- world loot (B222): scattered gold/ammo/medi + unlockable chests with random rewards ---
+
+    /** True if a loot piece can sit at (x,z) on floorY: no furniture/wall box over the spot. */
+    private boolean lootSpotFree(float x, float z, float floorY) {
+        if (boxes == null) return true;
+        for (float[] b : boxes) {
+            if (b[1] + b[4] * 0.5f < floorY + 0.10f || b[1] - b[4] * 0.5f > floorY + 1.1f) continue;
+            if (insideYawXZ(x, z, b[0], b[2], b[3] * 0.5f + 0.30f, b[5] * 0.5f + 0.30f, b.length > 9 ? b[9] : 0f))
+                return false;
+        }
+        return true;
+    }
+
+    private void addLoot(float x, float z, float floorY, int type, int amt, float yawDeg) {
+        if (ltCount >= MAX_LOOT) return;
+        ltX[ltCount] = x; ltZ[ltCount] = z;
+        ltY[ltCount] = floorY + (type == 3 ? 0f : 0.42f);           // items float, chests sit on the floor
+        ltType[ltCount] = type; ltAmt[ltCount] = amt; ltYaw[ltCount] = yawDeg;
+        ltAnim[ltCount] = 0f; ltLive[ltCount] = true;
+        ltCount++;
+    }
+
+    /** Scatter this run's lootables — every roll is fresh, so each run hides its stash differently.
+     *  ~60% of the small caches (gold pouches, ammo, medkits) hide INSIDE houses to reward exploring;
+     *  the rest lie in yards and meadows. Three locked chests go in with extra clearance. */
+    private void spawnWorldLoot() {
+        ltCount = 0;
+        java.util.Random lr = new java.util.Random();
+        int items = 14 + lr.nextInt(5);
+        for (int t = 0; t < 320 && ltCount < items; t++) {
+            float x, z, floorY;
+            if (lr.nextFloat() < 0.6f && houseRects != null && !houseRects.isEmpty()) {
+                float[] h = houseRects.get(lr.nextInt(houseRects.size()));
+                float inx = h[2] * 0.5f - 0.75f, inz = h[3] * 0.5f - 0.75f;
+                if (inx < 0.5f || inz < 0.5f) continue;
+                float lx = (lr.nextFloat() * 2f - 1f) * inx, lz = (lr.nextFloat() * 2f - 1f) * inz;
+                double ya = Math.toRadians(h[25]);
+                float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
+                x = h[0] + lx * ca + lz * sa; z = h[1] - lx * sa + lz * ca;
+                floorY = terrainH(x, z) + h[16];
+            } else {
+                x = (lr.nextFloat() * 2f - 1f) * 27f; z = 3f + (lr.nextFloat() * 2f - 1f) * 27f;
+                if (x * x + z * z > 28f * 28f || roadSd(x, z) < 1.0f || inSpawnLane(x, z)) continue;
+                if (!clearOfHouses(houseRects, x, z, 0.4f)) continue;
+                floorY = terrainH(x, z);
+            }
+            if (x * x + z * z > 29f * 29f) continue;                // stay well inside the play ring
+            if (blocksAnyDoor(houseRects, x, z)) continue;
+            if (Math.hypot(x - px, z - pz) < 6.0) continue;         // never right at the spawn
+            if (!lootSpotFree(x, z, floorY)) continue;
+            boolean spread = true;
+            for (int i = 0; i < ltCount && spread; i++)
+                if (Math.hypot(x - ltX[i], z - ltZ[i]) < 4.5) spread = false;
+            if (!spread) continue;
+            float roll = lr.nextFloat();
+            int amt = Math.round((12 + lr.nextInt(29)) * (1f + 0.30f * levelId));   // later chapters pay like their kills do
+            addLoot(x, z, floorY, roll < 0.45f ? 0 : (roll < 0.75f ? 1 : 2), amt, 0f);
+        }
+        int chests = 0;
+        for (int t = 0; t < 200 && chests < 3; t++) {
+            float x, z, floorY, yawDeg = lr.nextFloat() * 360f;
+            if (lr.nextFloat() < 0.7f && houseRects != null && !houseRects.isEmpty()) {
+                float[] h = houseRects.get(lr.nextInt(houseRects.size()));
+                float inx = h[2] * 0.5f - 0.95f, inz = h[3] * 0.5f - 0.95f;
+                if (inx < 0.4f || inz < 0.4f) continue;
+                float lx = (lr.nextFloat() * 2f - 1f) * inx, lz = (lr.nextFloat() * 2f - 1f) * inz;
+                double ya = Math.toRadians(h[25]);
+                float ca = (float) Math.cos(ya), sa = (float) Math.sin(ya);
+                x = h[0] + lx * ca + lz * sa; z = h[1] - lx * sa + lz * ca;
+                floorY = terrainH(x, z) + h[16];
+                yawDeg = h[25] + (lr.nextInt(4)) * 90f;             // chest square to its room
+            } else {
+                x = (lr.nextFloat() * 2f - 1f) * 26f; z = 3f + (lr.nextFloat() * 2f - 1f) * 26f;
+                if (x * x + z * z > 27f * 27f || roadSd(x, z) < 1.4f || inSpawnLane(x, z)) continue;
+                if (!clearOfHouses(houseRects, x, z, 0.6f)) continue;
+                floorY = terrainH(x, z);
+            }
+            if (x * x + z * z > 29f * 29f) continue;                // stay well inside the play ring
+            if (blocksAnyDoor(houseRects, x, z)) continue;
+            if (Math.hypot(x - px, z - pz) < 9.0) continue;
+            if (!lootSpotFree(x, z, floorY)) continue;
+            boolean spread = true;
+            for (int i = 0; i < ltCount && spread; i++)
+                if (Math.hypot(x - ltX[i], z - ltZ[i]) < (ltType[i] == 3 ? 12.0 : 3.0)) spread = false;
+            if (!spread) continue;
+            addLoot(x, z, floorY, 3, 0, yawDeg);
+            chests++;
+        }
+    }
+
+    private void updateLoot(float dt) {
+        if (state != ST_PLAYING) { chestNear = -1; return; }   // menus freeze the pose — no ghost unlocks (mirrors updateEnemies)
+        if (boostTime > 0f) {
+            boostTime -= dt;
+            if (boostTime <= 0f) {
+                spawnPopup(BOOST_NAME[boostType] + " VORBEI", width * 0.5f, height * 0.30f, 0.75f, 0.75f, 0.78f, 18f);
+                boostType = -1;
+            }
+        }
+        chestNear = -1;
+        for (int i = 0; i < ltCount; i++) {
+            if (ltType[i] == 3 && !ltLive[i]) {                     // opened chest: lid keeps swinging
+                if (ltAnim[i] < 1f) ltAnim[i] = Math.min(1f, ltAnim[i] + dt * 2.4f);
+                continue;
+            }
+            if (!ltLive[i]) continue;
+            float dx = px - ltX[i], dz = pz - ltZ[i];
+            float d2 = dx * dx + dz * dz;
+            if (ltType[i] < 3) {
+                if (d2 < 1.35f * 1.35f && Math.abs(feetY - (ltY[i] - 0.42f)) < 1.6f) {
+                    ltLive[i] = false;
+                    if (ltType[i] == 0) {
+                        int g = ltAmt[i] * (boostType == 3 ? 2 : 1);
+                        cash += g; runCash += g;
+                        spawnPopup("+$" + g, width * 0.5f, height * 0.56f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 26f);
+                    } else if (ltType[i] == 1) {
+                        for (int w = 0; w < W_COUNT; w++) wReserve[w] = Math.min(W_RES_MAX[w], wReserve[w] + W_RES_MAX[w] / 3);
+                        spawnPopup("+MUNITION", width * 0.5f, height * 0.56f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 24f);
+                    } else {
+                        playerHP = Math.min(effMaxHp(), playerHP + 35f);
+                        spawnPopup("+35 HP", width * 0.5f, height * 0.56f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 24f);
+                    }
+                    sfx.swap();
+                }
+            } else if (d2 < 1.9f * 1.9f && Math.abs(feetY - ltY[i]) < 1.6f) {
+                chestNear = i;
+                chestChannel += dt;
+                if (chestChannel >= CHEST_UNLOCK_T) openChest(i);
+            }
+        }
+        if (chestNear < 0 && chestChannel > 0f) chestChannel = Math.max(0f, chestChannel - dt * 3f);
+    }
+
+    /** Crack a chest: burst of gold, then a RANDOM reward — a pile of cash, full ammo, a full heal,
+     *  or one of four timed boosters (double damage / rapid fire / speed / gold rush). */
+    private void openChest(int i) {
+        ltLive[i] = false;
+        chestChannel = 0f;
+        spawnChestBurst(ltX[i], ltY[i] + 0.35f, ltZ[i]);
+        sfx.swap();
+        float roll = rng.nextFloat();
+        if (roll < 0.30f) {
+            int g = Math.round((60 + rng.nextInt(91)) * (1f + 0.30f * levelId)) * (boostType == 3 ? 2 : 1);
+            cash += g; runCash += g;
+            spawnPopup("TRUHE: +$" + g, width * 0.5f, height * 0.42f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 30f);
+        } else if (roll < 0.48f) {
+            for (int w = 0; w < W_COUNT; w++) wReserve[w] = W_RES_MAX[w];
+            spawnPopup("TRUHE: MUNITION VOLL", width * 0.5f, height * 0.42f, AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 26f);
+        } else if (roll < 0.62f) {
+            playerHP = effMaxHp();
+            spawnPopup("TRUHE: VOLL GEHEILT", width * 0.5f, height * 0.42f, AC_GREEN[0], AC_GREEN[1], AC_GREEN[2], 26f);
+        } else {
+            boostType = rng.nextInt(4);
+            boostTimeMax = boostType == 3 ? 45f : 30f;
+            boostTime = boostTimeMax;
+            spawnPopup(BOOST_NAME[boostType] + "!", width * 0.5f, height * 0.42f, 0.55f, 0.85f, 1f, 30f);
+        }
+    }
+
+    /** Golden fountain out of a just-opened chest. */
+    private void spawnChestBurst(float x, float y, float z) {
+        for (int n = 0; n < 30; n++) {
+            int i = pNext; pNext = (pNext + 1) % MAX_PARTICLES;
+            pX[i] = x + (rng.nextFloat() - 0.5f) * 0.4f;
+            pY[i] = y;
+            pZ[i] = z + (rng.nextFloat() - 0.5f) * 0.4f;
+            pVX[i] = (rng.nextFloat() - 0.5f) * 2.2f;
+            pVY[i] = 2.2f + rng.nextFloat() * 2.4f;
+            pVZ[i] = (rng.nextFloat() - 0.5f) * 2.2f;
+            pR[i] = 1f; pG[i] = 0.82f; pB[i] = 0.24f;
+            pSize[i] = 0.05f + rng.nextFloat() * 0.04f;
+            pMaxLife[i] = 0.9f + rng.nextFloat() * 0.7f;
+            pLife[i] = pMaxLife[i];
+        }
+    }
+
+    private void drawLoot() {
+        GLES20.glUseProgram(prog3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, metalTex);
+        float spin = timeAcc * 80f, bob = (float) Math.sin(timeAcc * 3f) * 0.10f;
+        for (int i = 0; i < ltCount; i++) {
+            if (ltType[i] == 3) { drawChest(i); continue; }
+            if (!ltLive[i]) continue;
+            Matrix.setIdentityM(winBase, 0);
+            Matrix.translateM(winBase, 0, ltX[i], ltY[i] + bob, ltZ[i]);
+            Matrix.rotateM(winBase, 0, spin, 0f, 1f, 0f);
+            if (ltType[i] == 0) {                                   // GOLD: a fat coin stack + two strays
+                pkBit(0f, -0.10f, 0f, 0.17f, 0.045f, 0.17f, 1f, 0.80f, 0.22f);
+                pkBit(0.02f, -0.055f, -0.02f, 0.155f, 0.045f, 0.155f, 0.98f, 0.76f, 0.20f);
+                pkBit(-0.015f, -0.01f, 0.015f, 0.14f, 0.045f, 0.14f, 1f, 0.84f, 0.30f);
+                pkBit(0.10f, -0.115f, 0.09f, 0.11f, 0.028f, 0.11f, 0.92f, 0.72f, 0.20f);
+                pkBit(-0.11f, -0.115f, -0.06f, 0.10f, 0.028f, 0.10f, 0.96f, 0.78f, 0.24f);
+            } else if (ltType[i] == 1) {                            // AMMO: the crate model from the drops
+                pkBit(0f, -0.02f, 0f, 0.30f, 0.16f, 0.22f, 0.30f, 0.32f, 0.18f);
+                pkBit(0f, 0.065f, 0f, 0.31f, 0.025f, 0.23f, 0.20f, 0.215f, 0.12f);
+                for (int s2 = -1; s2 <= 1; s2++)
+                    pkBit(s2 * 0.085f, 0.105f, 0f, 0.045f, 0.09f, 0.045f, 0.85f, 0.66f, 0.25f);
+            } else {                                                // MEDI: the medkit model from the drops
+                pkBit(0f, 0f, 0f, 0.30f, 0.20f, 0.22f, 0.92f, 0.92f, 0.90f);
+                pkBit(0f, 0.005f, 0.115f, 0.056f, 0.16f, 0.012f, 0.90f, 0.12f, 0.12f);
+                pkBit(0f, 0.005f, 0.115f, 0.16f, 0.056f, 0.012f, 0.90f, 0.12f, 0.12f);
+                pkBit(0f, 0.105f, 0f, 0.31f, 0.02f, 0.23f, 0.70f, 0.70f, 0.68f);
+            }
+        }
+    }
+
+    /** A wooden strongbox: banded body, brass lock, lid hinged at the back edge (ltAnim swings it). */
+    private void drawChest(int i) {
+        float glow = ltLive[i] ? 0.5f + 0.5f * pulse01(2.2f, i * 1.7f) : 0f;
+        Matrix.setIdentityM(winBase, 0);
+        Matrix.translateM(winBase, 0, ltX[i], ltY[i], ltZ[i]);
+        Matrix.rotateM(winBase, 0, ltYaw[i], 0f, 1f, 0f);
+        pkBit(0f, 0.16f, 0f, 0.60f, 0.32f, 0.42f, 0.36f, 0.24f, 0.13f);                 // body
+        pkBit(0.155f, 0.16f, 0f, 0.05f, 0.34f, 0.44f, 0.30f, 0.30f, 0.33f);             // iron bands
+        pkBit(-0.155f, 0.16f, 0f, 0.05f, 0.34f, 0.44f, 0.30f, 0.30f, 0.33f);
+        pkBit(0f, 0.04f, 0f, 0.64f, 0.06f, 0.46f, 0.24f, 0.16f, 0.09f);                 // base skid
+        if (ltLive[i])
+            pkBit(0f, 0.24f, 0.215f, 0.10f, 0.13f, 0.035f, 0.95f, 0.72f + 0.15f * glow, 0.25f);   // brass lock
+        if (ltAnim[i] > 0.4f) {                                                          // treasure shows once open
+            pkBit(0f, 0.30f, 0f, 0.42f, 0.10f, 0.28f, 1f, 0.82f, 0.26f);
+            pkBit(0.08f, 0.36f, 0.04f, 0.13f, 0.05f, 0.13f, 1f, 0.88f, 0.36f);
+        }
+        // lid: rotate about the back top edge
+        Matrix.translateM(winBase, 0, 0f, 0.32f, -0.21f);
+        Matrix.rotateM(winBase, 0, -105f * ltAnim[i], 1f, 0f, 0f);
+        Matrix.translateM(winBase, 0, 0f, 0.05f, 0.21f);
+        pkBit(0f, 0f, 0f, 0.60f, 0.10f, 0.42f, 0.40f, 0.27f, 0.15f);                    // lid slab
+        pkBit(0.155f, 0.01f, 0f, 0.05f, 0.12f, 0.44f, 0.30f, 0.30f, 0.33f);             // lid straps continue
+        pkBit(-0.155f, 0.01f, 0f, 0.05f, 0.12f, 0.44f, 0.30f, 0.30f, 0.33f);            //  the body hoops
     }
 
     private void triggerGameOver() {
@@ -2640,7 +2888,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         sprinting = grounded && mlen > 0.9f && my > 0.5f && aim < 0.2f;
         // sprint accelerates in gradually (eased by sprintAnim) instead of snapping to top speed
         float sprintMul = 1f + (SPRINT_MULT - 1f) * sprintAnim;
-        float speed = MOVE_SPEED * sprintMul * (1f + 0.06f * abLevel[AB_MOVESPEED]);
+        float speed = MOVE_SPEED * sprintMul * (1f + 0.06f * abLevel[AB_MOVESPEED]) * (boostType == 2 ? 1.35f : 1f);
         float fwdX = (float) Math.sin(yaw), fwdZ = -(float) Math.cos(yaw);
         float rgtX = (float) Math.cos(yaw), rgtZ = (float) Math.sin(yaw);
         px += (rgtX * mx + fwdX * my) * speed * dt;
@@ -3782,6 +4030,8 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         navTimer = 0f; navPx = 1e9f; navFieldValid = false;
         radarPrevT = -1f;
         for (int i = 0; i < MAX_PICKUPS; i++) pkLife[i] = 0f;
+        boostType = -1; boostTime = 0f; chestChannel = 0f; chestNear = -1;
+        spawnWorldLoot();
         hitStop = 0f;
         for (int i = 0; i < MAX_PARTICLES; i++) pLife[i] = 0f;
         waveBreak = 0f; waveBanner = 0f; bossPending = 0;
@@ -3813,6 +4063,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     private void sandboxEnter() {
         restart();                                                     // pose px=0,pz=9,yaw=0, HP full, enAlive[] cleared
         waveToSpawn = 0; waveRemaining = 0; waveBreak = 0f; waveBanner = 0f; bossPending = 0;   // undo restart()'s beginWave(1)
+        ltCount = 0; boostType = -1; boostTime = 0f;                   // no loot/chests in the peaceful sandbox
         for (int i = 0; i < MAX_ENEMIES; i++) enAlive[i] = false;
         playerHP = effMaxHp(); hurtFlash = 0f;
         levelObjsBackup.clear();                                       // snapshot the authored/combat overlay …
@@ -4140,6 +4391,7 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
         int baseGain = head ? 18 : 10;   // headshots pay better
         baseGain = Math.round(baseGain * (1f + 0.30f * levelId));   // later chapters pay for their danger
         long cashGain = Math.round(baseGain * combo * (1f + 0.10f * abLevel[AB_CASHBONUS]) * (1f + 0.06f * (wave - 1)));
+        if (boostType == 3) cashGain *= 2;                          // GOLDRAUSCH chest booster
         cash += cashGain; runCash += cashGain;
         xp += baseGain; runXp += baseGain; runKills++;
 
@@ -4207,14 +4459,19 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
     }
 
     // --- effective (upgraded) weapon stats: base array folded with upgrade tiers + abilities ---
+    /** Chest boosters only bite mid-run, so the shop's stat readouts in the hub stay honest. */
+    private float boostDmgMul() { return boostType == 0 && state == ST_PLAYING ? 2f : 1f; }
     private float effBodyDmg(int w) {
-        return W_BODYDMG[w] * UPG_DMG_MULT[upgTier[w][UPG_DMG]] * (1f + 0.06f * abLevel[AB_DMGBOOST]);
+        return W_BODYDMG[w] * UPG_DMG_MULT[upgTier[w][UPG_DMG]] * (1f + 0.06f * abLevel[AB_DMGBOOST]) * boostDmgMul();
     }
     private float effHeadDmg(int w) {
         return W_HEADDMG[w] * UPG_DMG_MULT[upgTier[w][UPG_DMG]]
-                * (1f + 0.06f * abLevel[AB_DMGBOOST]) * (1f + 0.15f * abLevel[AB_HEADMASTERY]);
+                * (1f + 0.06f * abLevel[AB_DMGBOOST]) * (1f + 0.15f * abLevel[AB_HEADMASTERY]) * boostDmgMul();
     }
-    private float effInterval(int w) { return W_INTERVAL[w] * UPG_RATE_MULT[upgTier[w][UPG_RATE]]; }
+    private float effInterval(int w) {
+        return W_INTERVAL[w] * UPG_RATE_MULT[upgTier[w][UPG_RATE]]
+                * (boostType == 1 && state == ST_PLAYING ? 0.55f : 1f);
+    }
     private int   effMag(int w) { return Math.round(W_MAG[w] * (1f + 0.18f * upgTier[w][UPG_MAG])); }
     private float effReload(int w) {
         return W_RELOAD[w] * UPG_RELOAD_MULT[upgTier[w][UPG_RELOAD]] * (1f - 0.15f * abLevel[AB_FASTRELOAD]);
@@ -4806,6 +5063,28 @@ public class FpsRenderer implements GLSurfaceView.Renderer {
             }
 
             drawTextCenteredShadow("" + score, width * 0.5f, 32f * us, 34f, AC_BONE[0], AC_BONE[1], AC_BONE[2], 0.97f);
+
+            // active chest booster: pill under the score with the remaining-time drain bar
+            if (boostType >= 0 && boostTime > 0f) {
+                float bw2 = 300f * us, bh2 = 34f * us, bcy = 86f * us;
+                drawRoundRect(width * 0.5f, bcy, bw2, bh2, bh2 * 0.5f, 0.05f, 0.06f, 0.08f, 0.62f);
+                float frac = Math.min(1f, boostTime / boostTimeMax);
+                drawRoundRect(width * 0.5f - bw2 * 0.5f * (1f - frac), bcy + bh2 * 0.34f, bw2 * frac, 4.5f * us, 2f * us,
+                        0.55f, 0.85f, 1f, 0.9f);
+                drawTextCenteredShadow(BOOST_NAME[boostType] + " " + (int) Math.ceil(boostTime) + "S",
+                        width * 0.5f, bcy - 9f * us, 17f, 0.62f, 0.88f, 1f, 0.95f);
+            }
+            // chest unlock channel: progress bar under the reticle while standing at a locked chest
+            if (chestNear >= 0) {
+                float cw2 = 210f * us, chh = 14f * us, ccy2 = height * 0.60f;
+                drawTextCenteredShadow("SCHLOSS KNACKEN", width * 0.5f, ccy2 - 20f * us, 15f,
+                        AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.9f);
+                drawRoundRect(width * 0.5f, ccy2, cw2, chh, chh * 0.5f, 0.05f, 0.06f, 0.08f, 0.6f);
+                float cf = Math.min(1f, chestChannel / CHEST_UNLOCK_T);
+                if (cf > 0.02f)
+                    drawRoundRect(width * 0.5f - cw2 * 0.5f * (1f - cf), ccy2, cw2 * cf, chh - 5f * us, (chh - 5f * us) * 0.5f,
+                            AC_GOLD[0], AC_GOLD[1], AC_GOLD[2], 0.92f);
+            }
 
             // health bar (top-left): medkit icon + rounded track/fill + frame + sheen
             float hp = playerHP / effMaxHp(); if (hp < 0f) hp = 0f;
