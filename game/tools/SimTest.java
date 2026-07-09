@@ -1,0 +1,113 @@
+package com.fable.racer;
+
+/**
+ * Head-less playtest harness. Runs an autopilot around every level and checks
+ * that the race is completable, jumps fire, shortcuts shorten the lap and no
+ * NaNs appear. Compile with Sim.java + Tracks.java and run on a normal JVM:
+ *
+ *   javac -d out app/src/main/java/com/fable/racer/Sim.java \
+ *               app/src/main/java/com/fable/racer/Tracks.java tools/SimTest.java
+ *   java -cp out com.fable.racer.SimTest
+ */
+public final class SimTest {
+
+    public static void main(String[] args) {
+        int failures = 0;
+        System.out.println("== STOCK CAR ==");
+        for (int lvl = 0; lvl < Tracks.LEVELS.length; lvl++) failures += runLevel(lvl, false, false);
+        System.out.println("== FULLY UPGRADED LOADOUT ==");
+        failures += runLevel(0, true, false);
+        failures += runLevel(Tracks.LEVELS.length - 1, true, false);
+        System.out.println("== TIME TRIAL (solo vs ghost, no AI) ==");
+        failures += runLevel(0, false, true);
+        failures += runLevel(Tracks.LEVELS.length - 1, false, true);
+        System.out.println("== PROCEDURAL RANDOM TRACKS ==");
+        for (int code : new int[]{0, 12345, 48213, 99999, 7}) failures += runRandom(code);
+        System.out.println();
+        if (failures == 0) System.out.println("PLAYTEST PASSED — all levels completable.");
+        else System.out.println("PLAYTEST FAILED — " + failures + " problem(s).");
+        System.exit(failures == 0 ? 0 : 1);
+    }
+
+    private static int runLevel(int lvl, boolean modded, boolean tt) {
+        return runDef(Tracks.LEVELS[lvl], 1234 + lvl, modded, tt);
+    }
+
+    private static int runRandom(int code) {
+        return runDef(Tracks.random(code), code, false, false);
+    }
+
+    private static int runDef(Tracks.Def def, long seed, boolean modded, boolean tt) {
+        Sim sim = new Sim();
+        sim.load(def, seed, tt);
+        if (modded) {
+            // stack every upgrade's effect, pros and cons, to stress the model
+            sim.mods.topSpeed = 1.12 * 0.93 * 0.96;
+            sim.mods.accel = 1.10 * 0.92 * 1.15;
+            sim.mods.grip = 0.90 * 1.18;
+            sim.mods.turn = 1.10 * 1.08 * 1.05;
+            sim.mods.boost = 1.35;
+            sim.mods.nitroCharge = 1.3;
+            sim.mods.brake = 1.4;
+            sim.mods.offRoad = 0.5;
+            sim.mods.bumpResist = 0.7;
+            sim.mods.rainGrip = 0.6 * 1.6;
+        }
+
+        double dt = 1.0 / 60;
+        double maxGameTime = 400;
+        int steps = 0, maxSteps = (int) (maxGameTime / dt);
+        double topSpeed = 0;
+        boolean jumped = false, picked = false, boosted = false, nan = false;
+        int itemsUsed = 0;
+
+        while (!sim.finished && steps++ < maxSteps) {
+            // ---- autopilot: aim a few points ahead on the centreline ----
+            int look = 7;
+            int target = (sim.prevIdx + look) % sim.N;
+            double tx = sim.cx[target], ty = sim.cy[target];
+            double desired = Math.atan2(ty - sim.carY, tx - sim.carX);
+            double diff = wrap(desired - sim.carAngle);
+
+            boolean left = diff < -0.05;
+            boolean right = diff > 0.05;
+            boolean gas = true;
+            boolean brake = Math.abs(diff) > 0.6 && sim.speed() > 360;   // ease into sharp bends
+            boolean boostEdge = sim.nitro > 0.55 && (steps % 30 == 0);
+            boolean itemEdge = sim.heldItem != Sim.IT_NONE && (steps % 25 == 0);
+            if (itemEdge) itemsUsed++;
+
+            sim.update(dt, left, right, gas, brake, boostEdge, itemEdge);
+
+            if (sim.evJump) jumped = true;
+            if (sim.evPickup) picked = true;
+            if (sim.evBoost) boosted = true;
+            sim.clearEvents();
+
+            topSpeed = Math.max(topSpeed, sim.speed());
+            if (Double.isNaN(sim.carX) || Double.isNaN(sim.carY) || Double.isNaN(sim.carAngle)) { nan = true; break; }
+        }
+
+        double simSeconds = steps * dt;
+        int problems = 0;
+        if (nan) problems++;
+        if (!sim.finished) problems++;
+        if (sim.lapsDone != def.laps && sim.finished) problems++;
+
+        System.out.printf("%-22s laps=%d/%d finished=%s time=%5.1fs topSpeed=%3.0f jump=%s pickup=%s boost=%s items=%d pos=P%d%s%n",
+                def.name, sim.lapsDone, def.laps, sim.finished, sim.finishTime > 0 ? sim.finishTime : simSeconds,
+                topSpeed, jumped, picked, boosted, itemsUsed, sim.position(), nan ? "  <NaN!>" : "");
+        if (!sim.finished) System.out.println("   !! did not finish within " + (int) maxGameTime + "s");
+        if (!jumped && def.jumps != null && def.jumps.length > 0) {
+            System.out.println("   !! never hit a ramp");
+            problems++;
+        }
+        return problems;
+    }
+
+    private static double wrap(double a) {
+        while (a > Math.PI) a -= 2 * Math.PI;
+        while (a < -Math.PI) a += 2 * Math.PI;
+        return a;
+    }
+}

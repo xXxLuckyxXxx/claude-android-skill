@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.fable.racer'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.fable.racer"
+        minSdk 21
+        targetSdk 34
+        // versionCode increases every build (CI passes the run number) so each
+        // APK installs as an UPDATE over the previous one. Same applicationId +
+        // same signing key = no uninstall needed.
+        def vc = (project.findProperty('VERSION_CODE') ?: '1').toString()
+        versionCode vc.toInteger()
+        versionName "1.0." + vc
+    }
+
+    signingConfigs {
+        release {
+            // Fixed keystore committed to the repo so every build is signed with
+            // the SAME key (required for in-place updates). Overridable via -P.
+            def ksPath = project.findProperty('RELEASE_STORE_FILE') ?: 'neonracer.jks'
+            storeFile file(ksPath)
+            storePassword project.findProperty('RELEASE_STORE_PASSWORD') ?: 'android'
+            keyAlias project.findProperty('RELEASE_KEY_ALIAS') ?: 'neonracer'
+            keyPassword project.findProperty('RELEASE_KEY_PASSWORD') ?: 'android'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
