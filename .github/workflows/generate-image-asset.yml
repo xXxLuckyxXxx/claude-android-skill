@@ -1,87 +1,35 @@
-name: Generate Image-AI Asset
-
-on:
-  workflow_dispatch:
-    inputs:
-      prompt:
-        description: Prompt for the image
-        required: true
-        default: Cinematic key art banner for a mobile low-poly survival FPS called AIGames FPS, abandoned European village at dusk, fog, street lamps, subtle rain, glowing windows, first-person weapon silhouette, distant zombie figures, premium mobile game promo art, blue-orange lighting, no gore, no watermark.
-        type: string
-      output_path:
-        description: Where to write the generated image
-        required: true
-        default: assets/imagegen/final/readme-hero.png
-        type: string
-      size:
-        description: Image size
-        required: true
-        default: 1536x1024
-        type: choice
-        options:
-          - 1024x1024
-          - 1536x1024
-          - 1024x1536
-          - 2048x1152
-      quality:
-        description: Generation quality
-        required: true
-        default: high
-        type: choice
-        options:
-          - low
-          - medium
-          - high
-          - auto
-      commit_asset:
-        description: Commit generated asset back to this branch
-        required: true
-        default: true
-        type: boolean
-
-permissions:
-  contents: write
-
-jobs:
-  generate:
-    runs-on: ubuntu-latest
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install OpenAI SDK
-        run: python -m pip install --upgrade openai
-
-      - name: Verify secret is configured
-        run: test -n "$OPENAI_API_KEY"
-
       - name: Generate image asset
+        env:
+          PROMPT_FILE: ${{ inputs.prompt_file }}
+          PROMPT_TEXT: ${{ inputs.prompt }}
+          OUTPUT_PATH: ${{ inputs.output_path }}
+          IMAGE_SIZE: ${{ inputs.size }}
+          IMAGE_QUALITY: ${{ inputs.quality }}
         run: |
-          mkdir -p "$(dirname "${{ inputs.output_path }}")"
           python - <<'PY'
           import base64
           import os
           from pathlib import Path
           from openai import OpenAI
 
-          prompt = """${{ inputs.prompt }}"""
-          output_path = Path("""${{ inputs.output_path }}")
+          prompt = os.environ.get("PROMPT_TEXT", "").strip()
+          prompt_file = Path(os.environ["PROMPT_FILE"])
+          if not prompt:
+              if not prompt_file.exists():
+                  raise SystemExit(f"Prompt file not found: {prompt_file}")
+              prompt = prompt_file.read_text(encoding="utf-8").strip()
+          if not prompt:
+              raise SystemExit("Prompt is empty.")
+
+          output_path = Path(os.environ["OUTPUT_PATH"])
           output_path.parent.mkdir(parents=True, exist_ok=True)
 
           client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
           result = client.images.generate(
               model="gpt-image-2",
               prompt=prompt,
-              size="${{ inputs.size }}",
-              quality="${{ inputs.quality }}",
+              size=os.environ["IMAGE_SIZE"],
+              quality=os.environ["IMAGE_QUALITY"],
               output_format="png",
               n=1,
           )
